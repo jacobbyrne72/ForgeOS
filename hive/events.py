@@ -18,6 +18,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from .contracts import FailureClass, TaskState, new_id, now
+from ._sqlite import connect as _sql_connect
 
 
 class EventType(str, Enum):
@@ -36,6 +37,14 @@ class EventType(str, Enum):
     VERIFICATION_STARTED = "verification_started"
     TEST_RUN_COMPLETED = "test_run_completed"
     REVIEW_COMPLETED = "review_completed"
+    # A worker finished and reported success. NOT the same as accepted: the merge
+    # gate has not ruled yet, and it refuses work that has no tests, no evidence,
+    # a failing security scan, or no independent review.
+    TASK_COMPLETED = "task_completed"
+    # The merge gate allowed it. This is the only event that may be counted as
+    # "accepted" — the headline cost-per-accepted-task metric divides by it, and
+    # counting merely-finished work there makes the number flatter itself exactly
+    # as the harness is built to prevent.
     TASK_ACCEPTED = "task_accepted"
     TASK_REJECTED = "task_rejected"
     GOVERNOR_TRIPPED = "governor_tripped"
@@ -58,6 +67,10 @@ _PROJECTION: dict[EventType, TaskState] = {
     EventType.VERIFICATION_STARTED: TaskState.VERIFYING,
     EventType.TEST_RUN_COMPLETED: TaskState.VERIFYING,
     EventType.REVIEW_COMPLETED: TaskState.VERIFYING,
+    # Both project to DONE: the work is finished either way, and resume must not
+    # redo it. What differs is whether it was *approved*, which is a question for
+    # the metric, not for the state machine.
+    EventType.TASK_COMPLETED: TaskState.DONE,
     EventType.TASK_ACCEPTED: TaskState.DONE,
     EventType.TASK_REJECTED: TaskState.FAILED,
     EventType.GOVERNOR_TRIPPED: TaskState.PAUSED,
@@ -103,9 +116,8 @@ class EventLog:
         self.path = str(path)
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        self._conn = _sql_connect(self.path)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(EVENTS_SCHEMA)
         self._conn.commit()
 

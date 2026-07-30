@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 # Budget split by section role. Evidence dominates, but never to the point of
 # starving the map (cards) or the honesty (tensions, next_reads).

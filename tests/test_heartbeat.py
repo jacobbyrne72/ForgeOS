@@ -15,7 +15,7 @@ from hive.contracts import EscalationKind, TaskState, TestResults, Verdict, Work
 def _full_report(**kw) -> WorkerReport:
     base = dict(
         task_id="T-104",
-        worker_id="omc.executor",
+        worker_id="hive.executor",
         state=TaskState.RUNNING,
         goal="Implement provider fallback",
         summary="A long narration that the manager must never pay to read." * 40,

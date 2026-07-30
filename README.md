@@ -9,11 +9,10 @@ The optimisation target is **cost per accepted task** — not tokens, not calls.
 A router that halves per-call cost while doubling retries has made things worse,
 and per-call metrics score that as a win.
 
-> **Status: pre-1.0, not production-ready.** It runs, 880+ tests pass, and the
-> deterministic core is solid. But it has no adapter→executor bridge yet, so it
-> cannot drive a real coding CLI end to end — every integration test runs against
-> an injected fake. Treat it as cost *instrumentation*, not cost *governance*,
-> until that lands. See [Known gaps](#known-gaps).
+> **Status: pre-1.0.** It runs end to end against real providers — a task has
+> been routed, executed, reviewed by a second worker, judged by the merge gate
+> and billed to the ledger, using a live DeepSeek and OpenRouter key. 1000+
+> tests pass. It is not yet production-ready: see [Known gaps](#known-gaps).
 
 ## The idea
 
@@ -111,17 +110,34 @@ Full detail in [AGENTS.md](AGENTS.md). The load-bearing ones:
 Stated plainly, because a harness that overstates its guarantees is worse than
 one that admits them:
 
-- **No adapter→executor bridge.** `Executor` is injected and only test fakes
-  implement it. The ACP / omc-team / jcode / Ollama adapters exist and are
-  tested, but nothing connects them to the run loop yet. **This is the next
-  thing to build.**
-- **Tasks run sequentially.** Pool sizing, leases and pressure handling are all
-  in place, but the ready set is executed in a `for` loop.
+- **No worker can edit files yet.** The gateway worker returns text; it has no
+  filesystem. So the merge gate correctly refuses everything it produces (no
+  tests, no evidence, no commands run). Driving a real coding CLI — which *can*
+  edit — needs the ACP or omc-team adapter wired through `build_adapter`.
+  **This is the next thing to build.**
+- **The default fleet has no free file-editing worker.** Free workers here
+  summarise and classify. Every real edit currently costs money.
 - **Several subsystems are built and tested but not yet in the execution path:**
   capsule, packing, savings receipts, quota/capacity market, mission compiler,
   model traits, discovery.
 - **Router escalation is not wired.** `Router.escalate` exists; a MODEL failure
   currently retries at the same tier.
+- **Catalogued free tiers rot.** Provider catalogues list models at $0 that the
+  vendor has since retired; a 404 is handled and falls through to the next
+  candidate, but the catalogue itself is not self-healing.
+
+## Connecting a provider
+
+```bash
+export DEEPSEEK_API_KEY=...        # or OPENROUTER_API_KEY, etc.
+python tools/live_check.py         # probes every usable provider, prices each call
+python tools/live_job.py           # a full Forge job end to end, writes to .hive/
+HIVE_STATE_DIR=.hive python -m hive.dashboard.app
+```
+
+`live_check.py` reports which providers are reachable and which catalogued
+models are actually alive. Neither tool ever prints a key value — settings
+reference an environment variable *name*, and hive never stores a secret.
 
 ## Licence
 

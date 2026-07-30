@@ -7,7 +7,6 @@ the machine, and both look like "the harness is slow".
 
 from __future__ import annotations
 
-import pytest
 
 from hive.core.resources import (
     CHECKPOINT_BELOW_GIB,

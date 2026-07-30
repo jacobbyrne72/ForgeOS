@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import subprocess
 
-import pytest
 
 from hive.adapters import discovery
 from hive.adapters.base import WorkerCapabilities
@@ -379,7 +378,11 @@ def test_discover_mcp_servers_redacts_credential_shaped_args(tmp_path):
 
 
 def test_discover_mcp_servers_redacts_url_query_secrets(tmp_path):
-    fake_token = "abcdef0123456789ABCDEF0123456789"
+    # Deliberately low-entropy and repetitive. Redaction here is triggered by the
+    # `token=` key in the query string, not by how random the value looks, so a
+    # convincing-looking token buys the test nothing and costs the repo a
+    # permanent gitleaks finding on its own source. Keep it obviously fake.
+    fake_token = "not-a-real-token-not-a-real-token"
     cfg = tmp_path / ".mcp.json"
     cfg.write_text(
         json.dumps(

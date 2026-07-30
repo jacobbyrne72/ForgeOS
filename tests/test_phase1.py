@@ -21,6 +21,7 @@ from hive.contracts import (
 from hive.ledger import Ledger
 from hive.registry import (
     MIN_ATTEMPTS_TO_TRUST,
+    TIER_PRIOR_MICROS,
     Adapter,
     CostTier,
     Registry,
@@ -290,7 +291,7 @@ def test_foreign_key_blocks_orphan_task(led):
 
 def _w(worker_id: str, tier: CostTier, caps: set[str], **kw) -> WorkerProfile:
     return WorkerProfile(
-        worker_id=worker_id, adapter=Adapter.OMC_TEAM, tier=tier, capabilities=caps, **kw
+        worker_id=worker_id, adapter=Adapter.CLI_TEAM, tier=tier, capabilities=caps, **kw
     )
 
 
@@ -372,18 +373,34 @@ def test_thin_evidence_is_ignored_and_labelled():
     assert "declared prior" in cand.reason
 
 
-def test_default_fleet_sends_mechanical_edits_to_the_free_local_worker():
-    """The cheapest-capable-first rule, checked against the real installed fleet."""
+def test_default_fleet_sends_mechanical_edits_to_the_cheapest_worker_that_can_edit():
+    """The cheapest-capable-first rule, checked against the real installed fleet.
+
+    Note what this pins down: the default fleet has **no free file-editing worker**.
+    The free workers here summarise and classify; they cannot write to disk. So the
+    cheapest honest answer for a real edit is a metered one, and the test asserts
+    that rather than a specific id — routing an edit to a worker that cannot edit
+    would buy a guaranteed failure and a retry one tier up, which is worse than
+    starting at the cheapest worker that can actually finish.
+    """
     reg = default_registry()
     pick = reg.pick(["mechanical", "edit"], needs_file_edits=True)
-    assert pick.worker.worker_id == "jcode.local"
-    assert pick.worker.tier is CostTier.FREE
+    assert pick.worker.can_edit_files
+
+    cheaper = [
+        w.worker_id
+        for w in reg.all()
+        if w.can_edit_files
+        and TIER_PRIOR_MICROS[w.tier] < TIER_PRIOR_MICROS[pick.worker.tier]
+        and {"mechanical", "edit"} <= w.capabilities
+    ]
+    assert not cheaper, f"a cheaper capable editor was passed over: {cheaper}"
 
 
 def test_default_fleet_still_reaches_premium_for_architecture():
     reg = default_registry()
     pick = reg.pick(["architecture", "design"])
-    assert pick.worker.worker_id == "omc.architect"
+    assert pick.worker.worker_id == "hive.architect"
 
 
 def test_default_fleet_ids_are_unique():

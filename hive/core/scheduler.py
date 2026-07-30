@@ -132,8 +132,17 @@ class Scheduler:
         *,
         repo_id: str = "default",
         needs_file_edits: bool = True,
+        worker_id: str | None = None,
     ) -> Assignment | None:
-        """Assign one task: pick the cheapest capable worker, then take its leases.
+        """Assign one task: take capacity and path leases for a chosen worker.
+
+        When `worker_id` is supplied, the caller (the Router) has already made the
+        selection and this method binds leases and bookkeeping to THAT worker. It
+        must not select again: two independent selections merge into one record —
+        the router's tier stapled to the scheduler's worker — and every downstream
+        stat is then keyed to a (worker, tier) pair that no decision ever produced.
+        When `worker_id` is None the scheduler picks for itself, which keeps
+        `assign_next` and direct callers working.
 
         Returns None when at capacity, when no worker can do it, or when another
         task already holds a conflicting write lease. Each of those is a reason to
@@ -152,12 +161,18 @@ class Scheduler:
         scope = json.loads(row["scope"])
         paths: list[str] = scope.get("paths") or []
 
-        stats = self._worker_stats(required)
-        candidate = self.registry.pick(
-            required, stats=stats, needs_file_edits=needs_file_edits and bool(paths)
-        )
-        if candidate is None:
-            return None
+        if worker_id is None:
+            stats = self._worker_stats(required)
+            candidate = self.registry.pick(
+                required, stats=stats, needs_file_edits=needs_file_edits and bool(paths)
+            )
+            if candidate is None:
+                return None
+            chosen = candidate.worker.worker_id
+            measured, reason = candidate.measured, candidate.reason
+        else:
+            chosen = worker_id
+            measured, reason = False, "worker supplied by caller (router decision)"
 
         # Take every write lease first. A partial lease set is worse than none —
         # the worker would start editing paths it does not own.
@@ -170,13 +185,13 @@ class Scheduler:
                 return None
             acquired.append(lease.id)
             self.events.append(
-                job_id, EventType.LEASE_ACQUIRED, task_id=task_id, path=p, worker=candidate.worker.worker_id
+                job_id, EventType.LEASE_ACQUIRED, task_id=task_id, path=p, worker=chosen
             )
 
         asn = Assignment(
             job_id=job_id,
             task_id=task_id,
-            worker_id=candidate.worker.worker_id,
+            worker_id=chosen,
             lease_ids=acquired,
         )
         self._active[task_id] = asn
@@ -186,8 +201,8 @@ class Scheduler:
             EventType.WORKER_ASSIGNED,
             task_id=task_id,
             worker=asn.worker_id,
-            measured=candidate.measured,
-            reason=candidate.reason,
+            measured=measured,
+            reason=reason,
         )
         self.events.append(job_id, EventType.SESSION_STARTED, task_id=task_id, worker=asn.worker_id)
         return asn
@@ -232,7 +247,13 @@ class Scheduler:
         )
 
         if report.state is TaskState.DONE:
-            self.events.append(job_id, EventType.TASK_ACCEPTED, task_id=report.task_id)
+            # COMPLETED, not ACCEPTED. A worker reporting success is a claim, not a
+            # verdict — the merge gate still has to see tests, evidence, a clean
+            # security scan and an independent review. Emitting ACCEPTED here made
+            # every finished task count toward cost-per-accepted-task, including
+            # ones the gate then refused, which is the self-flattering metric this
+            # project exists to avoid.
+            self.events.append(job_id, EventType.TASK_COMPLETED, task_id=report.task_id)
         elif report.state is TaskState.FAILED:
             self.events.append(job_id, EventType.TASK_REJECTED, task_id=report.task_id)
         elif report.state is TaskState.BLOCKED:

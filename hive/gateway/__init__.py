@@ -11,22 +11,28 @@ from .client import (
     GatewayResponse,
     HttpTransport,
     LiteLLMTransport,
+    ModelUnavailableError,
     RateLimitError,
     RawCallResult,
     Transport,
     TransportError,
     assemble_prompt,
     default_transports,
+    rate_limit_saturation,
 )
+from .dead_models import DeadModel, DeadModelStore
 from .health import HealthTracker, ProviderHealth
 
 __all__ = [
+    "DeadModel",
+    "DeadModelStore",
     "Gateway",
     "GatewayRequest",
     "GatewayResponse",
     "HealthTracker",
     "HttpTransport",
     "LiteLLMTransport",
+    "ModelUnavailableError",
     "ProviderHealth",
     "RateLimitError",
     "RawCallResult",
@@ -34,4 +40,5 @@ __all__ = [
     "TransportError",
     "assemble_prompt",
     "default_transports",
+    "rate_limit_saturation",
 ]

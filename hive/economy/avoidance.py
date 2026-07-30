@@ -20,6 +20,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 
 from ..contracts import new_id, now
+from .._sqlite import connect as _sql_connect
 
 
 class AvoidanceMethod(str, Enum):
@@ -86,9 +87,8 @@ class AvoidanceLog:
         self.path = str(path)
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        self._conn = _sql_connect(self.path)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(AVOIDANCE_SCHEMA)
         self._conn.commit()
 

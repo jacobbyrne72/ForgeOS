@@ -102,7 +102,7 @@ def test_reported_reset_is_marked_as_fact_not_estimate():
 def test_available_providers_filters_the_candidate_list():
     q = QuotaTracker()
     q.record_exhaustion("codex", resets_at=T0 + HOUR, at=T0)
-    assert q.available_providers(["codex", "claude", "jcode"], at=T0) == ["claude", "jcode"]
+    assert q.available_providers(["codex", "claude", "ollama"], at=T0) == ["claude", "ollama"]
 
 
 def test_a_healthy_usage_report_clears_exhaustion():

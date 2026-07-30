@@ -44,9 +44,8 @@ TIER_PRIOR_MICROS: dict[CostTier, int] = {
 
 
 class Adapter(str, Enum):
-    OMC_TEAM = "omc_team"
-    JCODE = "jcode"
-    OMNIROUTE = "omniroute"
+    CLI_TEAM = "cli_team"
+    GATEWAY = "gateway"
     OLLAMA = "ollama"
 
 
@@ -189,27 +188,24 @@ class Registry:
 
 # --------------------------------------------------------------------------
 # Default fleet. Reflects what is actually installed on this machine, verified
-# 2026-07-30: omc 4.15.7 agent types, jcode v0.58.0, OmniRoute v3.8.50, Ollama.
+# 2026-07-30: a CLI worker team, OmniRoute v3.8.50, Ollama.
+#
+# Worker ids are hive's own. They name a ROLE in this fleet, not whichever
+# third-party runtime happens to execute it today — baking another project's
+# brand into an id makes the id a lie the moment the backend is swapped.
+#
+# Not every fast local binary belongs here. A tool can be worth reading the source
+# of without being worth routing work to; those are separate judgements, and
+# conflating them puts a worker in the fleet that nobody actually wants to run.
 # --------------------------------------------------------------------------
 
-_OMC = Adapter.OMC_TEAM
+_TEAM = Adapter.CLI_TEAM
 
 
 def default_registry() -> Registry:
     return Registry(
         [
             # Free / local first. Anything these can finish must never reach a metered model.
-            WorkerProfile(
-                worker_id="jcode.local",
-                adapter=Adapter.JCODE,
-                model="jcode-0.58",
-                tier=CostTier.FREE,
-                capabilities={"edit", "refactor", "python", "typescript", "rust", "mechanical"},
-                can_edit_files=True,
-                prior_win_rate=0.55,
-                est_seconds=15.0,
-                notes="Rust binary, fast, local, no metered tokens. First choice for mechanical edits.",
-            ),
             WorkerProfile(
                 worker_id="ollama.local",
                 adapter=Adapter.OLLAMA,
@@ -221,8 +217,8 @@ def default_registry() -> Registry:
                 notes="Local last resort for cheap preprocessing.",
             ),
             WorkerProfile(
-                worker_id="omniroute.free",
-                adapter=Adapter.OMNIROUTE,
+                worker_id="gateway.free",
+                adapter=Adapter.GATEWAY,
                 model="auto:free",
                 tier=CostTier.FREE,
                 capabilities={"summarize", "classify", "triage", "review", "plan"},
@@ -232,8 +228,8 @@ def default_registry() -> Registry:
             ),
             # Metered Claude workers via the omc team runtime. Real tool use, git worktrees.
             WorkerProfile(
-                worker_id="omc.executor",
-                adapter=_OMC,
+                worker_id="hive.executor",
+                adapter=_TEAM,
                 vendor="claude",
                 agent_type="executor",
                 tier=CostTier.STANDARD,
@@ -243,8 +239,8 @@ def default_registry() -> Registry:
                 est_seconds=180.0,
             ),
             WorkerProfile(
-                worker_id="omc.explore",
-                adapter=_OMC,
+                worker_id="hive.explore",
+                adapter=_TEAM,
                 vendor="claude",
                 agent_type="explore",
                 tier=CostTier.CHEAP,
@@ -253,8 +249,8 @@ def default_registry() -> Registry:
                 est_seconds=60.0,
             ),
             WorkerProfile(
-                worker_id="omc.test-engineer",
-                adapter=_OMC,
+                worker_id="hive.test-engineer",
+                adapter=_TEAM,
                 vendor="claude",
                 agent_type="test-engineer",
                 tier=CostTier.STANDARD,
@@ -264,8 +260,8 @@ def default_registry() -> Registry:
                 est_seconds=200.0,
             ),
             WorkerProfile(
-                worker_id="omc.debugger",
-                adapter=_OMC,
+                worker_id="hive.debugger",
+                adapter=_TEAM,
                 vendor="claude",
                 agent_type="debugger",
                 tier=CostTier.STANDARD,
@@ -275,8 +271,8 @@ def default_registry() -> Registry:
                 est_seconds=240.0,
             ),
             WorkerProfile(
-                worker_id="omc.verifier",
-                adapter=_OMC,
+                worker_id="hive.verifier",
+                adapter=_TEAM,
                 vendor="claude",
                 agent_type="verifier",
                 tier=CostTier.CHEAP,
@@ -285,8 +281,8 @@ def default_registry() -> Registry:
                 est_seconds=90.0,
             ),
             WorkerProfile(
-                worker_id="omc.code-reviewer",
-                adapter=_OMC,
+                worker_id="hive.code-reviewer",
+                adapter=_TEAM,
                 vendor="claude",
                 agent_type="code-reviewer",
                 tier=CostTier.STANDARD,
@@ -295,8 +291,8 @@ def default_registry() -> Registry:
                 est_seconds=120.0,
             ),
             WorkerProfile(
-                worker_id="omc.architect",
-                adapter=_OMC,
+                worker_id="hive.architect",
+                adapter=_TEAM,
                 vendor="claude",
                 agent_type="architect",
                 effort="high",
@@ -307,8 +303,8 @@ def default_registry() -> Registry:
                 notes="Expensive. Reserve for genuinely hard design calls.",
             ),
             WorkerProfile(
-                worker_id="omc.critic",
-                adapter=_OMC,
+                worker_id="hive.critic",
+                adapter=_TEAM,
                 vendor="claude",
                 agent_type="critic",
                 effort="high",

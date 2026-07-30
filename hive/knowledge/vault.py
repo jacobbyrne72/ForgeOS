@@ -26,7 +26,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 VAULT_ENV = "HIVE_VAULT"
 

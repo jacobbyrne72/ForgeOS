@@ -198,6 +198,11 @@
   .badge-done { background: var(--good-soft); color: var(--good); }
   .badge-failed { background: var(--bad-soft); color: var(--bad); }
 
+  .badge-ok { background: var(--good-soft); color: var(--good); }
+  .badge-regressed { background: var(--bad-soft); color: var(--bad); }
+  .badge-no_cache_support { background: var(--dim-soft); color: var(--text-muted); }
+  .badge-insufficient_data { background: var(--dim-soft); color: var(--text-muted); }
+
   .panel {
     background: var(--panel);
     border: 1px solid var(--border);
@@ -306,6 +311,11 @@
   .bar-fill { height: 100%; background: var(--accent); }
   .bar-fill.warn { background: var(--warn); }
   .bar-fill.bad { background: var(--bad); }
+  td.ok, span.ok { color: var(--good, #4bd08b); }
+  td.warn, span.warn { color: var(--warn); }
+  td.bad, span.bad { color: var(--bad); }
+  td.muted, span.muted, div.muted { color: var(--text-dim); }
+  #transports-body { padding: 10px 16px; font-size: 12px; }
 
   .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
 
@@ -471,6 +481,29 @@
     </section>
   </section>
 
+  <section class="panel" id="providers-panel">
+    <div class="panel-head">
+      <h2>Providers</h2>
+      <button class="btn" id="providers-refresh">refresh</button>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Provider</th>
+            <th>Kind</th>
+            <th>Status</th>
+            <th>Reachable</th>
+            <th>Key variable</th>
+            <th>Endpoint</th>
+          </tr>
+        </thead>
+        <tbody id="providers-body"></tbody>
+      </table>
+    </div>
+    <div id="transports-body" class="muted"></div>
+  </section>
+
   <footer>hive dashboard — localhost only — read-only except the halt flag</footer>
 </main>
 
@@ -619,13 +652,24 @@
     `;
   }
 
+  // Last rendered markup, kept so an unchanged poll is a no-op. Replacing
+  // innerHTML on every tick destroys and recreates every row, so a row you are
+  // about to click vanishes out from under the pointer — on a busy job the halt
+  // button becomes genuinely hard to hit, and any text selection is lost. The
+  // WebSocket fires on every event, so this is the common case, not a rare race.
+  let lastJobsHtml = null;
+
   function renderJobs() {
     const body = document.getElementById("jobs-body");
     if (!state.jobs.length) {
-      body.innerHTML = `<tr class="empty-row"><td colspan="6">No jobs yet — nothing has run against this ledger.</td></tr>`;
+      const empty = `<tr class="empty-row"><td colspan="6">No jobs yet — nothing has run against this ledger.</td></tr>`;
+      if (lastJobsHtml !== empty) {
+        body.innerHTML = empty;
+        lastJobsHtml = empty;
+      }
       return;
     }
-    body.innerHTML = state.jobs
+    const html = state.jobs
       .map((j) => {
         const counts = Object.entries(j.task_counts_by_state || {})
           .map(([k, v]) => `<span class="chip">${esc(k)} ${v}</span>`)
@@ -644,6 +688,14 @@
         `;
       })
       .join("");
+
+    // Identical markup means nothing an operator can see has changed, so leaving
+    // the existing DOM alone is not an optimisation — it is the difference
+    // between a clickable table and one that rebuilds itself mid-click.
+    if (html !== lastJobsHtml) {
+      body.innerHTML = html;
+      lastJobsHtml = html;
+    }
   }
 
   function taskRowsHtml(tasks) {
@@ -690,11 +742,17 @@
     `;
   }
 
+  // Same reasoning as `lastJobsHtml`: this panel is re-polled every 6 seconds
+  // while it is open, and rebuilding it wholesale destroys the close button
+  // mid-click and drops any scroll position inside the event feed.
+  let lastDetailHtml = null;
+
   function renderJobDetail() {
     const panel = document.getElementById("job-detail");
     if (!state.selectedJobId || !state.jobDetail) {
       panel.hidden = true;
       panel.innerHTML = "";
+      lastDetailHtml = null;
       return;
     }
     const j = state.jobDetail;
@@ -703,8 +761,7 @@
       : 0;
     const barClass = pct > 90 ? "bad" : pct > 60 ? "warn" : "";
 
-    panel.hidden = false;
-    panel.innerHTML = `
+    const html = `
       <div class="job-detail-head">
         <div>
           <h2>${esc(j.objective)}</h2>
@@ -792,18 +849,27 @@
         )}
       </div>
     `;
+    if (html === lastDetailHtml && !panel.hidden) return;  // nothing visible changed
+    const firstOpen = panel.hidden;
+    panel.hidden = false;
+    panel.innerHTML = html;
+    lastDetailHtml = html;
+
     document.getElementById("job-detail-close").addEventListener("click", () => {
       state.selectedJobId = null;
       state.jobDetail = null;
       renderJobDetail();
     });
-    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    // Only on open. Scrolling on every 6-second poll would yank the page out
+    // from under someone reading the panel.
+    if (firstOpen) panel.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function renderEconomy(data) {
     if (!data) return;
     const methods = Object.entries(data.by_method || {});
     const cache = data.cache || {};
+    const health = data.cache_health || {};
     document.getElementById("economy-body").innerHTML = `
       <div class="subsection" style="margin-top:0">
         <h3>Avoidance by method</h3>
@@ -839,6 +905,21 @@
           hit rate ${esc(fmtPct(cache.cache_hit_pct))}
         </p>
         <div class="bar-track"><div class="bar-fill" style="width:${cache.cache_hit_pct || 0}%"></div></div>
+        <p class="sub" style="margin-top:10px">
+          Cache health ${health.status ? badge(health.status) : ""}
+          <span style="color:var(--text-dim)">-- recent hit rate vs. this job's own earlier baseline, per ${esc(health.group_by || "worker")}</span>
+        </p>
+        ${simpleTable(
+          ["Worker/model", "Status", "Baseline", "Recent"],
+          health.groups || [],
+          (g) => `
+            <td>${esc(g.group)}</td>
+            <td>${badge(g.status)}</td>
+            <td class="num">${esc(fmtPct(g.baseline_hit_pct))} (${fmtNum(g.baseline_calls)})</td>
+            <td class="num">${esc(fmtPct(g.recent_hit_pct))} (${fmtNum(g.recent_calls)})</td>
+          `,
+          "Not enough calls yet to judge cache health."
+        )}
       </div>
     `;
   }
@@ -884,6 +965,37 @@
 
   async function loadWorkers() {
     renderWorkers(await api("/api/workers"));
+  }
+
+  function renderProviders(d) {
+    const body = document.getElementById("providers-body");
+    body.innerHTML = (d.providers || []).map((p) => {
+      // "ready but unreachable" is its own state and the one worth shouting
+      // about: the key is configured, settings is satisfied, and a call would
+      // still have nowhere to go.
+      const reach = p.has_transport
+        ? '<span class="ok">yes</span>'
+        : '<span class="bad">no transport</span>';
+      const cls = p.usable ? "ok" : (p.enabled ? "warn" : "muted");
+      return `<tr>
+        <td>${esc(p.name)}</td>
+        <td class="muted">${esc(p.kind)}</td>
+        <td class="${cls}">${esc(p.status)}</td>
+        <td>${reach}</td>
+        <td class="muted">${esc(p.env_key || "—")}</td>
+        <td class="muted">${esc(p.base_url || "—")}</td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="6" class="muted">no providers configured</td></tr>`;
+
+    const t = (d.transports || [])
+      .map((x) => `${esc(x.name)} → ${x.serves.map(esc).join(", ")}`)
+      .join(" · ");
+    document.getElementById("transports-body").textContent =
+      `${d.usable_count}/${d.total} providers usable · transports: ${t || "none"}`;
+  }
+
+  async function loadProviders() {
+    renderProviders(await api("/api/providers"));
   }
 
   async function loadJobDetail(id) {
@@ -955,9 +1067,15 @@
 
   // -------------------------------------------------------------- init
 
+  document.getElementById("providers-refresh").addEventListener("click", () => {
+    loadProviders().catch(showError);
+  });
+
   async function init() {
     try {
-      await Promise.all([loadSummary(), loadJobs(), loadEconomy(), loadWorkers()]);
+      await Promise.all([
+        loadSummary(), loadJobs(), loadEconomy(), loadWorkers(), loadProviders(),
+      ]);
     } catch (e) {
       showError(e);
     }

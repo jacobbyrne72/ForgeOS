@@ -44,10 +44,10 @@ EXPECTED_UNCOVERED_CRITERIA = 0
 def _fleet() -> Registry:
     return Registry(
         [
-            WorkerProfile(worker_id="free.local", adapter=Adapter.JCODE, tier=CostTier.FREE,
+            WorkerProfile(worker_id="free.local", adapter=Adapter.OLLAMA, tier=CostTier.FREE,
                           capabilities={"edit", "python", "mechanical"}, can_edit_files=True,
                           prior_win_rate=0.8),
-            WorkerProfile(worker_id="premium.cloud", adapter=Adapter.OMC_TEAM,
+            WorkerProfile(worker_id="premium.cloud", adapter=Adapter.CLI_TEAM,
                           tier=CostTier.PREMIUM,
                           capabilities={"edit", "python", "mechanical", "architecture"},
                           can_edit_files=True, prior_win_rate=0.95),
@@ -164,7 +164,7 @@ def test_a3_rate_limited_manager_fails_over_to_backup_from_canonical_state():
     single retry.
     """
     from hive.contracts import EscalationKind
-    from hive.core.manager import ManagerDecision, ManagerPool, ManagerUnavailable, Manager
+    from hive.core.manager import ManagerDecision, ManagerPool, Manager
 
     seen_by_backup: list[str] = []
 

@@ -18,6 +18,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from .contracts import new_id
+from ._sqlite import connect as _sql_connect
 
 
 class LeaseType(str, Enum):
@@ -106,9 +107,8 @@ class LeaseStore:
         self.path = str(path)
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        self._conn = _sql_connect(self.path)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(LEASES_SCHEMA)
         self._conn.commit()
 
@@ -169,9 +169,10 @@ class LeaseStore:
         """
         lease_type = LeaseType(lease_type)
         return [
-            l
-            for l in self.active(repo_id=repo_id)
-            if _conflicting_types(l.lease_type, lease_type) and patterns_overlap(l.path_pattern, path_pattern)
+            lease
+            for lease in self.active(repo_id=repo_id)
+            if _conflicting_types(lease.lease_type, lease_type)
+            and patterns_overlap(lease.path_pattern, path_pattern)
         ]
 
     def holder(self, repo_id: str, path: str) -> Lease | None:
@@ -181,10 +182,11 @@ class LeaseStore:
         lease, or any number of active READ leases, never both — so WRITE
         sorts first and ties break on acquisition order for determinism.
         """
-        matches = [l for l in self.active(repo_id=repo_id) if patterns_overlap(l.path_pattern, path)]
+        matches = [lease for lease in self.active(repo_id=repo_id)
+                   if patterns_overlap(lease.path_pattern, path)]
         if not matches:
             return None
-        matches.sort(key=lambda l: (l.lease_type is not LeaseType.WRITE, l.acquired_at))
+        matches.sort(key=lambda m: (m.lease_type is not LeaseType.WRITE, m.acquired_at))
         return matches[0]
 
     # ------------------------------------------------------------- mutation
@@ -207,14 +209,16 @@ class LeaseStore:
         self.expire_stale()
 
         own = [
-            l
-            for l in self.active(repo_id=repo_id)
-            if l.task_id == task_id and patterns_overlap(l.path_pattern, path_pattern)
+            lease
+            for lease in self.active(repo_id=repo_id)
+            if lease.task_id == task_id
+            and patterns_overlap(lease.path_pattern, path_pattern)
         ]
         if own:
             return own[0]  # re-acquiring your own overlapping lease is a no-op, not a conflict
 
-        blockers = [l for l in self.conflicts(repo_id, path_pattern, lease_type) if l.task_id != task_id]
+        blockers = [lease for lease in self.conflicts(repo_id, path_pattern, lease_type)
+                    if lease.task_id != task_id]
         if blockers:
             return None
 

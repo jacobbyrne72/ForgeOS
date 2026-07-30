@@ -20,10 +20,10 @@ from hive.registry import Adapter, CostTier, Registry, WorkerProfile
 
 def _fleet() -> Registry:
     return Registry([
-        WorkerProfile(worker_id="free.local", adapter=Adapter.JCODE, tier=CostTier.FREE,
+        WorkerProfile(worker_id="free.local", adapter=Adapter.OLLAMA, tier=CostTier.FREE,
                       capabilities={"edit", "python", "mechanical"}, can_edit_files=True,
                       prior_win_rate=0.85),
-        WorkerProfile(worker_id="premium.cloud", adapter=Adapter.OMC_TEAM,
+        WorkerProfile(worker_id="premium.cloud", adapter=Adapter.CLI_TEAM,
                       tier=CostTier.PREMIUM,
                       capabilities={"edit", "python", "mechanical", "architecture"},
                       can_edit_files=True, prior_win_rate=0.95),

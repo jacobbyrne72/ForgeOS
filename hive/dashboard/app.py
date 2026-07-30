@@ -36,6 +36,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse
 
+from .._sqlite import connect as guarded_connect
 from ..contracts import from_micros
 from ..economy.avoidance import AvoidanceLog
 from ..events import EventLog, EventType
@@ -244,7 +245,7 @@ def _worker_lanes(ledger: Ledger, tasks: list[sqlite3.Row]) -> list[dict[str, An
                 lane["task_ids"].append(t["id"])
             lane["reports"] += 1
             lane["spend_usd"] += from_micros(r["usd_micros"])
-    return sorted(lanes.values(), key=lambda l: -l["spend_usd"])
+    return sorted(lanes.values(), key=lambda lane: -lane["spend_usd"])
 
 
 # ------------------------------------------------------------------- app
@@ -273,7 +274,11 @@ def create_app(state_dir: str | Path) -> FastAPI:
     # for report queries; it never writes, so it does not touch AGENTS.md
     # hard rule 2 ("never bypass the ledger"), which is about recording
     # spend outside `record_spend`, not about additional read-only listing.
-    reports_conn = sqlite3.connect(str(ledger.path), check_same_thread=False)
+    # Guarded, not raw: FastAPI runs sync endpoints on a threadpool, so several
+    # requests hit this connection at once. `check_same_thread=False` alone only
+    # silences the thread-affinity check — it does not make concurrent use safe,
+    # and two simultaneous dashboard polls are enough to interleave cursors.
+    reports_conn = guarded_connect(ledger.path)
     reports_conn.row_factory = sqlite3.Row
 
     def _all_jobs(limit: int = 500) -> list[sqlite3.Row]:
@@ -381,7 +386,8 @@ def create_app(state_dir: str | Path) -> FastAPI:
     def _economy(job_id: str | None) -> dict[str, Any]:
         totals = avoidance_log.totals(job_id)
         cache = ledger.cache_stats(job_id)
-        return {**totals, "cache": cache}
+        cache_health = ledger.cache_health(job_id)
+        return {**totals, "cache": cache, "cache_health": cache_health}
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -461,6 +467,55 @@ def create_app(state_dir: str | Path) -> FastAPI:
     @app.get("/api/workers")
     def get_workers() -> dict[str, Any]:
         return _workers_list()
+
+    @app.get("/api/providers")
+    def get_providers() -> dict[str, Any]:
+        """Which providers are connected, and which can actually be reached.
+
+        Two different questions, deliberately answered separately. `status` is what
+        settings believes (enabled, installed, key present); `transport` is whether
+        a call would have anywhere to go. They came apart in practice — a provider
+        read "ready" while no transport existed for it, so an API key could be
+        configured, look correct, and be silently unreachable.
+
+        Never returns a key value. `env_key` is the variable NAME, which is what an
+        operator needs in order to fix a missing key, and is not itself a secret.
+        """
+        from ..gateway.client import default_transports
+        from ..settings import Settings
+
+        settings = Settings.load()
+        transports = default_transports(settings)
+        # A transport with an empty `serves` is a fan-out gateway: it can answer
+        # for any provider, so every provider counts as reachable through it.
+        universal = any(not getattr(t, "serves", set()) and t.name != "litellm"
+                        for t in transports)
+        reachable = {t.name for t in transports}
+
+        rows = []
+        for p in sorted(settings.providers.values(), key=lambda x: (x.kind.value, x.name)):
+            rows.append({
+                "name": p.name,
+                "kind": p.kind.value,
+                "auth": p.auth.value,
+                "enabled": p.enabled,
+                "status": p.status(),
+                "usable": p.usable,
+                "env_key": p.env_key,        # the NAME only — never the value
+                "base_url": p.base_url,
+                "capabilities": sorted(p.capabilities),
+                "has_transport": p.name in reachable or universal,
+            })
+
+        return {
+            "providers": rows,
+            "transports": [
+                {"name": t.name, "serves": sorted(getattr(t, "serves", set())) or ["any"]}
+                for t in transports
+            ],
+            "usable_count": sum(1 for r in rows if r["usable"]),
+            "total": len(rows),
+        }
 
     # ---------------------------------------------------------- write api
 

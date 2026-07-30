@@ -21,7 +21,7 @@ import platform
 import shutil
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 # Leave this much for the OS and the operator's own editor/browser.
 DEFAULT_OS_RESERVE_GIB = 4.0

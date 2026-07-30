@@ -22,7 +22,7 @@ from hive.contracts import (
 from hive.core.governor import Action, Governor
 from hive.core.scheduler import Scheduler
 from hive.events import EventLog, EventType
-from hive.leases import LeaseStore, LeaseType
+from hive.leases import LeaseStore
 from hive.ledger import Ledger
 from hive.registry import Adapter, CostTier, Registry, WorkerProfile
 
@@ -34,7 +34,7 @@ def rig():
         [
             WorkerProfile(
                 worker_id="cheap.local",
-                adapter=Adapter.JCODE,
+                adapter=Adapter.OLLAMA,
                 tier=CostTier.FREE,
                 capabilities={"edit", "python"},
                 can_edit_files=True,
@@ -42,7 +42,7 @@ def rig():
             ),
             WorkerProfile(
                 worker_id="pricey.cloud",
-                adapter=Adapter.OMC_TEAM,
+                adapter=Adapter.CLI_TEAM,
                 tier=CostTier.PREMIUM,
                 capabilities={"edit", "python", "security"},
                 can_edit_files=True,

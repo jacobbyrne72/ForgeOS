@@ -161,12 +161,33 @@ def run_semgrep(paths: list[str], *, cwd: str | None = None) -> GateResult:
 
 
 def run_gitleaks(paths: list[str] | None = None, *, cwd: str | None = None) -> GateResult:
-    """Secret detection. A leaked credential in a diff is a hard merge blocker."""
+    """Secret detection over the working tree, scoped to the changed paths.
+
+    Two deliberate choices, both learned the hard way:
+
+    **`--no-git` — scan the tree, not the history.** `gitleaks detect` defaults to
+    walking every commit. For a *merge gate* that is the wrong question: the
+    verdict stops depending on the change under review, and a single finding
+    anywhere in the past blocks every future merge forever, with no action the
+    author of the current change can take to clear it. This repo demonstrated it
+    on itself — a deliberately realistic fake token in a redaction test became a
+    permanent history finding the moment the tree was first committed, and every
+    merge-gate test began failing on a change that touched none of it. Auditing
+    history for leaked credentials is worth doing; it is a different job, on a
+    different schedule, with a different response (rotate the key), and wiring it
+    into the merge gate makes the gate useless without making the audit better.
+
+    **`paths` is honoured.** It used to be accepted and ignored, which meant the
+    gate scanned everything and reported findings the change was not responsible
+    for. Findings outside the changed paths are excluded from the verdict — they
+    are real, but they are not this change's to answer for, and a gate that
+    cannot be satisfied is a gate people learn to bypass.
+    """
     if not _tool_available(GITLEAKS):
         return GateResult(gate=Gate.SECURITY, status=GateStatus.UNAVAILABLE,
                           evidence="gitleaks not on PATH")
 
-    cmd = [resolve_tool(GITLEAKS) or GITLEAKS, "detect", "--no-banner", "--redact",
+    cmd = [resolve_tool(GITLEAKS) or GITLEAKS, "detect", "--no-git", "--no-banner", "--redact",
            "--report-format", "json", "--report-path", "-"]
     if cwd:
         cmd += ["--source", "."]
@@ -195,13 +216,50 @@ def run_gitleaks(paths: list[str] | None = None, *, cwd: str | None = None) -> G
             return GateResult(gate=Gate.SECURITY, status=GateStatus.UNAVAILABLE,
                               command=" ".join(cmd), evidence=raw[-2000:])
 
+    scanned = len(findings)
+    findings = _only_in(findings, paths)
+    elsewhere = scanned - len(findings)
+
+    evidence = f"{len(findings)} secret(s) detected"
+    if elsewhere:
+        # Named, never silently dropped. A filtered finding is still a real one,
+        # and hiding the count would make the gate look cleaner than the repo is.
+        evidence += f" ({elsewhere} outside the changed paths, not this change's to answer for)"
+
     return GateResult(
         gate=Gate.SECURITY,
         status=GateStatus.FAIL if findings else GateStatus.PASS,
         command=" ".join(cmd),
-        evidence=f"{len(findings)} secret(s) detected",
+        evidence=evidence,
         findings=findings,
     )
+
+
+def _only_in(findings: list[Finding], paths: list[str] | None) -> list[Finding]:
+    """Keep findings that land on one of the changed paths.
+
+    No paths given means no scoping — everything is kept, because "the caller did
+    not say what changed" must not quietly become "nothing is in scope". That
+    default is the difference between a filter and a mute button.
+
+    Path shapes are compared with separators normalised, since gitleaks reports
+    repo-relative paths that differ from the caller's by separator on Windows.
+    """
+    if not paths:
+        return findings
+
+    def norm(p: str) -> str:
+        return p.replace("\\", "/").lstrip("./").lower()
+
+    wanted = {norm(p) for p in paths}
+    kept = []
+    for f in findings:
+        fp = norm(f.path)
+        # A finding matches if its path is one of the changed paths, or lives
+        # under one of them when the caller passed a directory.
+        if fp in wanted or any(fp.startswith(w.rstrip("/") + "/") for w in wanted):
+            kept.append(f)
+    return kept
 
 
 def run_security(paths: list[str], *, cwd: str | None = None) -> GateResult:

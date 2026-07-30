@@ -167,7 +167,7 @@ def test_active_excludes_released_and_expired(store):
     released = store.acquire("task_b", "repo1", "src/rel/**", LeaseType.WRITE, ttl_seconds=60)
     store.release(released.id)
     store.acquire("task_c", "repo1", "src/dead/**", LeaseType.WRITE, ttl_seconds=-1)
-    ids = {l.id for l in store.active(repo_id="repo1")}
+    ids = {lease.id for lease in store.active(repo_id="repo1")}
     assert ids == {live.id}
 
 

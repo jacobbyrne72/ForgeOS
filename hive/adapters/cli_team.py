@@ -433,7 +433,7 @@ class OMCTeamAdapter(WorkerAdapter):
         """Canonical task state only — no message content of any kind."""
         sess = self._get_session(session_id)
         return {
-            "adapter": "omc_team",
+            "adapter": "cli_team",
             "node_command": self._node_command,
             "bin_path": str(self._bin_path),
             "task_id": sess.task_id,

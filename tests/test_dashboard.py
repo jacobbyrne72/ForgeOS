@@ -136,13 +136,13 @@ def _seed_job(state_dir: Path) -> tuple[str, str]:
                          acceptance=["pytest passes"], capabilities=["python"])
         ledger.add_task(task, state=TaskState.RUNNING)
 
-        ledger.record_spend(job.id, "omc.executor", "claude-x", 250_000, task_id=task.id,
+        ledger.record_spend(job.id, "hive.executor", "claude-x", 250_000, task_id=task.id,
                             tokens_in=1000, tokens_out=500, tokens_cached_in=200)
 
         ledger.record_report(
             WorkerReport(
                 task_id=task.id,
-                worker_id="omc.executor",
+                worker_id="hive.executor",
                 state=TaskState.DONE,
                 confidence=0.9,
                 summary="done",
@@ -189,7 +189,7 @@ def test_jobs_list_and_detail_include_documented_fields(state_dir: Path):
     assert detail["tasks"][0]["id"] == task_id
     assert detail["tasks"][0]["spend_usd"] == pytest.approx(0.25)
     assert len(detail["worker_lanes"]) == 1
-    assert detail["worker_lanes"][0]["worker_id"] == "omc.executor"
+    assert detail["worker_lanes"][0]["worker_id"] == "hive.executor"
     assert len(detail["events"]) == 2
 
 

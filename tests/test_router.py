@@ -23,7 +23,7 @@ from hive.registry import Adapter, CostTier, Registry, WorkerProfile
 def _w(wid: str, tier: CostTier, caps: set[str], win: float = 0.8, **kw) -> WorkerProfile:
     return WorkerProfile(
         worker_id=wid,
-        adapter=Adapter.OMC_TEAM,
+        adapter=Adapter.CLI_TEAM,
         tier=tier,
         capabilities=caps,
         prior_win_rate=win,

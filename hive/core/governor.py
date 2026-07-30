@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from ..contracts import Budget, FailureClass, GovernorTrip, from_micros, now
 from ..events import EventLog, EventType

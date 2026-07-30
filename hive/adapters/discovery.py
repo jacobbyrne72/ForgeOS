@@ -59,7 +59,7 @@ DEFAULT_TIMEOUT = 10  # seconds; --help/--version, never a real agent turn
 # for callers of discover_all — not a hardcoded capability, just "which CLIs
 # does hive know the *names* of", which is a much weaker and safer claim.
 KNOWN_CLI_NAMES: tuple[str, ...] = (
-    "claude", "codex", "jcode", "opencode", "qwen", "kimi", "grok", "pi",
+    "claude", "codex", "opencode", "qwen", "kimi", "grok", "pi",
     "droid", "copilot", "ollama", "hermes",
 )
 

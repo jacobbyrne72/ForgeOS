@@ -247,6 +247,109 @@ def test_ruff_gate_runs_for_real(tmp_path):
     assert "ruff" in res.command and "check" in res.command
 
 
+# ------------------------------------- the gate judges the change, not the past
+
+
+def _gitleaks_returning(payload: str, monkeypatch):
+    """Substitute the subprocess so the parsing and scoping can be tested without
+    a real scanner or a real repository."""
+    import hive.core.verify as v
+
+    captured: dict = {}
+
+    class _Result:
+        stdout = payload
+        stderr = ""
+        returncode = 1
+
+    def fake_run(cmd, *, cwd=None, timeout=None):
+        captured["cmd"] = cmd
+        return _Result()
+
+    monkeypatch.setattr(v, "_run", fake_run)
+    monkeypatch.setattr(v, "_tool_available", lambda _: True)
+    monkeypatch.setattr(v, "resolve_tool", lambda name: f"/usr/bin/{name}")
+    return captured
+
+
+_LEAK = (
+    '[{"RuleID":"generic-api-key","File":"%s","StartLine":9,'
+    '"Description":"Detected a Generic API Key"}]'
+)
+
+
+def test_gitleaks_scans_the_working_tree_not_the_whole_history(monkeypatch):
+    """History scanning makes the verdict independent of the change under review,
+    and lets one old finding block every future merge with no way to clear it."""
+    captured = _gitleaks_returning("[]", monkeypatch)
+    run_gitleaks(["a.py"], cwd="/repo")
+    assert "--no-git" in captured["cmd"]
+
+
+def test_a_finding_on_a_changed_path_still_fails_the_gate(monkeypatch):
+    _gitleaks_returning(_LEAK % "src/app.py", monkeypatch)
+    res = run_gitleaks(["src/app.py"], cwd="/repo")
+    assert res.status is GateStatus.FAIL
+    assert res.findings
+
+
+def test_a_finding_outside_the_changed_paths_does_not_fail_the_gate(monkeypatch):
+    """Real, but not this change's to answer for. A gate that cannot be satisfied
+    is one people learn to bypass."""
+    _gitleaks_returning(_LEAK % "tests/fixtures/legacy.py", monkeypatch)
+    res = run_gitleaks(["src/app.py"], cwd="/repo")
+    assert res.status is GateStatus.PASS
+
+
+def test_a_filtered_finding_is_still_counted_out_loud(monkeypatch):
+    """Silently dropping it would make the gate look cleaner than the repo is."""
+    _gitleaks_returning(_LEAK % "other/thing.py", monkeypatch)
+    res = run_gitleaks(["src/app.py"], cwd="/repo")
+    assert "1 outside the changed paths" in res.evidence
+
+
+def test_findings_under_a_changed_directory_are_in_scope(monkeypatch):
+    _gitleaks_returning(_LEAK % "src/deep/nested/app.py", monkeypatch)
+    assert run_gitleaks(["src/"], cwd="/repo").status is GateStatus.FAIL
+
+
+def test_windows_separators_do_not_smuggle_a_finding_past_the_scope_check(monkeypatch):
+    """gitleaks reports forward slashes; a caller on Windows may not. A finding
+    that slipped through on a separator mismatch would be a silent miss."""
+    _gitleaks_returning(_LEAK % "src/app.py", monkeypatch)
+    assert run_gitleaks(["src\\app.py"], cwd="/repo").status is GateStatus.FAIL
+
+
+def test_no_paths_means_no_scoping_rather_than_nothing_in_scope(monkeypatch):
+    """The dangerous default. 'The caller did not say what changed' must never
+    quietly become 'nothing is in scope' — that turns the filter into a mute."""
+    _gitleaks_returning(_LEAK % "anywhere.py", monkeypatch)
+    assert run_gitleaks(cwd="/repo").status is GateStatus.FAIL
+
+
+def test_hives_own_source_is_clean_of_secrets():
+    """hive scans other people's code; it should survive its own scanner.
+
+    Scoped to the directories hive actually authors. `--no-git` walks the
+    filesystem rather than the index, so an unscoped scan also covers untracked
+    and gitignored trees — `vendor/` here is full of third-party code with
+    documentation examples that trip `generic-api-key`, and those are neither
+    hive's secrets nor hive's to fix. That is exactly why the Forge always passes
+    `files_touched` to this gate rather than letting it scan freely.
+
+    Skipped when gitleaks is absent — an unavailable scanner is reported, never
+    treated as a pass, and that rule applies to hive's own source too.
+    """
+    if shutil.which("gitleaks") is None:
+        pytest.skip("gitleaks not installed")
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parent.parent
+    ours = [d for d in ("hive", "tests", "hooks", "tools") if (repo / d).exists()]
+    res = run_gitleaks(ours, cwd=str(repo))
+    assert res.status is not GateStatus.FAIL, f"hive's own source leaks: {res.findings}"
+
+
 def test_combined_security_fails_if_either_scanner_fails(monkeypatch):
     import hive.core.verify as v
 

@@ -21,6 +21,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from ..contracts import new_id, now
+from .._sqlite import connect as _sql_connect
 
 # An unreplicated claim is an anecdote. Two independent sources is the floor.
 MIN_SOURCES_TO_PROMOTE = 2
@@ -125,9 +126,8 @@ class ClaimStore:
         self.path = str(path)
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        self._conn = _sql_connect(self.path)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(CLAIMS_SCHEMA)
         self._conn.commit()

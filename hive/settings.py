@@ -16,7 +16,6 @@ picks from measured history). Manual always wins; that is the point of manual.
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 from enum import Enum
@@ -183,8 +182,6 @@ _CLI_DEFAULTS: tuple[tuple[str, str, AuthMode, str, set[str]], ...] = (
      {"edit", "implement", "review", "plan", "debug", "tools"}),
     ("codex", "codex", AuthMode.SUBSCRIPTION, "codex login",
      {"edit", "implement", "review", "debug", "tools"}),
-    ("jcode", "jcode", AuthMode.SUBSCRIPTION, "jcode",
-     {"edit", "refactor", "mechanical", "fast"}),
     ("opencode", "opencode", AuthMode.SUBSCRIPTION, "opencode auth login",
      {"edit", "implement"}),
     ("qwen", "qwen", AuthMode.SUBSCRIPTION, "qwen",
@@ -226,11 +223,11 @@ def default_settings() -> Settings:
         capabilities={"summarize", "classify", "triage"},
         notes="Local, unmetered. Preferred for cheap preprocessing.",
     )
-    providers["omniroute"] = Provider(
-        name="omniroute",
+    providers["gateway"] = Provider(
+        name="gateway",
         kind=ProviderKind.GATEWAY,
         auth=AuthMode.API_KEY,
-        env_key="OMNIROUTE_BASE_URL",
+        env_key="HIVE_GATEWAY_URL",
         base_url="http://127.0.0.1:8787",
         capabilities={"summarize", "classify", "triage", "review", "plan"},
         notes="OpenAI-compatible gateway fanning out to many providers and free tiers.",

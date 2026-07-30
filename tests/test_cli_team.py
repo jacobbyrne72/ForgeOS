@@ -1,6 +1,6 @@
-"""Tests for `hive/adapters/omc_team.py` (`OMCTeamAdapter`).
+"""Tests for `hive/adapters/cli_team.py` (`OMCTeamAdapter`).
 
-Entirely subprocess-driven and entirely mocked: `hive.adapters.omc_team._spawn`
+Entirely subprocess-driven and entirely mocked: `hive.adapters.cli_team._spawn`
 is the exact seam this adapter uses to reach `node`, so every test substitutes
 it directly (same isolation pattern as `tests/test_local_adapters.py`'s
 `_spawn` seams for `jcode.py`/`ollama.py`, and `tests/test_adapters.py`'s
@@ -20,9 +20,9 @@ from typing import Any
 
 import pytest
 
-from hive.adapters import omc_team as omc_team_adapter
+from hive.adapters import cli_team as cli_team_adapter
 from hive.adapters.base import EventKind, WorkerAdapter, WorkerCapabilities, WorkerUsage
-from hive.adapters.omc_team import OMCTeamAdapter
+from hive.adapters.cli_team import OMCTeamAdapter
 
 
 def run(coro):
@@ -110,7 +110,7 @@ def test_every_abstract_method_is_implemented_and_async_where_required():
 
 
 def test_health_false_when_node_not_on_path(monkeypatch):
-    monkeypatch.setattr(omc_team_adapter.shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(cli_team_adapter.shutil, "which", lambda cmd: None)
     adapter = make_adapter()
 
     ok, reason = adapter.health()
@@ -121,7 +121,7 @@ def test_health_false_when_node_not_on_path(monkeypatch):
 
 
 def test_health_false_when_plugin_bin_path_is_absent(monkeypatch, tmp_path):
-    monkeypatch.setattr(omc_team_adapter.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+    monkeypatch.setattr(cli_team_adapter.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
     missing = tmp_path / "does" / "not" / "exist" / "oh-my-claudecode.js"
     adapter = make_adapter(bin_path=str(missing))
 
@@ -133,7 +133,7 @@ def test_health_false_when_plugin_bin_path_is_absent(monkeypatch, tmp_path):
 
 
 def test_health_true_when_node_and_bin_path_are_present(monkeypatch, tmp_path):
-    monkeypatch.setattr(omc_team_adapter.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+    monkeypatch.setattr(cli_team_adapter.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
     bin_path = tmp_path / "oh-my-claudecode.js"
     bin_path.write_text("// fake plugin entrypoint", encoding="utf-8")
     adapter = make_adapter(bin_path=str(bin_path))
@@ -147,7 +147,7 @@ def test_health_true_when_node_and_bin_path_are_present(monkeypatch, tmp_path):
 def test_health_never_raises_when_bin_path_is_unreadable(monkeypatch):
     """health() must never crash the harness (base.py contract) even if a
     weird bin_path value cannot be stat()'d cleanly."""
-    monkeypatch.setattr(omc_team_adapter.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+    monkeypatch.setattr(cli_team_adapter.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
     adapter = make_adapter(bin_path="\0invalid\0path")
 
     ok, reason = adapter.health()  # must not raise
@@ -181,7 +181,7 @@ def test_start_agent_type_comes_from_caller_model_profile_not_hardcoded(monkeypa
     """The router picks agentTypes; the adapter must forward whatever it is
     given as `--agent`, never substitute its own opinion."""
     spawn, captured = make_spawn(FakeProcess(returncode=0, stdout=start_result_json()))
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn)
     adapter = make_adapter()
     session_id = run(adapter.start("task-1", "/repo", "architect"))
 
@@ -194,14 +194,14 @@ def test_start_agent_type_comes_from_caller_model_profile_not_hardcoded(monkeypa
 
 def test_start_agent_type_differs_across_two_sessions_when_caller_differs(monkeypatch):
     spawn1, captured1 = make_spawn(FakeProcess(returncode=0, stdout=start_result_json(job_id="omc-aaa11111")))
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn1)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn1)
     adapter = make_adapter()
     session_a = run(adapter.start("task-a", "/repo", "explore"))
     run(_collect(_first_event_only(adapter, session_a)))
     assert captured1[0][captured1[0].index("--agent") + 1] == "explore"
 
     spawn2, captured2 = make_spawn(FakeProcess(returncode=0, stdout=start_result_json(job_id="omc-bbb22222")))
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn2)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn2)
     session_b = run(adapter.start("task-b", "/repo", "critic"))
     run(_collect(_first_event_only(adapter, session_b)))
     assert captured2[0][captured2[0].index("--agent") + 1] == "critic"
@@ -215,7 +215,7 @@ async def _first_event_only(adapter: OMCTeamAdapter, session_id: str):
 
 def test_start_falls_back_to_default_agent_type_only_when_model_profile_is_empty(monkeypatch):
     spawn, captured = make_spawn(FakeProcess(returncode=0, stdout=start_result_json()))
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn)
     adapter = make_adapter(default_agent_type="codex")
     session_id = run(adapter.start("task-1", "/repo", ""))
 
@@ -231,7 +231,7 @@ def test_send_starts_job_then_polls_status_to_completion(monkeypatch):
     start_proc = FakeProcess(returncode=0, stdout=start_result_json(job_id="omc-xyz99999"))
     status_proc = FakeProcess(returncode=0, stdout=status_json(job_id="omc-xyz99999", status="completed", result="ship it"))
     spawn, captured = make_spawn(start_proc, status_proc)
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn)
     adapter = make_adapter()
     session_id = run(adapter.start("task-1", "/repo", "executor"))
 
@@ -256,7 +256,7 @@ def test_send_polls_multiple_times_while_running_before_completing(monkeypatch):
     running_proc_2 = FakeProcess(returncode=0, stdout=status_json(job_id="omc-poll00001", status="running"))
     done_proc = FakeProcess(returncode=0, stdout=status_json(job_id="omc-poll00001", status="completed", result="done"))
     spawn, captured = make_spawn(start_proc, running_proc_1, running_proc_2, done_proc)
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn)
     adapter = make_adapter(poll_interval_seconds=0.0)
     session_id = run(adapter.start("task-1", "/repo", "executor"))
 
@@ -279,7 +279,7 @@ def test_send_yields_error_event_when_job_fails(monkeypatch):
         stdout=status_json(job_id="omc-fail00001", status="failed", result=None, stderr="worker crashed"),
     )
     spawn, _ = make_spawn(start_proc, failed_proc)
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn)
     adapter = make_adapter()
     session_id = run(adapter.start("task-1", "/repo", "debugger"))
 
@@ -294,7 +294,7 @@ def test_send_yields_error_event_when_job_fails(monkeypatch):
 def test_send_yields_error_event_instead_of_raising_when_start_exits_nonzero(monkeypatch):
     start_proc = FakeProcess(returncode=1, stdout=b"", stderr=b"Unsupported agent type: architect")
     spawn, _ = make_spawn(start_proc)
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn)
     adapter = make_adapter()
     session_id = run(adapter.start("task-1", "/repo", "architect"))
 
@@ -309,7 +309,7 @@ def test_send_yields_error_event_when_spawn_itself_raises(monkeypatch):
     async def boom(cmd: list[str]) -> Any:
         raise OSError("node vanished mid-race")
 
-    monkeypatch.setattr(omc_team_adapter, "_spawn", boom)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", boom)
     adapter = make_adapter()
     session_id = run(adapter.start("task-1", "/repo", "executor"))
 
@@ -322,7 +322,7 @@ def test_send_yields_error_event_when_spawn_itself_raises(monkeypatch):
 def test_send_yields_error_event_when_start_output_is_not_parseable_json(monkeypatch):
     start_proc = FakeProcess(returncode=0, stdout=b"not json at all")
     spawn, _ = make_spawn(start_proc)
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn)
     adapter = make_adapter()
     session_id = run(adapter.start("task-1", "/repo", "executor"))
 
@@ -339,14 +339,14 @@ def test_second_send_on_an_already_started_job_repolls_instead_of_restarting(mon
     # the first one takes.
     status_proc_1 = FakeProcess(returncode=0, stdout=status_json(job_id="omc-again0001", status="completed", result="first result"))
     spawn1, captured1 = make_spawn(start_proc, status_proc_1)
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn1)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn1)
     adapter = make_adapter()
     session_id = run(adapter.start("task-1", "/repo", "executor"))
     run(_collect(adapter.send(session_id, "first prompt")))
 
     status_proc_2 = FakeProcess(returncode=0, stdout=status_json(job_id="omc-again0001", status="completed", result="ok"))
     spawn2, captured2 = make_spawn(status_proc_2)
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn2)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn2)
     events = run(_collect(adapter.send(session_id, "a different second prompt")))
 
     # never a second "team start" — only ever "team status"
@@ -361,14 +361,14 @@ def test_second_send_on_an_already_started_job_repolls_instead_of_restarting(mon
 def test_cancel_marks_session_cancelled_and_invokes_cleanup(monkeypatch):
     start_proc = FakeProcess(returncode=0, stdout=start_result_json(job_id="omc-cancel0001"))
     spawn1, _ = make_spawn(start_proc)
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn1)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn1)
     adapter = make_adapter()
     session_id = run(adapter.start("task-1", "/repo", "executor"))
     run(_collect(_first_event_only(adapter, session_id)))
 
     cleanup_proc = FakeProcess(returncode=0, stdout=b'{"jobId": "omc-cancel0001", "message": "cleaned up"}')
     spawn2, captured2 = make_spawn(cleanup_proc)
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn2)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn2)
 
     run(adapter.cancel(session_id))
 
@@ -383,7 +383,7 @@ def test_cancel_is_a_no_op_on_the_cli_when_job_never_started(monkeypatch):
     def must_not_be_called(cmd: list[str]) -> Any:
         raise AssertionError("must not shell out when no job was ever started")
 
-    monkeypatch.setattr(omc_team_adapter, "_spawn", must_not_be_called)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", must_not_be_called)
 
     run(adapter.cancel(session_id))  # must not raise, must not spawn
 
@@ -393,7 +393,7 @@ def test_cancel_is_a_no_op_on_the_cli_when_job_never_started(monkeypatch):
 def test_poll_loop_stops_promptly_once_cancelled(monkeypatch):
     start_proc = FakeProcess(returncode=0, stdout=start_result_json(job_id="omc-stop000001"))
     spawn, _ = make_spawn(start_proc)
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn)
     adapter = make_adapter()
     session_id = run(adapter.start("task-1", "/repo", "executor"))
 
@@ -432,7 +432,7 @@ def test_usage_stays_exact_false_after_a_completed_job(monkeypatch):
     start_proc = FakeProcess(returncode=0, stdout=start_result_json(job_id="omc-usage00001"))
     status_proc = FakeProcess(returncode=0, stdout=status_json(job_id="omc-usage00001", status="completed", result="ok"))
     spawn, _ = make_spawn(start_proc, status_proc)
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn)
     adapter = make_adapter()
     session_id = run(adapter.start("task-1", "/repo", "executor"))
     run(_collect(adapter.send(session_id, "do it")))
@@ -449,7 +449,7 @@ def test_usage_stays_exact_false_after_a_completed_job(monkeypatch):
 def test_checkpoint_has_no_transcript_shaped_keys(monkeypatch):
     start_proc = FakeProcess(returncode=0, stdout=start_result_json(job_id="omc-ckpt00001"))
     spawn, _ = make_spawn(start_proc)
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn)
     adapter = make_adapter()
     session_id = run(adapter.start("task-1", "/repo", "executor"))
     run(_collect(_first_event_only(adapter, session_id)))
@@ -469,7 +469,7 @@ def test_checkpoint_has_no_transcript_shaped_keys(monkeypatch):
 def test_resume_restores_state_and_a_later_send_polls_the_same_job(monkeypatch):
     start_proc = FakeProcess(returncode=0, stdout=start_result_json(job_id="omc-resume0001"))
     spawn1, _ = make_spawn(start_proc)
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn1)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn1)
     adapter = make_adapter()
     session_id = run(adapter.start("task-1", "/repo", "executor"))
     run(_collect(_first_event_only(adapter, session_id)))
@@ -477,7 +477,7 @@ def test_resume_restores_state_and_a_later_send_polls_the_same_job(monkeypatch):
     run(adapter.close(session_id))  # consumes spawn1's one remaining call (its own cleanup)
 
     spawn2, captured2 = make_spawn(FakeProcess(returncode=0, stdout=status_json(job_id="omc-resume0001", status="completed", result="ok")))
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn2)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn2)
 
     resumed_id = run(adapter.resume(checkpoint))
     assert resumed_id != session_id  # a fresh hive-side session_id, honestly
@@ -494,14 +494,14 @@ def test_resume_restores_state_and_a_later_send_polls_the_same_job(monkeypatch):
 def test_close_invokes_cleanup_when_a_job_was_started(monkeypatch):
     start_proc = FakeProcess(returncode=0, stdout=start_result_json(job_id="omc-close00001"))
     spawn1, _ = make_spawn(start_proc)
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn1)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn1)
     adapter = make_adapter()
     session_id = run(adapter.start("task-1", "/repo", "executor"))
     run(_collect(_first_event_only(adapter, session_id)))
 
     cleanup_proc = FakeProcess(returncode=0, stdout=b'{"jobId": "omc-close00001", "message": "cleaned up"}')
     spawn2, captured2 = make_spawn(cleanup_proc)
-    monkeypatch.setattr(omc_team_adapter, "_spawn", spawn2)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", spawn2)
 
     run(adapter.close(session_id))
 
@@ -516,7 +516,7 @@ def test_close_does_not_shell_out_when_no_job_was_ever_started(monkeypatch):
     def must_not_be_called(cmd: list[str]) -> Any:
         raise AssertionError("must not shell out when no job exists to clean up")
 
-    monkeypatch.setattr(omc_team_adapter, "_spawn", must_not_be_called)
+    monkeypatch.setattr(cli_team_adapter, "_spawn", must_not_be_called)
 
     run(adapter.close(session_id))  # must not raise, must not spawn
 

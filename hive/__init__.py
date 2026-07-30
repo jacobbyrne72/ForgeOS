@@ -5,7 +5,7 @@ Layers, cheapest first:
     economy/   eliminate the request      (atlas pack, dedup, cache reuse)
     gateway/   make the request cheap     (OmniRoute free tiers, litellm fallback)
     registry   pick the cheapest worker that can actually finish
-    adapters/  run it                     (jcode, omc team, OmniRoute, Ollama)
+    adapters/  run it                     (omc team, OmniRoute, Ollama, ACP)
     core/      supervise it               (manager, governor, router)
     ledger     prove what it cost
 

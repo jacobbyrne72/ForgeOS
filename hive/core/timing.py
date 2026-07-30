@@ -28,6 +28,7 @@ from typing import Iterator
 from pydantic import BaseModel, Field
 
 from ..contracts import new_id, now
+from .._sqlite import connect as _sql_connect
 
 
 class Phase(str, Enum):
@@ -121,9 +122,8 @@ class SpanStore:
         self.path = str(path)
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        self._conn = _sql_connect(self.path)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(SPANS_SCHEMA)
         self._conn.commit()
 

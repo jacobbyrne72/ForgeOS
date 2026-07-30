@@ -7,6 +7,8 @@ __pycache__/
 *.db-wal
 *.db-shm
 .hive/
+# any state dir a live probe writes to
+.hive-*/
 .omc/
 
 # Vendored upstreams are mined, not committed. Re-clone with:

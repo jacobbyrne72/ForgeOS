@@ -30,6 +30,29 @@ from .contracts import (
     new_id,
     now,
 )
+from ._sqlite import connect as _sql_connect
+
+# Below this many calls in a period (baseline OR recent), a hit-rate is noise --
+# one cached call out of two is a coin flip, not a signal. `cache_health`
+# refuses to render a verdict for a group until both periods clear this bar,
+# rather than raising a false regression alarm off n=2.
+CACHE_HEALTH_MIN_CALLS = 5
+
+# Size, in calls, of the "recent" window compared back against everything
+# earlier in that same group's own history. Fixed-size so the comparison means
+# the same thing early and late in a long-running job.
+CACHE_HEALTH_RECENT_CALLS = 10
+
+# A baseline hit-rate at or below this is indistinguishable from "this
+# provider/model never served a cache hit" -- below it there is no working
+# state to regress FROM, so the honest label is "no_cache_support", never
+# "regressed to zero".
+CACHE_HEALTH_FLOOR_PCT = 1.0
+
+# Recent must fall below this fraction of baseline to count as a regression
+# rather than ordinary call-to-call noise (an occasional cache miss even while
+# caching is, on the whole, still working).
+CACHE_HEALTH_REGRESSION_RATIO = 0.5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -136,9 +159,8 @@ class Ledger:
         self.path = str(path)
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        self._conn = _sql_connect(self.path)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA)
         self._conn.commit()
@@ -340,6 +362,99 @@ class Ledger:
             "tokens_out": int(r["out"]),
             "cache_hit_pct": round(100.0 * cached / total, 1) if total else 0.0,
         }
+
+    def cache_health(self, job_id: str | None = None, *, group_by: str = "worker") -> dict:
+        """Is prompt caching still working, or did it silently stop?
+
+        `cache_stats` reports today's hit-rate but has no memory, so a real
+        regression and "this model never cached in the first place" look
+        identical: a low percentage. This tells them apart by comparing each
+        group's RECENT calls against that SAME group's own earlier baseline --
+        never a fixed cutoff, which would misfire the moment it met a
+        provider/model that never had caching to lose.
+
+        `group_by` is "worker" (default) or "model": a worker can rotate
+        between models mid-job, and grouping by worker alone would dilute a
+        regression tied to one specific model, so the caller picks the lens.
+
+        Returns ``{"status": overall, "group_by": ..., "groups": [...]}``.
+        Each group's ``status`` is exactly one of:
+
+        - ``"ok"``                 recent hit rate holds up against its own baseline
+        - ``"regressed"``          baseline showed real caching; recent fell hard below it
+        - ``"no_cache_support"``   baseline itself is ~0 -- nothing to regress FROM
+        - ``"insufficient_data"``  fewer than `CACHE_HEALTH_MIN_CALLS` in a period
+
+        ``overall`` is ``"regressed"`` if ANY group regressed (the one
+        actionable case), otherwise the least-informative honest label rather
+        than a false ``"ok"``.
+        """
+        if group_by not in ("worker", "model"):
+            raise ValueError(f"group_by must be 'worker' or 'model', got {group_by!r}")
+        column = "worker_id" if group_by == "worker" else "model"
+
+        # kind='call' excludes the tier-prior "estimate" rows an unmetered
+        # subscription worker charges (hive/forge.py `_run_task`) -- those never
+        # carry real provider usage numbers, so mixing them in would water down
+        # a genuine gateway cache signal with structurally-unmeasurable zeros.
+        sql = f"SELECT {column} AS grp, tokens_in, tokens_cached_in FROM spend WHERE kind='call'"
+        args: tuple = ()
+        if job_id:
+            sql += " AND job_id=?"
+            args = (job_id,)
+        sql += " ORDER BY created_at, rowid"  # rowid tiebreaks calls sharing one timestamp
+
+        by_group: dict[str, list[sqlite3.Row]] = {}
+        for row in self._conn.execute(sql, args).fetchall():
+            by_group.setdefault(row["grp"], []).append(row)
+
+        def hit_pct(period: list[sqlite3.Row]) -> float | None:
+            if not period:
+                return None
+            fresh = sum(r["tokens_in"] for r in period)
+            cached = sum(r["tokens_cached_in"] for r in period)
+            total = fresh + cached
+            return round(100.0 * cached / total, 1) if total else 0.0
+
+        groups = []
+        for key in sorted(by_group):
+            calls = by_group[key]
+            n = len(calls)
+            recent_n = min(CACHE_HEALTH_RECENT_CALLS, n)
+            recent = calls[n - recent_n:]
+            baseline = calls[: n - recent_n]
+
+            baseline_hit_pct = hit_pct(baseline)
+            recent_hit_pct = hit_pct(recent)
+
+            if len(baseline) < CACHE_HEALTH_MIN_CALLS or len(recent) < CACHE_HEALTH_MIN_CALLS:
+                status = "insufficient_data"
+            elif baseline_hit_pct <= CACHE_HEALTH_FLOOR_PCT:
+                status = "no_cache_support"
+            elif recent_hit_pct < baseline_hit_pct * CACHE_HEALTH_REGRESSION_RATIO:
+                status = "regressed"
+            else:
+                status = "ok"
+
+            groups.append({
+                "group": key,
+                "status": status,
+                "baseline_calls": len(baseline),
+                "recent_calls": len(recent),
+                "baseline_hit_pct": baseline_hit_pct,
+                "recent_hit_pct": recent_hit_pct,
+            })
+
+        if any(g["status"] == "regressed" for g in groups):
+            overall = "regressed"
+        elif not groups or all(g["status"] == "insufficient_data" for g in groups):
+            overall = "insufficient_data"
+        elif all(g["status"] in ("no_cache_support", "insufficient_data") for g in groups):
+            overall = "no_cache_support"
+        else:
+            overall = "ok"
+
+        return {"status": overall, "group_by": group_by, "groups": groups}
 
     # ---------------- events / escalations / trips ----------------
 

@@ -27,12 +27,15 @@ network, a subscription, or a model.
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from .contracts import (
+    AttemptSummary,
     Budget,
     FailureClass,
     JobSpec,
@@ -53,6 +56,7 @@ from .core.timing import Phase, SpanStore
 from .core.verify import GateResult, MergeGate, run_security
 from .economy.avoidance import AvoidanceLog, AvoidanceMethod
 from .economy.lowerer import Operation, classify, savings_estimate
+from .economy.preflight import count_tokens
 from .economy.reducer import reduce_generic, reduce_pytest
 
 from .events import EventLog, EventType
@@ -129,6 +133,69 @@ class ForgeResult(BaseModel):
         return round(self.spend_usd / self.accepted, 4) if self.accepted else None
 
 
+# Hard cap, in tokens, on the WHOLE attempt-history block carried into a retry
+# prompt. Carrying the full prior transcript would fix the "worker repeats the
+# same mistake" problem too, but at unbounded cost; this caps it. Enforced by
+# dropping whole older `AttemptSummary` entries (newest-first), never by
+# editing the text kept in one -- see `_cap_attempt_history`.
+ATTEMPT_HISTORY_MAX_TOKENS = 300
+
+
+def _attempt_summary(attempt_no: int, result: ExecutionResult, evidence: str,
+                      kept_lines: list[str]) -> AttemptSummary:
+    """One failed attempt, compacted for the next retry -- every piece verbatim.
+
+    `evidence` is already the reducer-augmented text `_run_task` builds before
+    this is called; `kept_lines` are the reducer's own verbatim FAILED
+    lines/test ids (see `economy.reducer.reduce_pytest`/`reduce_generic`).
+    Nothing here re-parses raw output or rewrites a single word of it -- that
+    would be a second reducer, and it would risk exactly what arXiv:2607.12161
+    measured: rewording or trimming an error string/test node id makes the next
+    attempt unable to match its fix against the failure, which raised billed
+    cost AND lowered success rate in that study. Reuse, never re-derive.
+    """
+    parts: list[str] = []
+    if result.blocker:
+        parts.append(result.blocker.strip())
+    stripped_evidence = evidence.strip() if evidence else ""
+    if stripped_evidence and stripped_evidence not in parts:
+        parts.append(stripped_evidence)
+    for line in kept_lines:  # exact FAILED test ids / error text, already deduplicated
+        if line and line not in parts:
+            parts.append(line)
+    if result.tests is not None and not result.tests.green:
+        test_str = f"tests: {result.tests}"
+        if test_str not in parts:
+            parts.append(test_str)
+    reason = "\n".join(parts) if parts else "no evidence reported"
+    return AttemptSummary(
+        attempt=attempt_no,
+        failure_class=result.failure.value if result.failure else "",
+        reason=reason,
+    )
+
+
+def _cap_attempt_history(
+    history: list[AttemptSummary], *, max_tokens: int = ATTEMPT_HISTORY_MAX_TOKENS
+) -> list[AttemptSummary]:
+    """Keep as many of the newest (front of list) entries as fit under `max_tokens`.
+
+    Always keeps at least the single newest entry, even if it alone exceeds
+    the cap: a truncated anchor is worse than a large but intact one (the same
+    finding as `_attempt_summary`'s docstring). Compression beyond that point
+    means dropping whole older entries wholesale, never shortening one.
+    """
+    kept: list[AttemptSummary] = []
+    used = 0
+    for item in history:  # newest-first already
+        cost = count_tokens(f"attempt {item.attempt} [{item.failure_class}]: {item.reason}").tokens
+        if kept and used + cost > max_tokens:
+            break
+        kept.append(item)
+        used += cost
+    return kept
+
+
 class Forge:
     """The assembled harness. One object, one loop, every part wired."""
 
@@ -169,6 +236,18 @@ class Forge:
         self.merge_gate = MergeGate()
         self.max_attempts = max_attempts
 
+        # Concurrency plumbing for `run`. The SQLite stores are already opened
+        # with check_same_thread=False; what they cannot protect is the
+        # scheduler's in-memory `_active` dict and multi-step read-then-act
+        # sequences (capacity check → lease acquisition, budget read → refusal).
+        # One lock serialises all of that bookkeeping; worker executions — the
+        # minutes-long part — run outside it, so the lock costs microseconds and
+        # buys away every torn read. `_trip` is how the first thread to see a
+        # governor trip stops the others from spending through it.
+        self._sched_lock = threading.Lock()
+        self._trip = threading.Event()
+        self._trip_reason = ""
+
     def close(self) -> None:
         for store in (self.ledger, self.events, self.leases, self.avoidance, self.spans):
             try:
@@ -197,6 +276,8 @@ class Forge:
         do the work cheaply, never a substitute for doing it.
         """
         self._operations = operations or {}
+        self._trip.clear()
+        self._trip_reason = ""
         job = JobSpec(objective=objective, cwd=cwd,
                       budget=budget or Budget(max_usd=20.0, max_seconds=7200,
                                               max_iterations=60))
@@ -215,61 +296,125 @@ class Forge:
             if t.depends_on:
                 dependencies.setdefault(t.id, []).extend(t.depends_on)
 
-        while True:
-            # The operator's kill switch. The dashboard writes this flag; if nothing
-            # reads it the button is decoration on a screen someone is watching
-            # precisely because they want the spending to stop.
-            if self._halted(job.id):
-                halted = "halted by operator"
-                break
+        # The job runs in waves. Each wave submits the WHOLE ready set to a pool
+        # holding `max_parallel` threads: the pool keeps exactly that many tasks in
+        # flight and refills a slot the moment a task finishes, so independent
+        # tasks saturate capacity with no convoy inside the wave. Readiness is
+        # recomputed at wave boundaries — the only points where dependency states
+        # change — and the wave boundary is also where the governor, the operator
+        # halt flag and heartbeat expiry get their say. Expiry between waves (never
+        # during one) means a live thread can never have its leases reclaimed out
+        # from under it: anything still in `_active` after a wave drains is a
+        # leaked assignment with no thread behind it, which is exactly what expiry
+        # exists to collect.
+        with ThreadPoolExecutor(
+            max_workers=max(1, self.scheduler.max_parallel),
+            thread_name_prefix="forge-wave",
+        ) as pool:
+            while True:
+                # The operator's kill switch. The dashboard writes this flag; if
+                # nothing reads it the button is decoration on a screen someone is
+                # watching precisely because they want the spending to stop.
+                if self._halted(job.id):
+                    halted = "halted by operator"
+                    break
 
-            # Reclaim slots from workers that went silent. Without this a single
-            # task reporting BLOCKED holds its assignment forever; on a machine
-            # where execution capacity is 1, every later task then fails "no
-            # capacity" and one approval-blocked task kills the whole job.
-            self.scheduler.expire_heartbeats()
+                # Reclaim slots from workers that went silent. Without this a
+                # single task reporting BLOCKED holds its assignment forever; on a
+                # machine where execution capacity is 1, every later task then
+                # fails "no capacity" and one approval-blocked task kills the job.
+                with self._sched_lock:
+                    self.scheduler.expire_heartbeats()
 
-            job_decision = self.governor.check_job(job.id)
-            if job_decision.action is Action.TRIP:
-                halted = f"governor: {job_decision.reason}"
-                break
+                job_decision = self.governor.check_job(job.id)
+                if job_decision.action is Action.TRIP:
+                    halted = f"governor: {job_decision.reason}"
+                    break
 
-            ready = self.scheduler.ready_tasks(job.id, dependencies)
-            if not ready:
-                break
+                ready = self.scheduler.ready_tasks(job.id, dependencies)
+                if not ready:
+                    break
 
-            progressed = False
-            for task_id in ready:
-                spec = next((t for t in tasks if t.id == task_id), None)
-                if spec is None:
-                    continue
-                outcome = self._run_task(job, spec, executor, reviewer)
-                if outcome is None:
-                    continue  # deferred by resource pressure; try again next pass
-                outcomes.append(outcome)
-                progressed = True
+                wave: list[tuple[TaskSpec, Future]] = []
+                for task_id in ready:
+                    spec = next((t for t in tasks if t.id == task_id), None)
+                    if spec is None:
+                        continue
+                    wave.append((spec, pool.submit(self._run_task_guarded, job,
+                                                   spec, executor, reviewer)))
 
-                # Every finished task MUST leave the ready set. Without this a task
-                # that ends unaccepted without a state change (no capable worker, a
-                # refused merge) is handed back by ready_tasks forever, and because
-                # an outcome was produced the loop reads it as progress — an
-                # infinite loop that looks like work.
-                state = TaskState(self.ledger.task(spec.id)["state"])
-                if state not in (TaskState.DONE, TaskState.FAILED, TaskState.PAUSED):
-                    self.ledger.set_task_state(
-                        spec.id, TaskState.DONE if outcome.accepted else TaskState.FAILED
-                    )
+                # Collect in SUBMISSION order, not completion order. Completion
+                # order is scheduling noise; a result list that reorders between
+                # identical runs makes every downstream comparison flaky.
+                progressed = False
+                for spec, future in wave:
+                    outcome = future.result()
+                    if outcome is None:
+                        # Deferred: resource pressure, a lease held by a task
+                        # still in flight, or a governor trip observed elsewhere.
+                        # The task never ran, so it stays QUEUED for the next
+                        # wave rather than being fabricated into a failure.
+                        continue
+                    outcomes.append(outcome)
+                    progressed = True
 
-            if not progressed:
-                # Nothing ran: every remaining task is blocked on a lease, a
-                # capability gap, or a failed dependency. Spinning here would be a
-                # busy-loop, so report rather than retry forever.
-                blocked = self.scheduler.blocked_tasks(job.id, dependencies)
-                halted = f"no runnable task; blocked: {blocked}" if blocked else "no runnable task"
-                break
+                    # Every finished task MUST leave the ready set. Without this a
+                    # task that ends unaccepted without a state change (no capable
+                    # worker, a refused merge) is handed back by ready_tasks
+                    # forever, and because an outcome was produced the loop reads
+                    # it as progress — an infinite loop that looks like work.
+                    state = TaskState(self.ledger.task(spec.id)["state"])
+                    if state not in (TaskState.DONE, TaskState.FAILED, TaskState.PAUSED):
+                        self.ledger.set_task_state(
+                            spec.id, TaskState.DONE if outcome.accepted else TaskState.FAILED
+                        )
+
+                if self._trip.is_set():
+                    # One thread observed a governor trip. The whole job stops:
+                    # tasks in flight were drained above, tasks not yet started
+                    # were refused by the same flag inside _run_task, and no new
+                    # wave begins. A budget trip seen by one thread while the
+                    # others kept spending would make the cap decorative.
+                    halted = f"governor: {self._trip_reason}"
+                    break
+
+                if not progressed:
+                    # Nothing ran: every remaining task is blocked on a lease, a
+                    # capability gap, or a failed dependency. Spinning here would
+                    # be a busy-loop, so report rather than retry forever.
+                    blocked = self.scheduler.blocked_tasks(job.id, dependencies)
+                    halted = f"no runnable task; blocked: {blocked}" if blocked else "no runnable task"
+                    break
 
         self.ledger.close_job(job.id, TaskState.DONE if not halted else TaskState.PAUSED)
         return self._result(job, objective, outcomes, halted)
+
+    def _run_task_guarded(self, job: JobSpec, spec: TaskSpec, executor: Executor,
+                          reviewer: Executor | None) -> TaskOutcome | None:
+        """`_run_task` plus the two guarantees threading adds.
+
+        An exception in a worker thread must surface as a FAILED outcome — a task
+        that simply vanishes from the results is the worst failure shape a
+        parallel wave can produce. And the crashed task must not abscond with its
+        leases, or one bad adapter would wedge every later wave that touches the
+        same paths. No retry here on purpose: a crash is a harness bug, not a
+        model failure, and burning the remaining attempts on it buys nothing.
+        """
+        try:
+            return self._run_task(job, spec, executor, reviewer)
+        except Exception as exc:  # noqa: BLE001 — the alternative is a vanished task
+            reason = f"worker thread raised {type(exc).__name__}: {exc}"
+            try:
+                with self._sched_lock:
+                    self.scheduler.report(
+                        WorkerReport(task_id=spec.id, worker_id="forge.thread",
+                                     state=TaskState.FAILED, blocker=reason),
+                        job_id=job.id, budget=spec.budget,
+                    )
+            except Exception:
+                pass  # release was best-effort; the outcome below still records the crash
+            return TaskOutcome(task_id=spec.id, subject=spec.subject,
+                               accepted=False, reason=reason)
 
     # ------------------------------------------------------------- one task
 
@@ -279,26 +424,45 @@ class Forge:
         tier_used: int | None = None
         worker_id = ""
         merge_reasons: list[str] = []
+        # Newest-first record of this task's own failed attempts, fed into the
+        # next attempt's prompt (tail-only, see _build_prompt) so a retry does
+        # not pay for and repeat the identical mistake. Empty on attempt 1,
+        # which is what keeps attempt 1 byte-identical to a task with no retry
+        # machinery at all.
+        attempt_history: list[AttemptSummary] = []
 
         # Rung 0: record whether a deterministic strategy exists. This never
         # short-circuits the task — see _note_lowering.
-        self._note_lowering(job, spec)
+        with self._sched_lock:
+            self._note_lowering(job, spec)
 
         while attempts < self.max_attempts:
+            # A trip observed by ANY thread stops everyone. Budget exhaustion seen
+            # by one worker must not be spent through by the rest of the wave, so
+            # this is checked before every attempt begins. Deferring (None) rather
+            # than fabricating a FAILED outcome keeps the task honestly QUEUED —
+            # it never ran.
+            if self._trip.is_set():
+                return None
+
             # --- pressure: never start local work the machine cannot hold ----
             pressure = sample_pressure()
-            if not self.resources.may_start(WorkerKind.EXECUTION, self.scheduler.active_count,
-                                            pressure):
-                if self.scheduler.active_count == 0:
+            with self._sched_lock:
+                active = self.scheduler.active_count
+            if not self.resources.may_start(WorkerKind.EXECUTION, active, pressure):
+                if active == 0:
                     # Nothing running and still no room: proceed rather than
                     # deadlock. Refusing forever is worse than one tight run.
                     pass
                 else:
+                    # Pressure refusals shrink concurrency, they never fail work:
+                    # the task waits for a later wave instead of running anyway.
                     return None
 
             # --- route: cheapest tier that can finish, priced by the market ---
-            stats = {r["worker_id"]: r
-                     for r in self.ledger.worker_stats(spec.capabilities)}
+            with self._sched_lock:
+                stats = {r["worker_id"]: r
+                         for r in self.ledger.worker_stats(spec.capabilities)}
             route = self.router.route(
                 spec.capabilities,
                 stats=stats,
@@ -312,21 +476,37 @@ class Forge:
 
             if route.tier is Tier.DETERMINISTIC:
                 # Rung 0: ordinary code did it. The largest saving available.
-                self.ledger.set_task_state(spec.id, TaskState.DONE)
-                self.events.append(job.id, EventType.TASK_ACCEPTED, task_id=spec.id,
-                                   reason="handled deterministically")
+                with self._sched_lock:
+                    self.ledger.set_task_state(spec.id, TaskState.DONE)
+                    self.events.append(job.id, EventType.TASK_ACCEPTED, task_id=spec.id,
+                                       reason="handled deterministically")
                 return TaskOutcome(task_id=spec.id, subject=spec.subject, accepted=True,
                                    tier=tier_used, reason=route.reason, attempts=attempts)
 
             # --- assign: takes path leases, refuses on collision -------------
-            asn = self.scheduler.assign(job.id, spec.id,
-                                        needs_file_edits=bool(spec.scope.paths))
+            # The router is the single decision-maker: the scheduler binds
+            # capacity and leases to the router's worker rather than running a
+            # second selection. Two independent selections recorded the router's
+            # tier against the scheduler's worker — a (worker, tier) pair no
+            # decision ever produced, poisoning every stat keyed on it.
+            with self._sched_lock:
+                asn = self.scheduler.assign(job.id, spec.id,
+                                            needs_file_edits=bool(spec.scope.paths),
+                                            worker_id=route.worker_id or None)
+                if asn is None:
+                    collision = self.board.would_collide(spec.scope.paths, "default",
+                                                         task_id=spec.id)
+                    contended = collision.collides or self.scheduler.at_capacity()
             if asn is None:
-                collision = self.board.would_collide(spec.scope.paths, "default",
-                                                     task_id=spec.id)
+                if contended:
+                    # Another task holds the lease (or every slot). The lease is
+                    # the safety mechanism: a task that cannot get its paths WAITS
+                    # for a later wave — it never runs anyway, and it is not a
+                    # failure. The holder releases at report time, so the next
+                    # wave retries against a settled board.
+                    return None
                 return TaskOutcome(task_id=spec.id, subject=spec.subject, accepted=False,
-                                   reason=f"blocked: {collision.suggestion}"
-                                          if collision.collides else "no capacity",
+                                   reason="scheduler refused the assignment",
                                    attempts=attempts)
             worker_id = asn.worker_id
             attempts += 1
@@ -335,16 +515,18 @@ class Forge:
             # A ledger check after the fact can only report an overspend; it can
             # never prevent one. Checking here is the difference between a cap and
             # a tripwire.
-            job_row = self.ledger.job(job.id)
-            remaining = int(job_row["max_usd_micros"]) - self.ledger.job_spend_micros(job.id)
-            task_remaining = spec.budget.max_usd_micros - self.ledger.task_spend_micros(spec.id)
+            with self._sched_lock:
+                job_row = self.ledger.job(job.id)
+                remaining = int(job_row["max_usd_micros"]) - self.ledger.job_spend_micros(job.id)
+                task_remaining = spec.budget.max_usd_micros - self.ledger.task_spend_micros(spec.id)
             headroom = min(remaining, task_remaining)
             if headroom <= 0:
-                self.scheduler.report(
-                    WorkerReport(task_id=spec.id, worker_id=worker_id,
-                                 state=TaskState.PAUSED, blocker="budget exhausted"),
-                    job_id=job.id, budget=spec.budget,
-                )
+                with self._sched_lock:
+                    self.scheduler.report(
+                        WorkerReport(task_id=spec.id, worker_id=worker_id,
+                                     state=TaskState.PAUSED, blocker="budget exhausted"),
+                        job_id=job.id, budget=spec.budget,
+                    )
                 return TaskOutcome(
                     task_id=spec.id, subject=spec.subject, accepted=False,
                     worker_id=worker_id, tier=tier_used, attempts=attempts,
@@ -353,30 +535,57 @@ class Forge:
                 )
 
             # --- execute -----------------------------------------------------
+            # Attempt 1 always sends `spec` itself, untouched -- no copy, no
+            # possible byte difference from a task with no retry history.
+            # Attempt 2+ sends a derived copy carrying the capped history;
+            # `spec` (the canonical object used for routing, leases, ledger
+            # keys, budget checks above and below) is never mutated.
+            task_for_attempt = spec
+            if attempt_history:
+                task_for_attempt = spec.model_copy(
+                    update={"attempt_history": _cap_attempt_history(attempt_history)}
+                )
             with self.spans.measure(job.id, Phase.MODEL_REASONING, task_id=spec.id):
-                result = executor(spec, worker_id)
+                result = executor(task_for_attempt, worker_id)
 
             # An unmetered adapter must never read as free. Subscription CLIs
-            # (omc team, jcode, codex) expose no token or dollar figure at all, so
+            # (omc team, codex) expose no token or dollar figure at all, so
             # they report 0 — and a ledger of zeros makes the USD ceiling
             # unenforceable while the dashboard cheerfully shows $0.00. Charge the
             # tier prior instead, flagged as an estimate, so the governor still has
             # something to stop.
+            #
+            # Some transports write to the ledger *themselves* before returning
+            # (`Gateway.complete`'s invariant 4). For those the call is already
+            # banked, and recording it here bills the same money twice: the budget
+            # trips at half the real ceiling and every receipt reads double.
+            # Observed live — one DeepSeek task produced two identical 145 µ$ rows,
+            # one written by the gateway and one written here.
+            #
+            # "Reported zero" and "reported a real figure that is already banked"
+            # are different states, so the unmetered fallback has to be skipped for
+            # the second one too. Otherwise a paid API worker is charged its true
+            # spend by the transport AND a tier prior by us, on the same call.
+            already_recorded = getattr(result, "spend_already_recorded", False)
             charged = result.usd_micros
             profile = self.registry.get(worker_id)
             estimated = False
-            if charged == 0 and profile is not None and profile.tier is not CostTier.FREE:
-                charged = profile.prior_micros
-                estimated = True
-            self.ledger.record_spend(
-                job.id, worker_id, route.worker_id or worker_id, charged,
-                task_id=spec.id, tokens_in=result.tokens_in,
-                tokens_out=result.tokens_out, tokens_cached_in=result.tokens_cached_in,
-                kind="estimate" if estimated else "call",
-            )
+            if not already_recorded:
+                if charged == 0 and profile is not None and profile.tier is not CostTier.FREE:
+                    charged = profile.prior_micros
+                    estimated = True
+                with self._sched_lock:
+                    self.ledger.record_spend(
+                        job.id, worker_id, route.worker_id or worker_id, charged,
+                        task_id=spec.id, tokens_in=result.tokens_in,
+                        tokens_out=result.tokens_out,
+                        tokens_cached_in=result.tokens_cached_in,
+                        kind="estimate" if estimated else "call",
+                    )
 
             # --- reduce output BEFORE any model sees it ----------------------
             evidence = result.evidence
+            kept_lines: list[str] = []  # exact FAILED/error lines, for a retry's history
             if result.raw_output:
                 # Choose the reducer by what the output actually is. Running the
                 # pytest reducer over cargo/jest/gradle output yields the sentinel
@@ -386,17 +595,19 @@ class Forge:
                 raw = result.raw_output
                 reduced = (reduce_pytest(raw) if _looks_like_pytest(raw)
                            else reduce_generic(raw))
+                kept_lines = reduced.kept_lines
                 # Never let a reducer summary replace real evidence; augment it.
                 evidence = f"{evidence} | {reduced.summary}".strip(" |") if evidence \
                     else reduced.summary
                 if reduced.saved_tokens > 0:
-                    self.avoidance.record(
-                        job_id=job.id, task_id=spec.id,
-                        method=AvoidanceMethod.DETERMINISTIC,
-                        baseline_tokens=reduced.original_tokens_estimate,
-                        actual_tokens=reduced.reduced_tokens_estimate,
-                        baseline_source="tiktoken estimate of the raw tool output",
-                    )
+                    with self._sched_lock:
+                        self.avoidance.record(
+                            job_id=job.id, task_id=spec.id,
+                            method=AvoidanceMethod.DETERMINISTIC,
+                            baseline_tokens=reduced.original_tokens_estimate,
+                            actual_tokens=reduced.reduced_tokens_estimate,
+                            baseline_source="tiktoken estimate of the raw tool output",
+                        )
 
             report = WorkerReport(
                 task_id=spec.id, worker_id=worker_id, state=result.state,
@@ -407,7 +618,14 @@ class Forge:
                 usd_micros=result.usd_micros, seconds=result.seconds,
                 verdict=Verdict.PASS if result.state is TaskState.DONE else None,
             )
-            decision = self.scheduler.report(report, job_id=job.id, budget=spec.budget)
+            with self._sched_lock:
+                decision = self.scheduler.report(report, job_id=job.id, budget=spec.budget)
+                if decision.action is Action.TRIP and not self._trip.is_set():
+                    # First observer wins; the reason recorded is the one that
+                    # actually stopped the job. Every other thread reads the flag
+                    # at its next attempt boundary and stands down.
+                    self._trip_reason = decision.reason
+                    self._trip.set()
 
             if decision.action is Action.TRIP:
                 return TaskOutcome(task_id=spec.id, subject=spec.subject, accepted=False,
@@ -426,6 +644,7 @@ class Forge:
                                f"{self.governor.remedy_for(result.failure, attempts, self.max_attempts).value}",
                         usd_micros=self.ledger.task_spend_micros(spec.id),
                     )
+                attempt_history.insert(0, _attempt_summary(attempts, result, evidence, kept_lines))
                 continue  # model failure: retry, router may escalate the tier
 
             # --- security: scan the real diff, never assert a pass ------------
@@ -448,12 +667,17 @@ class Forge:
                     # Record BEFORE the result is used. An unrecorded call is an
                     # invisible call, and review is often the most expensive worker
                     # in the job — omitting it understates cost per accepted task.
-                    self.ledger.record_spend(
-                        job.id, reviewer_worker, "review", rev.usd_micros,
-                        task_id=spec.id, tokens_in=rev.tokens_in,
-                        tokens_out=rev.tokens_out,
-                        tokens_cached_in=rev.tokens_cached_in,
-                    )
+                    # Unless the transport already banked it, in which case
+                    # recording again double-bills the review exactly as it would
+                    # double-bill the implementation.
+                    if not getattr(rev, "spend_already_recorded", False):
+                        with self._sched_lock:
+                            self.ledger.record_spend(
+                                job.id, reviewer_worker, "review", rev.usd_micros,
+                                task_id=spec.id, tokens_in=rev.tokens_in,
+                                tokens_out=rev.tokens_out,
+                                tokens_cached_in=rev.tokens_cached_in,
+                            )
                     review_verdict = "pass" if rev.state is TaskState.DONE else "fail"
 
             verdict = self.merge_gate.evaluate(
@@ -465,6 +689,38 @@ class Forge:
                 reviewer_worker=reviewer_worker, implementer_worker=worker_id,
             )
             merge_reasons = verdict.reasons
+
+            # The merge gate is the only thing that may declare a task accepted.
+            # The scheduler emits TASK_COMPLETED when a worker claims success;
+            # this is where that claim is either ratified or refused.
+            with self._sched_lock:
+                self.events.append(
+                    job.id,
+                    EventType.TASK_ACCEPTED if verdict.allowed else EventType.TASK_REJECTED,
+                    task_id=spec.id,
+                    reason="merge gate allowed" if verdict.allowed
+                    else "; ".join(merge_reasons)[:400],
+                )
+                # And the gate gets the last word on the worker's record. Win rate
+                # is scored from the FINAL report per (worker, task), and a worker
+                # reporting DONE on work the gate then refused was counting as a
+                # 100% win — which is the number the router learns from, so it
+                # would keep preferring workers whose output never merges. Same
+                # self-flattery as counting unmerged work as accepted, one level
+                # down where it is harder to see.
+                self.ledger.record_report(
+                    WorkerReport(
+                        task_id=spec.id,
+                        worker_id=worker_id,
+                        state=TaskState.DONE if verdict.allowed else TaskState.FAILED,
+                        verdict=Verdict.PASS if verdict.allowed else Verdict.FAIL,
+                        summary="merge gate ruling",
+                        blocker="" if verdict.allowed else "; ".join(merge_reasons)[:300],
+                        # Spend is already recorded above; repeating it here would
+                        # double the per-task average this same table feeds.
+                        usd_micros=0,
+                    )
+                )
 
             return TaskOutcome(
                 task_id=spec.id, subject=spec.subject, accepted=verdict.allowed,

@@ -145,6 +145,25 @@ class Budget(BaseModel):
         return to_micros(self.max_usd)
 
 
+class AttemptSummary(BaseModel):
+    """One prior attempt's outcome, compact enough to carry into a retry prompt
+    without re-inflating the context `economy.reducer` already shrank.
+
+    `reason` must be exact text lifted from what the worker/reducer already
+    produced (blocker, reduced evidence, verbatim FAILED lines) -- never
+    reworded and never truncated mid-token. Stripping or paraphrasing exactly
+    this kind of anchor (error text, file:line, test node ids) has been
+    measured to *raise* billed cost and *lower* task success, because the next
+    attempt can no longer match its fix against the failure (arXiv:2607.12161).
+    Compression happens only by dropping whole older `AttemptSummary` entries
+    (see `forge._cap_attempt_history`), never by editing what one entry says.
+    """
+
+    attempt: int
+    failure_class: str = ""
+    reason: str = ""
+
+
 class TaskSpec(BaseModel):
     """One unit of delegated work.
 
@@ -163,6 +182,10 @@ class TaskSpec(BaseModel):
     parent_id: str | None = None
     depends_on: list[str] = Field(default_factory=list)
     created_at: float = Field(default_factory=now)
+    # Newest-first, hard-capped record of prior failed attempts on THIS task.
+    # Empty on a first attempt, which is what keeps `_build_prompt` byte-identical
+    # to a task with no retry history at all -- see hive/adapters/executor.py.
+    attempt_history: list[AttemptSummary] = Field(default_factory=list)
 
     @field_validator("subject", "description")
     @classmethod
