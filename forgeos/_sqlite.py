@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -106,6 +107,25 @@ class GuardedConnection:
             return bool(self._conn.__exit__(exc_type, exc, tb))
         finally:
             self._lock.release()
+
+    @contextmanager
+    def exclusive(self):
+        """Hold the lock across a whole check-then-act sequence.
+
+        `execute` serialises individual statements, which is NOT enough for a
+        read-then-write decision: two threads can each run the SELECT, each see
+        no conflict, and each then run the INSERT. `LeaseStore.acquire` failed
+        exactly that way under 16 threads — two tasks granted the same WRITE
+        lease on the same path, which is the one thing path leases exist to
+        prevent.
+
+        Deliberately NOT `with conn:`. That is a transaction, and the methods
+        this wraps already open their own transactions internally; nesting them
+        would let an inner `__exit__` commit the outer one early. Mutual
+        exclusion is what this needs, so mutual exclusion is all it takes.
+        """
+        with self._lock:
+            yield self
 
     # -- statements -------------------------------------------------------
 

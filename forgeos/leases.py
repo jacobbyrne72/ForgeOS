@@ -206,33 +206,41 @@ class LeaseStore:
         without sleeping or mocking the clock.
         """
         lease_type = LeaseType(lease_type)
-        self.expire_stale()
 
-        own = [
-            lease
-            for lease in self.active(repo_id=repo_id)
-            if lease.task_id == task_id
-            and patterns_overlap(lease.path_pattern, path_pattern)
-        ]
-        if own:
-            return own[0]  # re-acquiring your own overlapping lease is a no-op, not a conflict
+        # The entire decision runs under one lock. Checking for conflicts and
+        # then inserting are two statements, and serialising them individually
+        # is not enough: two threads can each read "no conflict" before either
+        # writes, and both are then granted the same WRITE lease. Observed with
+        # 16 threads racing one path — two tasks granted, which is precisely the
+        # corruption path leases exist to prevent. Every guard here is only as
+        # strong as the window between reading it and acting on it.
+        with self._conn.exclusive():
 
-        blockers = [lease for lease in self.conflicts(repo_id, path_pattern, lease_type)
-                    if lease.task_id != task_id]
-        if blockers:
-            return None
+            own = [
+                lease
+                for lease in self.active(repo_id=repo_id)
+                if lease.task_id == task_id
+                and patterns_overlap(lease.path_pattern, path_pattern)
+            ]
+            if own:
+                return own[0]  # re-acquiring your own overlapping lease is a no-op, not a conflict
 
-        at = time.time()
-        lease = Lease(
-            task_id=task_id,
-            repo_id=repo_id,
-            path_pattern=path_pattern,
-            lease_type=lease_type,
-            acquired_at=at,
-            expires_at=at + ttl_seconds,
-        )
-        self._insert(lease)
-        return lease
+            blockers = [lease for lease in self.conflicts(repo_id, path_pattern, lease_type)
+                        if lease.task_id != task_id]
+            if blockers:
+                return None
+
+            at = time.time()
+            lease = Lease(
+                task_id=task_id,
+                repo_id=repo_id,
+                path_pattern=path_pattern,
+                lease_type=lease_type,
+                acquired_at=at,
+                expires_at=at + ttl_seconds,
+            )
+            self._insert(lease)
+            return lease
 
     def release(self, lease_id: str) -> None:
         with self._conn:
