@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from hive.leases import LeaseStore, LeaseType, patterns_overlap
+from forgeos.leases import LeaseStore, LeaseType, patterns_overlap
 
 
 # ------------------------------------------------------------ patterns_overlap

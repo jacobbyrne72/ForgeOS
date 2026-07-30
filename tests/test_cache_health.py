@@ -1,6 +1,6 @@
 """Cache-hit regression detection (`Ledger.cache_health`).
 
-The failure this guards against is silent: hive assembles every prompt
+The failure this guards against is silent: forgeos assembles every prompt
 prefix-then-tail so a provider can serve the cached portion at roughly a
 tenth the price. If anything perturbs the prefix, the cache-hit rate drops
 to zero with no error and no test failure -- the bill just gets bigger.
@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import pytest
 
-from hive.contracts import JobSpec
-from hive.ledger import (
+from forgeos.contracts import JobSpec
+from forgeos.ledger import (
     CACHE_HEALTH_FLOOR_PCT,
     CACHE_HEALTH_MIN_CALLS,
     CACHE_HEALTH_RECENT_CALLS,
@@ -201,7 +201,7 @@ def test_job_id_filters_to_that_job_only(led):
 
 def test_estimate_kind_rows_do_not_influence_the_verdict(led, job):
     """`kind='estimate'` rows are the tier-prior charge for an unmetered
-    subscription worker (hive/forge.py `_run_task`) -- they never carry real
+    subscription worker (forgeos/forge.py `_run_task`) -- they never carry real
     provider usage and must not drag a genuine cache signal toward false
     alarm or false comfort."""
     n = CACHE_HEALTH_RECENT_CALLS + CACHE_HEALTH_MIN_CALLS
@@ -219,7 +219,7 @@ def test_estimate_kind_rows_do_not_influence_the_verdict(led, job):
 
 
 def test_dashboard_economy_endpoint_reports_cache_health_zeroed_not_absent(tmp_path):
-    from hive.dashboard.app import LEDGER_DB, create_app
+    from forgeos.dashboard.app import LEDGER_DB, create_app
     from fastapi.testclient import TestClient
 
     state_dir = tmp_path / "state"
@@ -235,7 +235,7 @@ def test_dashboard_economy_endpoint_reports_cache_health_zeroed_not_absent(tmp_p
 
 
 def test_dashboard_economy_endpoint_reports_a_seeded_regression(tmp_path):
-    from hive.dashboard.app import LEDGER_DB, create_app
+    from forgeos.dashboard.app import LEDGER_DB, create_app
     from fastapi.testclient import TestClient
 
     state_dir = tmp_path / "state"

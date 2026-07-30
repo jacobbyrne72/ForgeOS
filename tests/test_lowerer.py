@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from hive.economy.avoidance import AvoidanceLog, AvoidanceMethod
-from hive.economy.lowerer import (
+from forgeos.economy.avoidance import AvoidanceLog, AvoidanceMethod
+from forgeos.economy.lowerer import (
     EXCEPTION_RATE_MAX,
     HANDFUL,
     MIN_ITEMS_TO_LOWER,

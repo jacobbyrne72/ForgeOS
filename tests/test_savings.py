@@ -10,9 +10,9 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from hive.core.timing import Phase, SpanStore
-from hive.economy.avoidance import AvoidanceLog, AvoidanceMethod
-from hive.economy.savings import (
+from forgeos.core.timing import Phase, SpanStore
+from forgeos.economy.avoidance import AvoidanceLog, AvoidanceMethod
+from forgeos.economy.savings import (
     Baseline,
     CounterfactualPlan,
     Figure,
@@ -24,8 +24,8 @@ from hive.economy.savings import (
     savings_pct,
     verify_proof,
 )
-from hive.events import EventLog, EventType
-from hive.ledger import Ledger
+from forgeos.events import EventLog, EventType
+from forgeos.ledger import Ledger
 
 # --------------------------------------------------------------- fixtures
 

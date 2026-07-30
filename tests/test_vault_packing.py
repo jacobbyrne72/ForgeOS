@@ -1,6 +1,6 @@
 """Vault + packing tests.
 
-Portability is the theme for the vault half: hive must work identically on a machine
+Portability is the theme for the vault half: forgeos must work identically on a machine
 that has never installed Obsidian, codex-brain, or Hermes. A tool that only runs on
 its author's laptop is not open source in any useful sense.
 """
@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-from hive.economy.packing import (
+from forgeos.economy.packing import (
     BOUNDARY_RE,
     MAX_SOURCES,
     MAX_SOURCES_PER_DIR,
@@ -26,14 +26,14 @@ from hive.economy.packing import (
     next_reads,
     spend,
 )
-from hive.knowledge.vault import (
+from forgeos.knowledge.vault import (
     SUBDIRS,
     VAULT_ENV,
     Vault,
     obsidian_vaults,
     resolve_vault_path,
 )
-from hive.policy import pack_command, ripper_command
+from forgeos.policy import pack_command, ripper_command
 
 
 # ============================================================== portability
@@ -41,7 +41,7 @@ from hive.policy import pack_command, ripper_command
 
 def test_ripper_command_degrades_to_builtin_advice_without_the_external_tool(monkeypatch):
     """Suggesting a command that does not exist reads as a broken tool, not a rule."""
-    monkeypatch.setenv("HIVE_DIGEST_TOOL", "")
+    monkeypatch.setenv("FORGEOS_DIGEST_TOOL", "")
     monkeypatch.setattr(os.path, "expanduser", lambda p: "/nonexistent" + p.lstrip("~"))
     cmd = ripper_command("big.py")
     assert "digest.py" not in cmd
@@ -49,7 +49,7 @@ def test_ripper_command_degrades_to_builtin_advice_without_the_external_tool(mon
 
 
 def test_pack_command_degrades_to_ripgrep(monkeypatch):
-    monkeypatch.setenv("HIVE_PACK_TOOL", "")
+    monkeypatch.setenv("FORGEOS_PACK_TOOL", "")
     monkeypatch.setattr(os.path, "expanduser", lambda p: "/nonexistent" + p.lstrip("~"))
     assert "rg " in pack_command("find the retry parser")
 
@@ -57,7 +57,7 @@ def test_pack_command_degrades_to_ripgrep(monkeypatch):
 def test_configured_digest_tool_is_used_when_present(monkeypatch, tmp_path):
     tool = tmp_path / "digest.py"
     tool.write_text("# stub", encoding="utf-8")
-    monkeypatch.setenv("HIVE_DIGEST_TOOL", str(tool))
+    monkeypatch.setenv("FORGEOS_DIGEST_TOOL", str(tool))
     assert str(tool) in ripper_command("big.py")
 
 
@@ -67,7 +67,7 @@ def test_no_authors_home_directory_is_hardcoded_anywhere():
     import pathlib
 
     offenders = []
-    for p in pathlib.Path("hive").rglob("*.py"):
+    for p in pathlib.Path("forgeos").rglob("*.py"):
         text = p.read_text(encoding="utf-8", errors="replace").lower()
         if "users\\\\byrne" in text or "users/byrne" in text:
             offenders.append(str(p))
@@ -102,22 +102,22 @@ def test_explicit_argument_beats_the_env_var(monkeypatch, tmp_path):
 
 
 def test_falls_back_to_a_plain_folder_without_obsidian(monkeypatch):
-    """hive must not require a GUI app to store markdown."""
+    """forgeos must not require a GUI app to store markdown."""
     monkeypatch.delenv(VAULT_ENV, raising=False)
-    monkeypatch.setattr("hive.knowledge.vault.obsidian_vaults", lambda: [])
+    monkeypatch.setattr("forgeos.knowledge.vault.obsidian_vaults", lambda: [])
     path, source, managed = resolve_vault_path()
     assert source == "default"
     assert managed is False
-    assert ".hive" in str(path)
+    assert ".forgeos" in str(path)
 
 
 def test_existing_obsidian_vault_is_used_as_a_subfolder(monkeypatch, tmp_path):
     """Notes land where the human already looks — but never scattered through
     a vault root they have organised themselves."""
     monkeypatch.delenv(VAULT_ENV, raising=False)
-    monkeypatch.setattr("hive.knowledge.vault.obsidian_vaults", lambda: [tmp_path / "MyNotes"])
+    monkeypatch.setattr("forgeos.knowledge.vault.obsidian_vaults", lambda: [tmp_path / "MyNotes"])
     path, source, managed = resolve_vault_path()
-    assert path == tmp_path / "MyNotes" / "hive"
+    assert path == tmp_path / "MyNotes" / "forgeos"
     assert source == "obsidian"
     assert managed is True
 
@@ -126,7 +126,7 @@ def test_malformed_obsidian_config_is_not_fatal(monkeypatch, tmp_path):
     cfg = tmp_path / "obsidian.json"
     cfg.write_text("{not valid json", encoding="utf-8")
     monkeypatch.setattr(
-        "hive.knowledge.vault._OBSIDIAN_CONFIG",
+        "forgeos.knowledge.vault._OBSIDIAN_CONFIG",
         {__import__("platform").system(): str(cfg)},
     )
     assert obsidian_vaults() == []
@@ -141,7 +141,7 @@ def test_obsidian_config_listing_skips_vaults_that_no_longer_exist(monkeypatch, 
         "b": {"path": str(tmp_path / "deleted"), "ts": 9},
     }}), encoding="utf-8")
     monkeypatch.setattr(
-        "hive.knowledge.vault._OBSIDIAN_CONFIG",
+        "forgeos.knowledge.vault._OBSIDIAN_CONFIG",
         {__import__("platform").system(): str(cfg)},
     )
     assert obsidian_vaults() == [real]

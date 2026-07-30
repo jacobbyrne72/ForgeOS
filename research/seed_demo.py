@@ -1,4 +1,4 @@
-"""Seed a realistic job into the hive stores so the dashboard renders populated.
+"""Seed a realistic job into the forgeos stores so the dashboard renders populated.
 
 Uses only the real modules and real code paths — no fixture JSON. If the dashboard
 looks right on this data, it looks right on production data, because it is the same
@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from hive.contracts import (
+from forgeos.contracts import (
     Budget,
     Escalation,
     EscalationKind,
@@ -23,15 +23,15 @@ from hive.contracts import (
     WorkerReport,
     to_micros,
 )
-from hive.core.governor import Governor
-from hive.core.scheduler import Scheduler
-from hive.economy.avoidance import AvoidanceLog, AvoidanceMethod
-from hive.events import EventLog
-from hive.leases import LeaseStore
-from hive.ledger import Ledger
-from hive.registry import default_registry
+from forgeos.core.governor import Governor
+from forgeos.core.scheduler import Scheduler
+from forgeos.economy.avoidance import AvoidanceLog, AvoidanceMethod
+from forgeos.events import EventLog
+from forgeos.leases import LeaseStore
+from forgeos.ledger import Ledger
+from forgeos.registry import default_registry
 
-HOME = Path(os.path.expanduser("~/.hive"))
+HOME = Path(os.path.expanduser("~/.forgeos"))
 
 
 def main() -> int:
@@ -53,11 +53,11 @@ def main() -> int:
 
     tasks = [
         TaskSpec(job_id=job.id, subject="Map retry call paths", description="Locate parse_retry_after and callers.",
-                 capabilities=["search", "locate"], scope=Scope(paths=["hive/gateway/"]),
+                 capabilities=["search", "locate"], scope=Scope(paths=["forgeos/gateway/"]),
                  acceptance=["callers listed with file:line"]),
         TaskSpec(job_id=job.id, subject="Normalise Retry-After parsing",
                  description="Support integer seconds and HTTP-date; malformed falls back to backoff.",
-                 capabilities=["edit", "python", "mechanical"], scope=Scope(paths=["hive/gateway/health.py"]),
+                 capabilities=["edit", "python", "mechanical"], scope=Scope(paths=["forgeos/gateway/health.py"]),
                  acceptance=["pytest tests/test_gateway.py -q passes"], budget=Budget(max_usd=2.0)),
         TaskSpec(job_id=job.id, subject="Regression test for malformed values",
                  description="Add one test per malformed shape.", capabilities=["test", "python"],
@@ -83,7 +83,7 @@ def main() -> int:
                             usd_micros=0, seconds=11.0), job_id=job.id)
     av.record(job_id=job.id, task_id=scout.id, method=AvoidanceMethod.PACK,
               baseline_tokens=48120, actual_tokens=6400,
-              baseline_source="tiktoken count of full hive/gateway/ tree")
+              baseline_source="tiktoken count of full forgeos/gateway/ tree")
 
     # --- implementer: one failed attempt, then green ---------------------
     b = sch.assign(job.id, impl.id)
@@ -92,7 +92,7 @@ def main() -> int:
                      tokens_in=9200, tokens_cached_in=21400, tokens_out=2600)
     sch.report(WorkerReport(task_id=impl.id, worker_id=wid, state=TaskState.BLOCKED,
                             confidence=0.55, goal="Normalise Retry-After parsing",
-                            files_touched=["hive/gateway/health.py"],
+                            files_touched=["forgeos/gateway/health.py"],
                             commands_run=["pytest tests/test_gateway.py -q"],
                             evidence="1 failed, 12 passed",
                             tests=TestResults(passed=12, failed=1),
@@ -112,7 +112,7 @@ def main() -> int:
     sch.report(WorkerReport(task_id=impl.id, worker_id=wid, state=TaskState.DONE,
                             verdict=Verdict.PASS, confidence=0.92,
                             goal="Normalise Retry-After parsing",
-                            files_touched=["hive/gateway/health.py"],
+                            files_touched=["forgeos/gateway/health.py"],
                             commands_run=["pytest tests/test_gateway.py -q"],
                             evidence="13 passed", tests=TestResults(passed=13, failed=0),
                             tokens_in=3100, tokens_out=1500, usd_micros=to_micros(0.31),

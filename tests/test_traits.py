@@ -14,8 +14,8 @@ import re
 
 import pytest
 
-from hive.core.router import DEFAULT_EFFORT, MAX_OUTPUT_BY_EFFORT, ReasoningEffort
-from hive.models.traits import (
+from forgeos.core.router import DEFAULT_EFFORT, MAX_OUTPUT_BY_EFFORT, ReasoningEffort
+from forgeos.models.traits import (
     SEED_MODEL_PROFILES,
     ModelProfile,
     Tendency,
@@ -103,7 +103,7 @@ def test_measured_overrides_documented_for_same_tendency():
                 tendency=Tendency.IGNORES_SCHEMA,
                 evidence=TraitEvidence.MEASURED,
                 note="this harness measured it directly",
-                source="hive ledger",
+                source="forgeos ledger",
             ),
         ],
     )
@@ -245,7 +245,7 @@ def test_discipline_instructions_are_brief():
 
 
 def test_discipline_instructions_empty_when_nothing_is_flagged():
-    from hive.models.traits import PromptDiscipline
+    from forgeos.models.traits import PromptDiscipline
 
     bare = PromptDiscipline()
     assert discipline_instructions(bare) == []

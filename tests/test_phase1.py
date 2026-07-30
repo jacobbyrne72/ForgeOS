@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from hive.contracts import (
+from forgeos.contracts import (
     Budget,
     Escalation,
     EscalationKind,
@@ -18,8 +18,8 @@ from hive.contracts import (
     from_micros,
     to_micros,
 )
-from hive.ledger import Ledger
-from hive.registry import (
+from forgeos.ledger import Ledger
+from forgeos.registry import (
     MIN_ATTEMPTS_TO_TRUST,
     TIER_PRIOR_MICROS,
     Adapter,
@@ -67,11 +67,11 @@ def test_jobspec_rejects_blank_objective():
 
 
 def test_scope_covers_handles_windows_and_posix_separators():
-    scope = Scope(paths=["hive/core", "tests"])
-    assert scope.covers("hive/core/router.py")
-    assert scope.covers("hive\\core\\router.py")
+    scope = Scope(paths=["forgeos/core", "tests"])
+    assert scope.covers("forgeos/core/router.py")
+    assert scope.covers("forgeos\\core\\router.py")
     assert scope.covers("./tests/test_phase1.py")
-    assert not scope.covers("hive/dashboard/app.py")
+    assert not scope.covers("forgeos/dashboard/app.py")
 
 
 def test_empty_scope_covers_nothing():
@@ -132,14 +132,14 @@ def test_add_task_persists_scope_and_budget(led, job):
         job_id=job.id,
         subject="s",
         description="d",
-        scope=Scope(paths=["hive"]),
+        scope=Scope(paths=["forgeos"]),
         budget=Budget(max_usd=1.5),
         capabilities=["python", "edit"],
     )
     led.add_task(t)
     row = led.task(t.id)
     assert row["state"] == "pending"
-    assert "hive" in row["scope"]
+    assert "forgeos" in row["scope"]
     assert "1.5" in row["budget"]
 
 
@@ -400,7 +400,7 @@ def test_default_fleet_sends_mechanical_edits_to_the_cheapest_worker_that_can_ed
 def test_default_fleet_still_reaches_premium_for_architecture():
     reg = default_registry()
     pick = reg.pick(["architecture", "design"])
-    assert pick.worker.worker_id == "hive.architect"
+    assert pick.worker.worker_id == "forgeos.architect"
 
 
 def test_default_fleet_ids_are_unique():
@@ -415,7 +415,7 @@ def test_default_fleet_ids_are_unique():
 def test_cached_input_is_priced_at_the_cache_rate_not_the_fresh_rate():
     """The whole savings claim depends on this. Pricing cached tokens at the fresh
     rate would make the biggest lever in the harness report zero dollars saved."""
-    from hive.catalog import ModelCard
+    from forgeos.catalog import ModelCard
 
     card = ModelCard(
         model_id="m", provider="p",
@@ -430,7 +430,7 @@ def test_cached_input_is_priced_at_the_cache_rate_not_the_fresh_rate():
 def test_missing_cache_price_falls_back_to_fresh_and_never_understates():
     """A conservative fallback can only make an estimate too high, never let a
     budget check pass when it should have failed."""
-    from hive.catalog import ModelCard
+    from forgeos.catalog import ModelCard
 
     card = ModelCard(model_id="m", provider="p", input_cost_per_1m=2.0, output_cost_per_1m=4.0)
     assert card.cache_read_rate == 2.0
@@ -440,7 +440,7 @@ def test_missing_cache_price_falls_back_to_fresh_and_never_understates():
 
 def test_real_catalog_actually_carries_cache_prices():
     """Guards against a schema change silently zeroing the discount."""
-    from hive.catalog import default_catalog
+    from forgeos.catalog import default_catalog
 
     cat = default_catalog()
     if len(cat) == 0:

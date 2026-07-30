@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from hive.contracts import (
+from forgeos.contracts import (
     Budget,
     FailureClass,
     JobSpec,
@@ -19,9 +19,9 @@ from hive.contracts import (
     WorkerReport,
     to_micros,
 )
-from hive.core.governor import Action, Governor, Remedy
-from hive.events import EventLog, EventType
-from hive.ledger import Ledger
+from forgeos.core.governor import Action, Governor, Remedy
+from forgeos.events import EventLog, EventType
+from forgeos.ledger import Ledger
 
 
 @pytest.fixture()

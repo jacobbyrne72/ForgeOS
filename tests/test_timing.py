@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-import hive.core.timing as timing
-from hive.core.timing import Attribution, Phase, PhaseTotal, Span, SpanStore, TaskTotal
+import forgeos.core.timing as timing
+from forgeos.core.timing import Attribution, Phase, PhaseTotal, Span, SpanStore, TaskTotal
 
 T0 = 1_700_000_000.0
 

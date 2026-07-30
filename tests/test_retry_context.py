@@ -1,6 +1,6 @@
 """Compressed retry context: a failed attempt's compact history fed into the
-next attempt's prompt (`hive/forge.py` `_attempt_summary`/`_cap_attempt_history`,
-`hive/adapters/executor.py` `_build_prompt`).
+next attempt's prompt (`forgeos/forge.py` `_attempt_summary`/`_cap_attempt_history`,
+`forgeos/adapters/executor.py` `_build_prompt`).
 
 Two guarantees matter more than the feature itself:
 
@@ -23,8 +23,8 @@ from __future__ import annotations
 
 import pytest
 
-from hive.adapters.executor import _build_prompt
-from hive.contracts import (
+from forgeos.adapters.executor import _build_prompt
+from forgeos.contracts import (
     AttemptSummary,
     Budget,
     FailureClass,
@@ -33,21 +33,21 @@ from hive.contracts import (
     TaskState,
     TestResults,
 )
-from hive.economy.reducer import reduce_pytest
-from hive.forge import (
+from forgeos.economy.reducer import reduce_pytest
+from forgeos.forge import (
     ATTEMPT_HISTORY_MAX_TOKENS,
     ExecutionResult,
     Forge,
     _attempt_summary,
     _cap_attempt_history,
 )
-from hive.registry import Adapter, CostTier, Registry, WorkerProfile
+from forgeos.registry import Adapter, CostTier, Registry, WorkerProfile
 
 
 def _fleet() -> Registry:
     # Two workers, not one: the merge gate requires an independent reviewer
     # (a genuinely different worker_id), and a one-worker fleet can never
-    # supply one -- see hive.forge.Forge._pick_reviewer.
+    # supply one -- see forgeos.forge.Forge._pick_reviewer.
     return Registry([
         WorkerProfile(worker_id="free.local", adapter=Adapter.OLLAMA, tier=CostTier.FREE,
                       capabilities={"edit", "python", "mechanical"}, can_edit_files=True,
@@ -67,7 +67,7 @@ def _task(subject="fix the flaky retry test") -> TaskSpec:
 
 @pytest.fixture()
 def forge(tmp_path):
-    f = Forge(home=tmp_path / "hive", registry=_fleet(), max_attempts=3)
+    f = Forge(home=tmp_path / "forgeos", registry=_fleet(), max_attempts=3)
     yield f
     f.close()
 

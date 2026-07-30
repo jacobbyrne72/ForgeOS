@@ -22,7 +22,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 API = "http://export.arxiv.org/api/query"
-OUT = Path(r"C:\Users\byrne\Downloads\hive\research\papers")
+OUT = Path(r"C:\Users\byrne\Downloads\forgeos\research\papers")
 RATE_LIMIT_SECONDS = 3.1  # arXiv asks for 1 request per 3 seconds
 
 QUERIES: dict[str, str] = {
@@ -56,7 +56,7 @@ def fetch(query: str, max_results: int = 40) -> list[dict]:
             "sortOrder": "descending",
         }
     )
-    req = urllib.request.Request(f"{API}?{params}", headers={"User-Agent": "hive-research/0.1"})
+    req = urllib.request.Request(f"{API}?{params}", headers={"User-Agent": "forgeos-research/0.1"})
     with urllib.request.urlopen(req, timeout=60) as r:  # noqa: S310 - fixed arXiv host
         root = ET.fromstring(r.read())
 

@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import pytest
 
-from hive.catalog import Catalog, ModelCard
-from hive.contracts import Budget, JobSpec
-from hive.gateway.client import (
+from forgeos.catalog import Catalog, ModelCard
+from forgeos.contracts import Budget, JobSpec
+from forgeos.gateway.client import (
     Gateway,
     GatewayRequest,
     ModelUnavailableError,
@@ -28,8 +28,8 @@ from hive.gateway.client import (
     TransportError,
     default_transports,
 )
-from hive.ledger import open_ledger
-from hive.settings import AuthMode, Provider, ProviderKind, Settings, default_settings
+from forgeos.ledger import open_ledger
+from forgeos.settings import AuthMode, Provider, ProviderKind, Settings, default_settings
 
 
 def _card(ref: str) -> ModelCard:

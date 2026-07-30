@@ -1,4 +1,4 @@
-"""Tests for `hive.adapters.discovery`.
+"""Tests for `forgeos.adapters.discovery`.
 
 No CLI vendor binary is ever invoked for real: `discovery.subprocess.run` and
 `discovery.shutil.which` are the exact seams this module uses to reach a
@@ -13,9 +13,9 @@ import json
 import subprocess
 
 
-from hive.adapters import discovery
-from hive.adapters.base import WorkerCapabilities
-from hive.adapters.discovery import (
+from forgeos.adapters import discovery
+from forgeos.adapters.base import WorkerCapabilities
+from forgeos.adapters.discovery import (
     McpServer,
     ProbeCache,
     ToolProbe,

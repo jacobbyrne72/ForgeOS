@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from hive.core.quota import (
+from forgeos.core.quota import (
     CONFIRM_AFTER_RESET_SECONDS,
     PROBE_BACKOFF_SECONDS,
     QuotaSource,

@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import pytest
 
-from hive.contracts import Budget, FailureClass, Scope, TaskSpec, TaskState, TestResults
-from hive.core.market import CapacityMarket, Entitlement, Forecast, TelemetrySource
-from hive.forge import ExecutionResult, Forge
-from hive.registry import Adapter, CostTier, Registry, WorkerProfile
+from forgeos.contracts import Budget, FailureClass, Scope, TaskSpec, TaskState, TestResults
+from forgeos.core.market import CapacityMarket, Entitlement, Forecast, TelemetrySource
+from forgeos.forge import ExecutionResult, Forge
+from forgeos.registry import Adapter, CostTier, Registry, WorkerProfile
 
 
 def _fleet() -> Registry:
@@ -32,7 +32,7 @@ def _fleet() -> Registry:
 
 @pytest.fixture()
 def forge(tmp_path):
-    f = Forge(home=tmp_path / "hive", registry=_fleet(), max_attempts=3)
+    f = Forge(home=tmp_path / "forgeos", registry=_fleet(), max_attempts=3)
     yield f
     f.close()
 
@@ -244,7 +244,7 @@ def test_forge_imports_and_wires_the_whole_stack():
     """
     import pathlib
 
-    src = pathlib.Path("hive/forge.py").read_text(encoding="utf-8")
+    src = pathlib.Path("forgeos/forge.py").read_text(encoding="utf-8")
     for part in ("awareness", "governor", "market", "resources", "router",
                  "scheduler", "timing", "verify", "avoidance", "reducer",
                  "events", "leases", "ledger", "registry", "settings"):
@@ -253,7 +253,7 @@ def test_forge_imports_and_wires_the_whole_stack():
 
 def test_doctor_reports_the_real_machine(forge):
     text = forge.doctor()
-    assert "hive doctor" in text
+    assert "forgeos doctor" in text
     assert "pools" in text and "providers" in text
     assert "reasoning=" in text
 
@@ -283,7 +283,7 @@ def test_max_parallel_is_sized_to_this_machine(forge):
 
 
 def _bulk_op(count=20_000, desc="find all import statements across the repository"):
-    from hive.economy.lowerer import Operation
+    from forgeos.economy.lowerer import Operation
 
     return Operation(description=desc, item_count=count,
                      per_item_tokens_estimate=120,
@@ -311,7 +311,7 @@ def test_lowering_never_short_circuits_the_work(forge):
 
 def test_a_reasoning_operation_is_never_lowered(forge):
     """'Decide whether this architecture is sound' is not algorithmic."""
-    from hive.economy.lowerer import Operation
+    from forgeos.economy.lowerer import Operation
 
     ran = {"n": 0}
 

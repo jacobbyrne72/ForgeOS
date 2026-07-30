@@ -1,10 +1,10 @@
-# AGENTS.md — hive
+# AGENTS.md — forgeos
 
 Read this first. It overrides everything else.
 
-**Scope: hive is domain-agnostic.** It is a token-efficient coding harness and nothing else. Never
+**Scope: forgeos is domain-agnostic.** It is a token-efficient coding harness and nothing else. Never
 hardcode a domain into it — no trading, no finance, no vocabulary from whatever repo it happens to be
-pointed at. hive is the tool that builds those projects; it is not one of them. A domain-specific
+pointed at. forgeos is the tool that builds those projects; it is not one of them. A domain-specific
 default here is a bug, and it is how general infrastructure quietly rots into one project's script.
 
 ## HARD RULES
@@ -28,7 +28,7 @@ default here is a bug, and it is how general infrastructure quietly rots into on
    looks done. No "should work". Paste the command and its real output.
 7. **Irreversible or outward-facing actions need explicit human approval.** Pushes, merges to a
    default branch, deploys, deletes, secret access, paid-API escalation, and any command that leaves
-   this machine. hive is domain-agnostic infrastructure — it does not know what the repo it is
+   this machine. forgeos is domain-agnostic infrastructure — it does not know what the repo it is
    pointed at controls, so it must assume the blast radius is real. No override flag.
 8. **Report failure faithfully.** If tests fail, say so with the output. If you skipped part of the
    scope, say which part and why. A false green is worse than a red.
@@ -48,14 +48,15 @@ default here is a bug, and it is how general infrastructure quietly rots into on
 
 | Path | Owns |
 |---|---|
-| `hive/contracts.py` | Every schema crossing a process boundary. Change here ripples — update tests. |
-| `hive/ledger.py` | SQLite truth: jobs, tasks, events, spend, reports, escalations. |
-| `hive/registry.py` | Worker capabilities + measured track record. |
-| `hive/core/router.py` | Picks workers. Emits `agentTypes` for the omc adapter. |
-| `hive/core/manager.py` | Decompose → assign → verify → loop. Cheap model, tight schemas. |
-| `hive/core/governor.py` | Caps and loop detection. The brake. |
-| `hive/adapters/` | One file per execution backend. omc team, litellm API. |
-| `hive/dashboard/` | FastAPI + WS. Localhost bind only. |
+| `forgeos/contracts.py` | Every schema crossing a process boundary. Change here ripples — update tests. |
+| `forgeos/ledger.py` | SQLite truth: jobs, tasks, events, spend, reports, escalations. |
+| `forgeos/registry.py` | Worker capabilities + measured track record. |
+| `forgeos/core/router.py` | Picks workers. Emits `agentTypes` for the omc adapter. |
+| `forgeos/core/manager.py` | Decompose → assign → verify → loop. Cheap model, tight schemas. |
+| `forgeos/core/governor.py` | Caps and loop detection. The brake. |
+| `forgeos/adapters/` | One file per execution backend. omc team, ollama, gateway. |
+| `forgeos/adapters/factory.py` + `routed.py` | Profile → live adapter → the default `Forge.run` executor. |
+| `forgeos/dashboard/` | FastAPI + WS. Localhost bind only. |
 
 ## Money model
 
@@ -72,7 +73,7 @@ rtk proxy python -m pytest tests -q -m "not slow"
 # At the merge boundary — everything, including the real-subprocess integrations.
 rtk proxy python -m pytest tests -q
 
-python -m hive.dashboard.app       # localhost:8899
+python -m forgeos.dashboard.app       # localhost:8899
 ```
 
 **Use `rtk proxy`.** RTK's pytest matcher on this machine reports "No tests collected"
@@ -80,9 +81,9 @@ even on a successful run and swallows warnings — verified 2026-07-30. Plain
 `python -m pytest` will lie to you about whether the suite passed.
 
 **Check pressure before running the suite while agents are working.**
-`python -c "from hive.core.resources import sample_pressure; print(sample_pressure().action)"`
+`python -c "from forgeos.core.resources import sample_pressure; print(sample_pressure().action)"`
 The suite is execution work. Running it at 100% CPU alongside worker agents turns a
-15-second run into minutes, which is the exact contention `hive/core/resources.py`
+15-second run into minutes, which is the exact contention `forgeos/core/resources.py`
 separates the reasoning and execution pools to avoid.
 
 ## omc integration facts (verified 2026-07-30, omc 4.15.7)

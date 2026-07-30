@@ -1,6 +1,6 @@
 """The stores must survive being used from several threads at once.
 
-Before `hive/_sqlite.py`, every store shared one `sqlite3.Connection` opened with
+Before `forgeos/_sqlite.py`, every store shared one `sqlite3.Connection` opened with
 `check_same_thread=False` — a flag that disables Python's thread-affinity *check*
 and nothing else. That was harmless while tasks ran one at a time. Once the Forge
 began executing the ready set in a thread pool it became live, and it presented
@@ -34,11 +34,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from hive._sqlite import connect as guarded_connect
-from hive.contracts import Budget, JobSpec, TaskSpec, TaskState, WorkerReport
-from hive.events import EventLog, EventType
-from hive.leases import LeaseStore, LeaseType
-from hive.ledger import Ledger
+from forgeos._sqlite import connect as guarded_connect
+from forgeos.contracts import Budget, JobSpec, TaskSpec, TaskState, WorkerReport
+from forgeos.events import EventLog, EventType
+from forgeos.leases import LeaseStore, LeaseType
+from forgeos.ledger import Ledger
 
 THREADS = 8
 PER_THREAD = 25

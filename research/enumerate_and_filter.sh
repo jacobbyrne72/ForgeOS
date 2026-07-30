@@ -3,7 +3,7 @@
 # then emit just the matching video ids. Fetching transcripts for everything a
 # channel ever posted would be exactly the waste this harness exists to prevent.
 set -u
-R=/c/Users/byrne/Downloads/hive/research
+R=/c/Users/byrne/Downloads/forgeos/research
 OUT=$R/matched_ids.txt
 RAW=$R/enumerated.tsv
 : > "$RAW"

@@ -1,6 +1,6 @@
-"""Tests for `hive/adapters/cli_team.py` (`OMCTeamAdapter`).
+"""Tests for `forgeos/adapters/cli_team.py` (`OMCTeamAdapter`).
 
-Entirely subprocess-driven and entirely mocked: `hive.adapters.cli_team._spawn`
+Entirely subprocess-driven and entirely mocked: `forgeos.adapters.cli_team._spawn`
 is the exact seam this adapter uses to reach `node`, so every test substitutes
 it directly (same isolation pattern as `tests/test_local_adapters.py`'s
 `_spawn` seams for `jcode.py`/`ollama.py`, and `tests/test_adapters.py`'s
@@ -20,9 +20,9 @@ from typing import Any
 
 import pytest
 
-from hive.adapters import cli_team as cli_team_adapter
-from hive.adapters.base import EventKind, WorkerAdapter, WorkerCapabilities, WorkerUsage
-from hive.adapters.cli_team import OMCTeamAdapter
+from forgeos.adapters import cli_team as cli_team_adapter
+from forgeos.adapters.base import EventKind, WorkerAdapter, WorkerCapabilities, WorkerUsage
+from forgeos.adapters.cli_team import OMCTeamAdapter
 
 
 def run(coro):
@@ -480,7 +480,7 @@ def test_resume_restores_state_and_a_later_send_polls_the_same_job(monkeypatch):
     monkeypatch.setattr(cli_team_adapter, "_spawn", spawn2)
 
     resumed_id = run(adapter.resume(checkpoint))
-    assert resumed_id != session_id  # a fresh hive-side session_id, honestly
+    assert resumed_id != session_id  # a fresh forgeos-side session_id, honestly
 
     events = run(_collect(adapter.send(resumed_id, "continue")))
 

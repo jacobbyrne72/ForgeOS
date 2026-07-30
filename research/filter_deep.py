@@ -16,7 +16,7 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-R = Path(r"C:\Users\byrne\Downloads\hive\research")
+R = Path(r"C:\Users\byrne\Downloads\forgeos\research")
 RAW = R / "enumerated_deep.tsv"
 
 # channel -> (quota, technical_layer). Quota reflects signal density, not volume.

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from hive.core.market import (
+from forgeos.core.market import (
     MIN_CONFIDENCE_TO_PRICE,
     URGENCY_WINDOW_SECONDS,
     CapacityMarket,

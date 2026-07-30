@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from hive.economy.avoidance import AvoidanceLog, AvoidanceMethod
-from hive.economy.reducer import Failure, ReducedOutput, reduce_generic, reduce_pytest
-from hive.economy.testselect import Level, Selection, TestGraph, next_level
+from forgeos.economy.avoidance import AvoidanceLog, AvoidanceMethod
+from forgeos.economy.reducer import Failure, ReducedOutput, reduce_generic, reduce_pytest
+from forgeos.economy.testselect import Level, Selection, TestGraph, next_level
 
 # ------------------------------------------------------------- pytest fixture
 
@@ -23,7 +23,7 @@ def _build_realistic_pytest_log(n_dup: int = 400) -> tuple[str, list[str]]:
     lines: list[str] = []
     lines.append("============================= test session starts ==============================")
     lines.append("platform win32 -- Python 3.11.9, pytest-9.0.3, pluggy-1.4.0")
-    lines.append("rootdir: C:/Users/byrne/Downloads/hive")
+    lines.append("rootdir: C:/Users/byrne/Downloads/forgeos")
     lines.append(f"collected {n_dup + 6} items")
     lines.append("")
 
@@ -279,7 +279,7 @@ def test_level_for_config_demands_integration():
 
 def test_level_for_ordinary_source_edit_is_direct():
     g = TestGraph()
-    assert g.level_for(["hive/economy/reducer.py"]) == Level.DIRECT
+    assert g.level_for(["forgeos/economy/reducer.py"]) == Level.DIRECT
 
 
 def test_level_for_no_changes_is_syntax():
@@ -289,14 +289,14 @@ def test_level_for_no_changes_is_syntax():
 
 def test_level_for_lockfile_outranks_a_single_function_edit():
     g = TestGraph()
-    assert g.level_for(["hive/economy/reducer.py"]) < g.level_for(["uv.lock"])
+    assert g.level_for(["forgeos/economy/reducer.py"]) < g.level_for(["uv.lock"])
 
 
 def test_tests_for_maps_files_and_symbols():
     g = TestGraph()
-    g.register_file("hive/economy/reducer.py", ["tests/test_reducer.py::test_a"])
+    g.register_file("forgeos/economy/reducer.py", ["tests/test_reducer.py::test_a"])
     g.register_symbol("reduce_pytest", "tests/test_reducer.py::test_b")
-    assert g.tests_for(["hive/economy/reducer.py"], ["reduce_pytest"]) == [
+    assert g.tests_for(["forgeos/economy/reducer.py"], ["reduce_pytest"]) == [
         "tests/test_reducer.py::test_a",
         "tests/test_reducer.py::test_b",
     ]
@@ -304,14 +304,14 @@ def test_tests_for_maps_files_and_symbols():
 
 def test_tests_for_normalizes_path_separators():
     g = TestGraph()
-    g.register_file("hive/economy/reducer.py", "t1")
-    assert g.tests_for(["hive\\economy\\reducer.py"]) == ["t1"]
+    g.register_file("forgeos/economy/reducer.py", "t1")
+    assert g.tests_for(["forgeos\\economy\\reducer.py"]) == ["t1"]
 
 
 def test_select_direct_returns_mapped_tests():
     g = TestGraph()
-    g.register_file("hive/economy/reducer.py", ["tests/test_reducer.py::test_a"])
-    sel = g.select(["hive/economy/reducer.py"], level=Level.DIRECT)
+    g.register_file("forgeos/economy/reducer.py", ["tests/test_reducer.py::test_a"])
+    sel = g.select(["forgeos/economy/reducer.py"], level=Level.DIRECT)
     assert isinstance(sel, Selection)
     assert sel.level == Level.DIRECT
     assert sel.tests == ["tests/test_reducer.py::test_a"]
@@ -321,8 +321,8 @@ def test_select_direct_returns_mapped_tests():
 
 def test_unknown_file_escalates_to_package_using_sibling_tests():
     g = TestGraph()
-    g.register_file("hive/economy/preflight.py", ["tests/test_economy.py::test_x"])
-    sel = g.select(["hive/economy/reducer.py"], level=Level.DIRECT)  # same package, no direct mapping
+    g.register_file("forgeos/economy/preflight.py", ["tests/test_economy.py::test_x"])
+    sel = g.select(["forgeos/economy/reducer.py"], level=Level.DIRECT)  # same package, no direct mapping
     assert sel.escalated
     assert sel.level == Level.PACKAGE
     assert sel.tests == ["tests/test_economy.py::test_x"]

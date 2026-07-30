@@ -16,8 +16,8 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from hive.contracts import FailureClass
-from hive.core.manager import Manager, ManagerDecision, ManagerVerdict, wake_triggers
+from forgeos.contracts import FailureClass
+from forgeos.core.manager import Manager, ManagerDecision, ManagerVerdict, wake_triggers
 
 
 def clean_heartbeat(**overrides) -> dict:

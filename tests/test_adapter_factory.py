@@ -1,4 +1,4 @@
-"""Tests for `hive/adapters/factory.py`.
+"""Tests for `forgeos/adapters/factory.py`.
 
 The property under test is refusal, not construction. Anyone can build an object;
 the thing that matters is that a machine which cannot run a backend gets told so,
@@ -12,8 +12,8 @@ a worker that never ran the task.
 
 from __future__ import annotations
 
-from hive.adapters.factory import build_adapter, runnable_workers
-from hive.registry import Adapter, CostTier, WorkerProfile, default_registry
+from forgeos.adapters.factory import build_adapter, runnable_workers
+from forgeos.registry import Adapter, CostTier, WorkerProfile, default_registry
 
 
 def _profile(adapter: Adapter, **kw) -> WorkerProfile:
@@ -102,7 +102,7 @@ def test_a_backend_whose_health_check_raises_is_unavailable_not_a_crash():
         def health(self):
             raise RuntimeError("kaboom")
 
-    import hive.adapters.factory as factory
+    import forgeos.adapters.factory as factory
 
     original = factory._construct
     factory._construct = lambda p, **kw: (Exploding(), "built")
@@ -141,7 +141,7 @@ def test_every_adapter_enum_member_has_an_implementation_branch():
 
 def test_every_worker_in_the_default_fleet_names_a_buildable_adapter():
     """Not that every worker runs here — that every worker *could*, given its
-    backend. A fleet entry whose adapter has no code is a promise hive cannot
+    backend. A fleet entry whose adapter has no code is a promise forgeos cannot
     keep regardless of what is installed."""
     orphans = []
     for p in default_registry().all():

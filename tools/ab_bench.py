@@ -4,7 +4,7 @@ Same question, same model, same provider, same pricing code. The only difference
 is what happens *around* the call:
 
     baseline   dump every candidate file into the prompt, ask, take the answer
-    hive       rank and pack a bounded capsule, byte-stable prefix, capped output
+    forgeos       rank and pack a bounded capsule, byte-stable prefix, capped output
 
 Run it:
 
@@ -40,13 +40,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from hive.catalog import default_catalog  # noqa: E402
-from hive.contracts import Budget, JobSpec  # noqa: E402
-from hive.economy.capsule import CapsuleBuilder, RefKind, make_ref  # noqa: E402
-from hive.economy.preflight import count_tokens  # noqa: E402
-from hive.gateway.client import Gateway, GatewayRequest, default_transports  # noqa: E402
-from hive.ledger import open_ledger  # noqa: E402
-from hive.settings import ProviderKind, Settings  # noqa: E402
+from forgeos.catalog import default_catalog  # noqa: E402
+from forgeos.contracts import Budget, JobSpec  # noqa: E402
+from forgeos.economy.capsule import CapsuleBuilder, RefKind, make_ref  # noqa: E402
+from forgeos.economy.preflight import count_tokens  # noqa: E402
+from forgeos.gateway.client import Gateway, GatewayRequest, default_transports  # noqa: E402
+from forgeos.ledger import open_ledger  # noqa: E402
+from forgeos.settings import ProviderKind, Settings  # noqa: E402
 from live_check import load_env  # noqa: E402
 
 QUESTION = (
@@ -58,11 +58,11 @@ QUESTION = (
 # The files a person would reach for. Not the whole repo — an inflated baseline
 # would manufacture a saving rather than measure one.
 CANDIDATES = [
-    "hive/forge.py",
-    "hive/ledger.py",
-    "hive/gateway/client.py",
-    "hive/adapters/gateway_worker.py",
-    "hive/core/governor.py",
+    "forgeos/forge.py",
+    "forgeos/ledger.py",
+    "forgeos/gateway/client.py",
+    "forgeos/adapters/gateway_worker.py",
+    "forgeos/core/governor.py",
 ]
 
 CAPSULE_BUDGET_TOKENS = 1_500
@@ -214,7 +214,7 @@ def main() -> int:
     print(f"question   {QUESTION[:70]}...")
     print(f"\nprompt size")
     print(f"  baseline  {b_tok:>7,} tokens  ({len(CANDIDATES)} whole files)")
-    print(f"  hive      {h_tok:>7,} tokens  ({cap_stats['blocks_sent']} of "
+    print(f"  forgeos      {h_tok:>7,} tokens  ({cap_stats['blocks_sent']} of "
           f"{cap_stats['blocks_found']} ranked blocks, {cap_stats['blocks_dropped']} over budget)")
     if b_tok:
         print(f"  reduction {100 * (1 - h_tok / b_tok):>6.1f}%")
@@ -225,7 +225,7 @@ def main() -> int:
     gateway = Gateway(catalog=catalog, ledger=ledger, settings=settings,
                       transports=default_transports(settings))
 
-    baseline, hive = Arm("baseline"), Arm("hive")
+    baseline, forgeos = Arm("baseline"), Arm("forgeos")
 
     def call(arm: Arm, prompt: str, prefix: str = "") -> bool:
         req = GatewayRequest(model_ref=model_ref, prompt_prefix=prefix, prompt_tail=prompt,
@@ -242,22 +242,22 @@ def main() -> int:
         arm.add(resp, time.monotonic() - t0)
         return True
 
-    # hive keeps a byte-stable prefix so a provider can serve a cache hit on the
+    # forgeos keeps a byte-stable prefix so a provider can serve a cache hit on the
     # runs after the first. The baseline has no such discipline, which is the
     # point: caching is not free, it is a property you have to preserve.
-    HIVE_PREFIX = "You are answering a question about a Python codebase.\n"
+    FORGEOS_PREFIX = "You are answering a question about a Python codebase.\n"
 
     print(f"\nrunning {args.repeat} round(s)...")
     for i in range(args.repeat):
         ok_b = call(baseline, baseline_prompt)
-        ok_h = call(hive, capsule_prompt, prefix=HIVE_PREFIX)
+        ok_h = call(forgeos, capsule_prompt, prefix=FORGEOS_PREFIX)
         print(f"  round {i + 1}: baseline={'ok' if ok_b else 'failed'} "
-              f"hive={'ok' if ok_h else 'failed'}")
+              f"forgeos={'ok' if ok_h else 'failed'}")
 
     print("\n" + "=" * 74)
     print(f"{'':10} {'calls':>5} {'tok in':>9} {'cached':>8} {'tok out':>8} "
           f"{'USD':>11} {'sec':>7}")
-    for arm in (baseline, hive):
+    for arm in (baseline, forgeos):
         print(f"{arm.name:10} {arm.calls:>5} {arm.tokens_in:>9,} {arm.tokens_cached:>8,} "
               f"{arm.tokens_out:>8,} {arm.usd_micros / 1e6:>11.6f} {arm.seconds:>7.1f}")
 
@@ -273,33 +273,33 @@ def main() -> int:
     print("\nper round (cold first, then provider-cached)")
     print(f"{'round':>5} {'arm':10} {'fresh in':>9} {'cached':>8} {'out':>6} "
           f"{'USD':>10} {'hit':>4}")
-    for i in range(max(len(baseline.rounds), len(hive.rounds))):
-        for arm in (baseline, hive):
+    for i in range(max(len(baseline.rounds), len(forgeos.rounds))):
+        for arm in (baseline, forgeos):
             if i < len(arm.rounds):
                 r = arm.rounds[i]
                 print(f"{i + 1:>5} {arm.name:10} {r['in']:>9,} {r['cached']:>8,} "
                       f"{r['out']:>6,} {r['usd'] / 1e6:>10.6f} {'yes' if r['hit'] else 'no':>4}")
-        if baseline.rounds and hive.rounds and i < min(len(baseline.rounds), len(hive.rounds)):
-            b, h = baseline.rounds[i]["usd"], hive.rounds[i]["usd"]
+        if baseline.rounds and forgeos.rounds and i < min(len(baseline.rounds), len(forgeos.rounds)):
+            b, h = baseline.rounds[i]["usd"], forgeos.rounds[i]["usd"]
             if h:
                 print(f"{'':5} {'ratio':10} {b / h:>9.1f}x cheaper")
 
-    if baseline.usd_micros and hive.calls:
-        saved = 1 - (hive.usd_micros / baseline.usd_micros)
-        print(f"\ncost      hive is {saved * 100:.1f}% cheaper overall "
-              f"({baseline.usd_micros / 1e6:.6f} -> {hive.usd_micros / 1e6:.6f})")
-        if baseline.usd_micros > hive.usd_micros:
-            print(f"          {baseline.usd_micros / max(hive.usd_micros, 1):.1f}x")
-    if baseline.seconds and hive.seconds:
-        print(f"latency   {baseline.seconds:.1f}s -> {hive.seconds:.1f}s "
-              f"({(1 - hive.seconds / baseline.seconds) * 100:+.1f}%)")
+    if baseline.usd_micros and forgeos.calls:
+        saved = 1 - (forgeos.usd_micros / baseline.usd_micros)
+        print(f"\ncost      forgeos is {saved * 100:.1f}% cheaper overall "
+              f"({baseline.usd_micros / 1e6:.6f} -> {forgeos.usd_micros / 1e6:.6f})")
+        if baseline.usd_micros > forgeos.usd_micros:
+            print(f"          {baseline.usd_micros / max(forgeos.usd_micros, 1):.1f}x")
+    if baseline.seconds and forgeos.seconds:
+        print(f"latency   {baseline.seconds:.1f}s -> {forgeos.seconds:.1f}s "
+              f"({(1 - forgeos.seconds / baseline.seconds) * 100:+.1f}%)")
     print(f"cache     baseline {baseline.cache_hits}/{baseline.calls} hits, "
-          f"hive {hive.cache_hits}/{hive.calls} hits")
+          f"forgeos {forgeos.cache_hits}/{forgeos.calls} hits")
     print(f"ledger    ${ledger.job_spend_micros(job_id) / 1e6:.6f} recorded across both arms")
 
     print("\n" + "=" * 74)
     print("ANSWERS — judge these yourself; a cheaper wrong answer is not a saving.\n")
-    for arm in (baseline, hive):
+    for arm in (baseline, forgeos):
         print(f"--- {arm.name} ---")
         print(_console_safe(arm.answers[0] if arm.answers else "(no answer)"))
         print()

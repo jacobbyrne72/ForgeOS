@@ -3,7 +3,7 @@
 # TITLES ONLY — metadata is cheap, transcripts are not. Filtering happens before
 # a single transcript is fetched, which is the whole point.
 set -u
-R=/c/Users/byrne/Downloads/hive/research
+R=/c/Users/byrne/Downloads/forgeos/research
 RAW=$R/enumerated_deep.tsv
 : > "$RAW"
 DEPTH=${DEPTH:-200}

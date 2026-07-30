@@ -1,9 +1,9 @@
-"""Tests for hive/knowledge/scout.py — the skill/MCP marketplace scout.
+"""Tests for forgeos/knowledge/scout.py — the skill/MCP marketplace scout.
 
 Per AGENTS.md rule 10, an outside claim (a registry listing is exactly that)
 enters the knowledge base labelled unverified and stays that way until it
 clears the existing evidence+corroboration+contradiction gate in
-hive/knowledge/claims.py. Per this module's own security posture: a SKILL.md
+forgeos/knowledge/claims.py. Per this module's own security posture: a SKILL.md
 is not documentation, it is instructions an agent may follow, so fetched
 registry text is always treated as data, never as commands — and this module
 never installs, executes, or writes into a skills directory.
@@ -18,8 +18,8 @@ import re
 
 import pytest
 
-from hive.knowledge.claims import ClaimStore, ClaimType, VerificationStatus
-from hive.knowledge.scout import (
+from forgeos.knowledge.claims import ClaimStore, ClaimType, VerificationStatus
+from forgeos.knowledge.scout import (
     DEFAULT_REGISTRIES,
     Candidate,
     Registry,
@@ -408,7 +408,7 @@ def test_never_writes_to_a_skills_directory(tmp_path, store):
 
 
 def test_scout_module_exposes_no_install_capability():
-    import hive.knowledge.scout as scout_module
+    import forgeos.knowledge.scout as scout_module
 
     assert not hasattr(scout_module, "install")
     assert not any("install" in name.lower() for name in scout_module.__all__)

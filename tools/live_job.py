@@ -5,7 +5,7 @@ The whole chain, nothing faked:
     settings -> transport -> GatewayWorkerAdapter -> adapter_executor
       -> Forge (route, lease, execute, reduce, verify, merge gate) -> ledger
 
-Writes to `.hive/` in the current directory so the dashboard has something real
+Writes to `.forgeos/` in the current directory so the dashboard has something real
 to show. Spends real money — cents at most with the default budget, but real.
 
     python tools/live_job.py --env ~/.hermes/.env
@@ -24,14 +24,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from hive.adapters.executor import adapter_executor  # noqa: E402
-from hive.adapters.factory import build_adapter  # noqa: E402
-from hive.catalog import default_catalog  # noqa: E402
-from hive.contracts import Budget, Scope, TaskSpec  # noqa: E402
-from hive.forge import Forge  # noqa: E402
-from hive.gateway.client import Gateway, default_transports  # noqa: E402
-from hive.registry import Adapter, CostTier, Registry, WorkerProfile  # noqa: E402
-from hive.settings import ProviderKind, Settings  # noqa: E402
+from forgeos.adapters.executor import adapter_executor  # noqa: E402
+from forgeos.adapters.factory import build_adapter  # noqa: E402
+from forgeos.catalog import default_catalog  # noqa: E402
+from forgeos.contracts import Budget, Scope, TaskSpec  # noqa: E402
+from forgeos.forge import Forge  # noqa: E402
+from forgeos.gateway.client import Gateway, default_transports  # noqa: E402
+from forgeos.registry import Adapter, CostTier, Registry, WorkerProfile  # noqa: E402
+from forgeos.settings import ProviderKind, Settings  # noqa: E402
 from live_check import load_env  # noqa: E402
 
 
@@ -51,7 +51,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--env", default="~/.hermes/.env")
     ap.add_argument("--model", default="")
-    ap.add_argument("--state-dir", default=".hive")
+    ap.add_argument("--state-dir", default=".forgeos")
     ap.add_argument("--budget-usd", type=float, default=0.10)
     args = ap.parse_args()
 
@@ -161,7 +161,7 @@ def main() -> int:
     print(f"cache hit  {result.cache_hit_pct:.1f}%")
     print(f"state dir  {state_dir}")
     print("\nstart the dashboard against this run:")
-    print(f"  HIVE_STATE_DIR={state_dir} python -m hive.dashboard.app")
+    print(f"  FORGEOS_STATE_DIR={state_dir} python -m forgeos.dashboard.app")
     return 0
 
 

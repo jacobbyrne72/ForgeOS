@@ -1,4 +1,4 @@
-"""Resilience-feature tests for hive/gateway:
+"""Resilience-feature tests for forgeos/gateway:
 
 - a ledger billing gap where a response that fails to price after a
   *successful* transport call was left unrecorded (invariant 4 broken)
@@ -26,10 +26,10 @@ import time
 import httpx
 import pytest
 
-from hive.catalog import Catalog, ModelCard
-from hive.economy.avoidance import AvoidanceLog
-from hive.economy.preflight import CallRefused
-from hive.gateway.client import (
+from forgeos.catalog import Catalog, ModelCard
+from forgeos.economy.avoidance import AvoidanceLog
+from forgeos.economy.preflight import CallRefused
+from forgeos.gateway.client import (
     Gateway,
     GatewayRequest,
     HttpTransport,
@@ -38,9 +38,9 @@ from hive.gateway.client import (
     TransportError,
     rate_limit_saturation,
 )
-from hive.gateway.dead_models import DeadModelStore
-from hive.gateway.health import HealthTracker
-from hive.ledger import Ledger
+from forgeos.gateway.dead_models import DeadModelStore
+from forgeos.gateway.health import HealthTracker
+from forgeos.ledger import Ledger
 
 CARD = ModelCard(
     model_id="test-model",

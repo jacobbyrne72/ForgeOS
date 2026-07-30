@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from hive.policy import (
+from forgeos.policy import (
     MAX_UNBOUNDED_BYTES,
     Decision,
     ReadRequest,
@@ -56,7 +56,7 @@ def test_offset_zero_is_still_bounded():
 
 
 def test_small_unbounded_read_is_allowed():
-    assert check_read(_req("hive/policy.py", size_bytes=8000)).allowed
+    assert check_read(_req("forgeos/policy.py", size_bytes=8000)).allowed
 
 
 def test_file_exactly_at_the_limit_is_allowed():
@@ -163,7 +163,7 @@ def test_secret_denial_beats_the_bounded_escape_hatch():
 
 
 def test_looks_like_secret_does_not_fire_on_ordinary_names():
-    assert not looks_like_secret("hive/environment.py")
+    assert not looks_like_secret("forgeos/environment.py")
     assert not looks_like_secret("docs/keyboard.md")
     assert looks_like_secret("app/.env")
 
@@ -177,7 +177,7 @@ def test_read_payload_is_gated():
 
 
 def test_read_payload_with_range_passes():
-    d = check_tool_call("Read", {"file_path": "hive/ledger.py", "offset": 10, "limit": 40})
+    d = check_tool_call("Read", {"file_path": "forgeos/ledger.py", "offset": 10, "limit": 40})
     assert d.allowed
 
 
@@ -212,7 +212,7 @@ def test_hook_exits_2_on_a_denied_read():
 
 @pytest.mark.slow
 def test_hook_exits_0_on_an_allowed_read():
-    r = _run_hook({"tool_name": "Read", "tool_input": {"file_path": "hive/policy.py",
+    r = _run_hook({"tool_name": "Read", "tool_input": {"file_path": "forgeos/policy.py",
                                                        "offset": 1, "limit": 5}})
     assert r.returncode == 0
 

@@ -1,4 +1,6 @@
-# hive
+# ForgeOS
+
+**The operating system for cheap, fast, verified AI coding.**
 
 A cost-governed harness for AI coding agents. A deterministic kernel owns
 scheduling, budgets, file leases and verification; a cheap model wakes only when
@@ -24,7 +26,7 @@ Most harnesses optimise the model call. The bigger wins are around it:
 | Deterministic scheduling | 100% of what it replaces | Queue, retry and routing decisions in plain code cost zero tokens |
 | Byte-stable prefix caching | ~90% off cached input | Providers serve a cache hit only when the prefix is byte-identical |
 | Smaller payloads | 65–82% | Ranked context capsule instead of a repository dump |
-| Cheapest capable worker | up to 100% | A local Rust binary should never lose work to a metered model |
+| Cheapest capable worker | up to 100% | A local binary or flat-rate seat should never lose work to a metered model |
 | Compact supervision | 10×+ | The manager reads a ~90-byte heartbeat, never a transcript |
 
 These multiply. A smaller payload, on a cache hit, on a free-tier model, for a
@@ -33,14 +35,14 @@ happened.
 
 **A note on claims:** narrow operations can genuinely improve by orders of
 magnitude when an LLM loop is replaced by a query. End-to-end, a realistic target
-is 2–10×, with receipts. hive is built to *prove* savings rather than assert
+is 2–10×, with receipts. ForgeOS is built to *prove* savings rather than assert
 them — `SavingsProof` marks every figure as measured, replayed or modelled, and
 a saving is only ever as strong as its weakest input.
 
 ## Install
 
 ```bash
-git clone <this-repo> hive && cd hive
+git clone <this-repo> ForgeOS && cd ForgeOS
 pip install -e ".[dev]"
 python -m pytest tests -m "not slow"     # fast path
 python -m pytest tests                   # everything, incl. real scanners
@@ -53,7 +55,7 @@ location).
 ## Use
 
 ```python
-from hive import Forge, TaskSpec, Scope, Budget
+from forgeos import Forge, TaskSpec, Scope, Budget
 
 forge = Forge()
 print(forge.doctor())          # what this machine can actually do right now
@@ -66,14 +68,16 @@ result = forge.run(
                     scope=Scope(paths=["src/retry.py"]),
                     acceptance=["pytest tests/test_retry.py -q passes"],
                     budget=Budget(max_usd=2.0))],
-    executor=my_executor,       # you supply this — see Known gaps
-    reviewer=my_reviewer,       # must be a different worker
+    # With no executor, the Forge runs whichever backend the router picks —
+    # the registry's adapter field resolves to a live worker (ollama, the omc
+    # team runtime, a gateway model). Pass your own executor to override.
 )
 print(result.cost_per_accepted)
 ```
 
-Dashboard: `python -m hive.dashboard.app` → `http://127.0.0.1:8899` (localhost
-only; read-only except the halt flag).
+Dashboard: `python -m forgeos.dashboard.app` → `http://127.0.0.1:8899`
+(localhost only; read-only except the halt flag; display settings are stored in
+your browser and never touch the harness).
 
 ## How it fits together
 
@@ -81,6 +85,7 @@ only; read-only except the halt flag).
 mission contract  →  size pools to this machine  →  price quota as inventory
    → per task: capsule → preflight refusal → route (cheapest capable)
      → take path leases → execute → reduce output → verify ladder → merge gate
+     → MODEL failure? escalate exactly one rung → retry
    → receipt separating measured from estimated
 ```
 
@@ -110,34 +115,34 @@ Full detail in [AGENTS.md](AGENTS.md). The load-bearing ones:
 Stated plainly, because a harness that overstates its guarantees is worse than
 one that admits them:
 
-- **No worker can edit files yet.** The gateway worker returns text; it has no
-  filesystem. So the merge gate correctly refuses everything it produces (no
-  tests, no evidence, no commands run). Driving a real coding CLI — which *can*
-  edit — needs the ACP or omc-team adapter wired through `build_adapter`.
-  **This is the next thing to build.**
-- **The default fleet has no free file-editing worker.** Free workers here
-  summarise and classify. Every real edit currently costs money.
+- **The default fleet has no free file-editing worker.** The adapter path can
+  drive file-editing CLIs (the omc team runtime, ollama-backed local workers),
+  but free *API* workers here summarise and classify; a real edit needs a local
+  worker, a flat-rate seat, or a metered model.
 - **Several subsystems are built and tested but not yet in the execution path:**
   capsule, packing, savings receipts, quota/capacity market, mission compiler,
   model traits, discovery.
-- **Router escalation is not wired.** `Router.escalate` exists; a MODEL failure
-  currently retries at the same tier.
-- **Catalogued free tiers rot.** Provider catalogues list models at $0 that the
-  vendor has since retired; a 404 is handled and falls through to the next
-  candidate, but the catalogue itself is not self-healing.
+- **Live CLI backends are young.** The omc team adapter is verified against a
+  real install, but long-haul reliability (crashed sessions, orphaned
+  worktrees) has not been proven over days of continuous use.
+
+Recently closed, for the record: `Forge.run` now defaults to the routed
+adapter path (`executor=None`), MODEL failures escalate exactly one tier per
+failure via `Router.escalate`, and the gateway remembers dead models
+(terminal vs temporary) so retired free tiers stop being re-bought.
 
 ## Connecting a provider
 
 ```bash
 export DEEPSEEK_API_KEY=...        # or OPENROUTER_API_KEY, etc.
 python tools/live_check.py         # probes every usable provider, prices each call
-python tools/live_job.py           # a full Forge job end to end, writes to .hive/
-HIVE_STATE_DIR=.hive python -m hive.dashboard.app
+python tools/live_job.py           # a full Forge job end to end, writes to .forgeos/
+FORGEOS_STATE_DIR=.forgeos python -m forgeos.dashboard.app
 ```
 
 `live_check.py` reports which providers are reachable and which catalogued
 models are actually alive. Neither tool ever prints a key value — settings
-reference an environment variable *name*, and hive never stores a secret.
+reference an environment variable *name*, and ForgeOS never stores a secret.
 
 ## Licence
 

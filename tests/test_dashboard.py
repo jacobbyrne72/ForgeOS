@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from hive.contracts import Budget, JobSpec, TaskSpec, TaskState, WorkerReport
-from hive.dashboard.app import (
+from forgeos.contracts import Budget, JobSpec, TaskSpec, TaskState, WorkerReport
+from forgeos.dashboard.app import (
     AVOIDANCE_DB,
     EVENTS_DB,
     HOST,
@@ -24,10 +24,10 @@ from hive.dashboard.app import (
     STATIC_DIR,
     create_app,
 )
-from hive.economy.avoidance import AvoidanceLog, AvoidanceMethod
-from hive.events import EventLog, EventType
-from hive.ledger import Ledger
-from hive.leases import LeaseStore, LeaseType
+from forgeos.economy.avoidance import AvoidanceLog, AvoidanceMethod
+from forgeos.events import EventLog, EventType
+from forgeos.ledger import Ledger
+from forgeos.leases import LeaseStore, LeaseType
 
 
 @pytest.fixture
@@ -136,13 +136,13 @@ def _seed_job(state_dir: Path) -> tuple[str, str]:
                          acceptance=["pytest passes"], capabilities=["python"])
         ledger.add_task(task, state=TaskState.RUNNING)
 
-        ledger.record_spend(job.id, "hive.executor", "claude-x", 250_000, task_id=task.id,
+        ledger.record_spend(job.id, "forgeos.executor", "claude-x", 250_000, task_id=task.id,
                             tokens_in=1000, tokens_out=500, tokens_cached_in=200)
 
         ledger.record_report(
             WorkerReport(
                 task_id=task.id,
-                worker_id="hive.executor",
+                worker_id="forgeos.executor",
                 state=TaskState.DONE,
                 confidence=0.9,
                 summary="done",
@@ -189,7 +189,7 @@ def test_jobs_list_and_detail_include_documented_fields(state_dir: Path):
     assert detail["tasks"][0]["id"] == task_id
     assert detail["tasks"][0]["spend_usd"] == pytest.approx(0.25)
     assert len(detail["worker_lanes"]) == 1
-    assert detail["worker_lanes"][0]["worker_id"] == "hive.executor"
+    assert detail["worker_lanes"][0]["worker_id"] == "forgeos.executor"
     assert len(detail["events"]) == 2
 
 
@@ -260,7 +260,7 @@ def test_html_page_has_no_external_http_resource_references():
 def test_index_route_serves_the_offline_page(client: TestClient):
     res = client.get("/")
     assert res.status_code == 200
-    assert "hive" in res.text.lower()
+    assert "forgeos" in res.text.lower()
 
 
 def test_app_binds_localhost_only():

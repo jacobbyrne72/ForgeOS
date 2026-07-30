@@ -1,5 +1,5 @@
 [project]
-name = "hive"
+name = "forgeos"
 version = "0.1.0"
 description = "Cost-governed agent harness: eliminate the request, then make it cheap, then prove what it cost."
 requires-python = ">=3.11"
@@ -32,7 +32,7 @@ markers = [
     # the ones that genuinely prove the integrations work, and also the ones that
     # make the suite unusable to run on every edit. Deselect with -m "not slow"
     # during iteration; run everything at the merge boundary. This is the
-    # verification ladder from hive/economy/testselect.py applied to hive itself.
+    # verification ladder from forgeos/economy/testselect.py applied to forgeos itself.
     "slow: spawns real external processes; run at the merge boundary, not per-edit",
 ]
 

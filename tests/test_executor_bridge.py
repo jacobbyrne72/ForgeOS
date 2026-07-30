@@ -1,6 +1,6 @@
 """The adapter→executor bridge, proven against a fake WorkerAdapter.
 
-Every test drives `hive.adapters.executor.adapter_executor` through the real
+Every test drives `forgeos.adapters.executor.adapter_executor` through the real
 async protocol from `adapters/base.py` — start → send → usage → close — with a
 fake adapter: no subprocess, no network, no real CLI. The final test hands the
 bridged callable to a real `Forge.run` and asserts the whole machine accepts
@@ -14,17 +14,17 @@ import time
 
 import pytest
 
-from hive.adapters.base import (
+from forgeos.adapters.base import (
     EventKind,
     WorkerAdapter,
     WorkerCapabilities,
     WorkerEvent,
     WorkerUsage,
 )
-from hive.adapters.executor import adapter_executor, classify_failure
-from hive.contracts import Budget, FailureClass, Scope, TaskSpec, TaskState
-from hive.forge import ExecutionResult, Forge
-from hive.registry import Adapter, CostTier, Registry, WorkerProfile
+from forgeos.adapters.executor import adapter_executor, classify_failure
+from forgeos.contracts import Budget, FailureClass, Scope, TaskSpec, TaskState
+from forgeos.forge import ExecutionResult, Forge
+from forgeos.registry import Adapter, CostTier, Registry, WorkerProfile
 
 
 class FakeAdapter(WorkerAdapter):
@@ -399,7 +399,7 @@ def test_the_bridged_executor_satisfies_forge_run_end_to_end(tmp_path):
         WorkerEvent(kind=EventKind.DONE, status="ok"),
     ])
 
-    forge = Forge(home=tmp_path / "hive", registry=_fleet(), max_attempts=3)
+    forge = Forge(home=tmp_path / "forgeos", registry=_fleet(), max_attempts=3)
     try:
         result = forge.run(
             "prove the adapter bridge", [_spec()],

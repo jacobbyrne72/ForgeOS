@@ -17,13 +17,13 @@ from pathlib import Path
 
 import pytest
 
-from hive.prompts.prefix import PrefixRegistry, StablePrefix, build_prompt
-from hive.prompts.roles import ROLE_PREFIXES, PREFIX_VERSION, default_prefix_registry, role_prefix
-from hive.settings import Role
+from forgeos.prompts.prefix import PrefixRegistry, StablePrefix, build_prompt
+from forgeos.prompts.roles import ROLE_PREFIXES, PREFIX_VERSION, default_prefix_registry, role_prefix
+from forgeos.settings import Role
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Domain vocabulary that must never leak into hive -- it is domain-agnostic
+# Domain vocabulary that must never leak into forgeos -- it is domain-agnostic
 # infrastructure, not a script for whatever project it happens to be pointed
 # at. "trading" is the example named explicitly; the rest are the same
 # category of leak.
@@ -66,7 +66,7 @@ def test_fingerprint_stable_across_a_fresh_process():
     """
     script = (
         "import json\n"
-        "from hive.prompts.roles import ROLE_PREFIXES\n"
+        "from forgeos.prompts.roles import ROLE_PREFIXES\n"
         "print(json.dumps({r.value: p.fingerprint for r, p in ROLE_PREFIXES.items()}))\n"
     )
     result = subprocess.run(

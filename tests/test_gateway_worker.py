@@ -1,4 +1,4 @@
-"""Tests for `hive/adapters/gateway_worker.py`.
+"""Tests for `forgeos/adapters/gateway_worker.py`.
 
 No network and no real `Gateway`: a fake stands in for it, because what needs
 proving here is the adapter's honesty about money and failure, not httpx's.
@@ -16,10 +16,10 @@ import asyncio
 
 import pytest
 
-from hive.adapters.base import EventKind
-from hive.adapters.gateway_worker import GatewayWorkerAdapter
-from hive.economy.preflight import CallEstimate, CallRefused, Decision, PreflightVerdict
-from hive.gateway.client import GatewayResponse, TransportError
+from forgeos.adapters.base import EventKind
+from forgeos.adapters.gateway_worker import GatewayWorkerAdapter
+from forgeos.economy.preflight import CallEstimate, CallRefused, Decision, PreflightVerdict
+from forgeos.gateway.client import GatewayResponse, TransportError
 
 
 def _refusal(reason: str = "estimated 5000000 > remaining 100") -> CallRefused:
@@ -454,7 +454,7 @@ def test_health_is_true_for_a_working_gateway():
 def test_no_registered_profile_claims_this_adapter_can_edit_files():
     """Guards the pairing the docstring warns about: routing an edit to a worker
     that returns text and cannot touch the filesystem."""
-    from hive.registry import Adapter, default_registry
+    from forgeos.registry import Adapter, default_registry
 
     offenders = [
         w.worker_id

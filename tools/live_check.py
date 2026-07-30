@@ -25,15 +25,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from hive.catalog import default_catalog  # noqa: E402
-from hive.contracts import Budget, JobSpec  # noqa: E402
-from hive.economy.preflight import CallRefused, estimate_call  # noqa: E402
-from hive.gateway.client import Gateway, GatewayRequest, default_transports  # noqa: E402
-from hive.gateway.dead_models import DeadModelStore  # noqa: E402
-from hive.ledger import open_ledger  # noqa: E402
-from hive.settings import ProviderKind, Settings  # noqa: E402
+from forgeos.catalog import default_catalog  # noqa: E402
+from forgeos.contracts import Budget, JobSpec  # noqa: E402
+from forgeos.economy.preflight import CallRefused, estimate_call  # noqa: E402
+from forgeos.gateway.client import Gateway, GatewayRequest, default_transports  # noqa: E402
+from forgeos.gateway.dead_models import DeadModelStore  # noqa: E402
+from forgeos.ledger import open_ledger  # noqa: E402
+from forgeos.settings import ProviderKind, Settings  # noqa: E402
 
-DEAD_MODELS_PATH = Path(os.path.expanduser("~/.hive/dead_models.db"))
+DEAD_MODELS_PATH = Path(os.path.expanduser("~/.forgeos/dead_models.db"))
 
 PROBE = "Reply with exactly one word: ok"
 

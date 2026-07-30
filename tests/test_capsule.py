@@ -11,8 +11,8 @@ import json
 
 import pytest
 
-from hive.economy import AvoidanceLog, AvoidanceMethod
-from hive.economy.capsule import (
+from forgeos.economy import AvoidanceLog, AvoidanceMethod
+from forgeos.economy.capsule import (
     Capsule,
     CapsuleBuilder,
     ContextRef,

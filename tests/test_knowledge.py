@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from hive.knowledge import (
+from forgeos.knowledge import (
     MIN_SOURCES_TO_PROMOTE,
     ClaimStore,
     ClaimType,

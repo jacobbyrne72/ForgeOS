@@ -8,7 +8,7 @@ the machine, and both look like "the harness is slow".
 from __future__ import annotations
 
 
-from hive.core.resources import (
+from forgeos.core.resources import (
     CHECKPOINT_BELOW_GIB,
     EXECUTION_WORKER_RAM_GIB,
     STOP_NEW_WORKERS_BELOW_GIB,

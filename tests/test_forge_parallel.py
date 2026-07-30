@@ -23,9 +23,9 @@ import random
 import threading
 import time
 
-from hive.contracts import Budget, Scope, TaskSpec, TaskState, TestResults
-from hive.forge import ExecutionResult, Forge
-from hive.registry import Adapter, CostTier, Registry, WorkerProfile
+from forgeos.contracts import Budget, Scope, TaskSpec, TaskState, TestResults
+from forgeos.forge import ExecutionResult, Forge
+from forgeos.registry import Adapter, CostTier, Registry, WorkerProfile
 
 
 def _fleet() -> Registry:
@@ -40,7 +40,7 @@ def _fleet() -> Registry:
     ])
 
 
-def _forge(tmp_path, *, max_parallel: int, name: str = "hive") -> Forge:
+def _forge(tmp_path, *, max_parallel: int, name: str = "forgeos") -> Forge:
     f = Forge(home=tmp_path / name, registry=_fleet(), max_attempts=3)
     # Pin the concurrency under test. The constructor sizes it to THIS machine,
     # which is correct in production and nondeterministic in a test.
@@ -338,7 +338,7 @@ def test_recorded_worker_and_tier_come_from_the_same_decision(tmp_path):
                       tier=CostTier.PREMIUM, capabilities={"edit", "python"},
                       can_edit_files=True, prior_win_rate=0.95, est_seconds=60.0),
     ])
-    f = Forge(home=tmp_path / "hive", registry=registry, max_attempts=3)
+    f = Forge(home=tmp_path / "forgeos", registry=registry, max_attempts=3)
     f.scheduler.max_parallel = 1
     f.resources.may_start = lambda kind, running, pressure=None: True  # type: ignore[method-assign]
 

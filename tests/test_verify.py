@@ -11,7 +11,7 @@ import shutil
 
 import pytest
 
-from hive.core.verify import (
+from forgeos.core.verify import (
     Finding,
     Gate,
     GateResult,
@@ -253,7 +253,7 @@ def test_ruff_gate_runs_for_real(tmp_path):
 def _gitleaks_returning(payload: str, monkeypatch):
     """Substitute the subprocess so the parsing and scoping can be tested without
     a real scanner or a real repository."""
-    import hive.core.verify as v
+    import forgeos.core.verify as v
 
     captured: dict = {}
 
@@ -328,30 +328,30 @@ def test_no_paths_means_no_scoping_rather_than_nothing_in_scope(monkeypatch):
 
 
 def test_hives_own_source_is_clean_of_secrets():
-    """hive scans other people's code; it should survive its own scanner.
+    """forgeos scans other people's code; it should survive its own scanner.
 
-    Scoped to the directories hive actually authors. `--no-git` walks the
+    Scoped to the directories forgeos actually authors. `--no-git` walks the
     filesystem rather than the index, so an unscoped scan also covers untracked
     and gitignored trees — `vendor/` here is full of third-party code with
     documentation examples that trip `generic-api-key`, and those are neither
-    hive's secrets nor hive's to fix. That is exactly why the Forge always passes
+    forgeos's secrets nor forgeos's to fix. That is exactly why the Forge always passes
     `files_touched` to this gate rather than letting it scan freely.
 
     Skipped when gitleaks is absent — an unavailable scanner is reported, never
-    treated as a pass, and that rule applies to hive's own source too.
+    treated as a pass, and that rule applies to forgeos's own source too.
     """
     if shutil.which("gitleaks") is None:
         pytest.skip("gitleaks not installed")
     from pathlib import Path
 
     repo = Path(__file__).resolve().parent.parent
-    ours = [d for d in ("hive", "tests", "hooks", "tools") if (repo / d).exists()]
+    ours = [d for d in ("forgeos", "tests", "hooks", "tools") if (repo / d).exists()]
     res = run_gitleaks(ours, cwd=str(repo))
-    assert res.status is not GateStatus.FAIL, f"hive's own source leaks: {res.findings}"
+    assert res.status is not GateStatus.FAIL, f"forgeos's own source leaks: {res.findings}"
 
 
 def test_combined_security_fails_if_either_scanner_fails(monkeypatch):
-    import hive.core.verify as v
+    import forgeos.core.verify as v
 
     monkeypatch.setattr(v, "run_semgrep", lambda p, cwd=None: _ok())
     monkeypatch.setattr(v, "run_gitleaks", lambda p=None, cwd=None: _fail())
@@ -359,7 +359,7 @@ def test_combined_security_fails_if_either_scanner_fails(monkeypatch):
 
 
 def test_combined_security_is_unavailable_if_either_tool_is_missing(monkeypatch):
-    import hive.core.verify as v
+    import forgeos.core.verify as v
 
     monkeypatch.setattr(v, "run_semgrep", lambda p, cwd=None: _ok())
     monkeypatch.setattr(v, "run_gitleaks", lambda p=None, cwd=None: _unavailable())

@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from hive.catalog import ModelCard
-from hive.economy import (
+from forgeos.catalog import ModelCard
+from forgeos.economy import (
     Avoidance,
     AvoidanceLog,
     AvoidanceMethod,
@@ -18,7 +18,7 @@ from hive.economy import (
     count_tokens,
     estimate_call,
 )
-from hive.economy.preflight import ESTIMATE_ENCODING
+from forgeos.economy.preflight import ESTIMATE_ENCODING
 
 
 def _card(**kw) -> ModelCard:

@@ -5,17 +5,17 @@ from __future__ import annotations
 
 import pytest
 
-from hive.catalog import Catalog, ModelCard
-from hive.economy.preflight import CallRefused
-from hive.gateway.client import (
+from forgeos.catalog import Catalog, ModelCard
+from forgeos.economy.preflight import CallRefused
+from forgeos.gateway.client import (
     Gateway,
     RateLimitError,
     RawCallResult,
     TransportError,
     assemble_prompt,
 )
-from hive.gateway.health import HealthTracker
-from hive.ledger import Ledger
+from forgeos.gateway.health import HealthTracker
+from forgeos.ledger import Ledger
 
 CARD = ModelCard(
     model_id="test-model",
@@ -27,7 +27,7 @@ CARD = ModelCard(
 
 
 def _request(**overrides):
-    from hive.gateway.client import GatewayRequest
+    from forgeos.gateway.client import GatewayRequest
 
     kwargs = dict(model_ref="testprov/test-model", prompt_prefix="p", prompt_tail="", max_output_tokens=50)
     kwargs.update(overrides)

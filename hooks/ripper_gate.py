@@ -5,7 +5,7 @@ Wire into Claude Code settings.json:
 
     {"hooks": {"PreToolUse": [{"matcher": "Read",
       "hooks": [{"type": "command",
-                 "command": "python C:/Users/byrne/Downloads/hive/hooks/ripper_gate.py"}]}]}}
+                 "command": "python C:/Users/byrne/Downloads/forgeos/hooks/ripper_gate.py"}]}]}}
 
 Reads the tool-call payload as JSON on stdin. Prints the reason and the exact
 replacement command on stderr, which is what the agent sees — a denial without a
@@ -34,7 +34,7 @@ def main() -> int:
         return 0  # unreadable payload is not the agent's fault
 
     try:
-        from hive.policy import check_tool_call
+        from forgeos.policy import check_tool_call
 
         tool_name = payload.get("tool_name") or payload.get("toolName") or ""
         tool_input = payload.get("tool_input") or payload.get("toolInput") or {}

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from hive.contracts import (
+from forgeos.contracts import (
     Budget,
     JobSpec,
     Scope,
@@ -19,12 +19,12 @@ from hive.contracts import (
     WorkerReport,
     to_micros,
 )
-from hive.core.governor import Action, Governor
-from hive.core.scheduler import Scheduler
-from hive.events import EventLog, EventType
-from hive.leases import LeaseStore
-from hive.ledger import Ledger
-from hive.registry import Adapter, CostTier, Registry, WorkerProfile
+from forgeos.core.governor import Action, Governor
+from forgeos.core.scheduler import Scheduler
+from forgeos.events import EventLog, EventType
+from forgeos.leases import LeaseStore
+from forgeos.ledger import Ledger
+from forgeos.registry import Adapter, CostTier, Registry, WorkerProfile
 
 
 @pytest.fixture()
@@ -363,6 +363,6 @@ def test_scheduler_makes_no_model_calls(rig):
     """
     import pathlib
 
-    src = pathlib.Path("hive/core/scheduler.py").read_text(encoding="utf-8")
+    src = pathlib.Path("forgeos/core/scheduler.py").read_text(encoding="utf-8")
     for banned in ("litellm", "openai", "anthropic", "requests.post", "httpx"):
         assert banned not in src

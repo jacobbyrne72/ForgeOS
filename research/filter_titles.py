@@ -12,7 +12,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-R = Path(r"C:\Users\byrne\Downloads\hive\research")
+R = Path(r"C:\Users\byrne\Downloads\forgeos\research")
 
 INCLUDE = re.compile(
     r"agent|multi[- ]?agent|swarm|orchestrat|coding agent|claude code|codex|gemini cli"

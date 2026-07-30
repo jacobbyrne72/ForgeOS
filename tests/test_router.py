@@ -9,15 +9,15 @@ from __future__ import annotations
 
 import pytest
 
-from hive.contracts import FailureClass
-from hive.core.router import (
+from forgeos.contracts import FailureClass
+from forgeos.core.router import (
     DEFAULT_EFFORT,
     ReasoningEffort,
     Route,
     Router,
     Tier,
 )
-from hive.registry import Adapter, CostTier, Registry, WorkerProfile
+from forgeos.registry import Adapter, CostTier, Registry, WorkerProfile
 
 
 def _w(wid: str, tier: CostTier, caps: set[str], win: float = 0.8, **kw) -> WorkerProfile:

@@ -1,7 +1,7 @@
 """Adapter tests: the worker contract (base.py) and the ACP backend (acp.py).
 
 The ACP SDK is always mocked here — no network, no real CLI spawn, no real
-subprocess. `hive.adapters.acp._import_acp` is the one seam the adapter uses
+subprocess. `forgeos.adapters.acp._import_acp` is the one seam the adapter uses
 to reach the SDK, so replacing it with a fake namespace (or a function that
 raises `ImportError`) is enough to exercise every path without the vendor
 package installed.
@@ -21,15 +21,15 @@ from typing import Any
 
 import pytest
 
-from hive.adapters import acp as acp_adapter
-from hive.adapters.base import (
+from forgeos.adapters import acp as acp_adapter
+from forgeos.adapters.base import (
     EventKind,
     WorkerAdapter,
     WorkerCapabilities,
     WorkerEvent,
     WorkerUsage,
 )
-from hive.contracts import to_micros
+from forgeos.contracts import to_micros
 
 ACPAdapter = acp_adapter.ACPAdapter
 
@@ -419,7 +419,7 @@ def test_acp_send_surfaces_a_file_edit_as_a_canonical_diff(monkeypatch):
         conn.prompt_script = [
             FakeToolCallUpdate(
                 tool_call_id="t1",
-                content=[FakeDiff(path="hive/foo.py", old_text="a = 1\n", new_text="a = 2\n")],
+                content=[FakeDiff(path="forgeos/foo.py", old_text="a = 1\n", new_text="a = 2\n")],
             ),
             ("response", FakePromptResponse(stop_reason="end_turn")),
         ]
@@ -433,7 +433,7 @@ def test_acp_send_surfaces_a_file_edit_as_a_canonical_diff(monkeypatch):
     events = run(_collect(adapter.send(session_id, "edit it")))
 
     diff_event = next(e for e in events if e.kind is EventKind.FILE_DIFF)
-    assert diff_event.path == "hive/foo.py"
+    assert diff_event.path == "forgeos/foo.py"
     assert "-a = 1" in diff_event.diff
     assert "+a = 2" in diff_event.diff
 

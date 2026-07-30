@@ -1,5 +1,5 @@
-"""Tests for the mission compiler (hive.core.mission) and operating modes
-(hive.modes). Pure pytest: no network, no model calls, fake repo layouts via
+"""Tests for the mission compiler (forgeos.core.mission) and operating modes
+(forgeos.modes). Pure pytest: no network, no model calls, fake repo layouts via
 tmp_path.
 """
 
@@ -9,9 +9,9 @@ import json
 
 import pytest
 
-from hive.contracts import Budget
-from hive.core.mission import MissionContract, RepoRef, compile_mission, detect_acceptance_commands
-from hive.modes import (
+from forgeos.contracts import Budget
+from forgeos.core.mission import MissionContract, RepoRef, compile_mission, detect_acceptance_commands
+from forgeos.modes import (
     BLITZ_PROFILE,
     DEEP_PROFILE,
     PROFILES,

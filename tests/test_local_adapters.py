@@ -1,8 +1,8 @@
 """Tests for the local/free worker adapter `ollama.py`.
 
 The backend is entirely subprocess-driven and the `ollama` binary is never
-invoked for real: `hive.adapters.ollama._spawn` and
-`hive.adapters.ollama.subprocess.run` are the exact seams the adapter uses to
+invoked for real: `forgeos.adapters.ollama._spawn` and
+`forgeos.adapters.ollama.subprocess.run` are the exact seams the adapter uses to
 reach a subprocess, so tests substitute both directly (same isolation pattern
 as `tests/test_adapters.py`'s `_import_acp` seam for `acp.py`). No real process
 is ever spawned, no model is ever pulled, no network call is ever made.
@@ -19,9 +19,9 @@ from typing import Any
 
 import pytest
 
-from hive.adapters import ollama as ollama_adapter
-from hive.adapters.base import EventKind, WorkerAdapter, WorkerCapabilities, WorkerUsage
-from hive.adapters.ollama import OllamaAdapter
+from forgeos.adapters import ollama as ollama_adapter
+from forgeos.adapters.base import EventKind, WorkerAdapter, WorkerCapabilities, WorkerUsage
+from forgeos.adapters.ollama import OllamaAdapter
 
 
 def run(coro):
