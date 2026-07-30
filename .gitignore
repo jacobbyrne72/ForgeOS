@@ -1,0 +1,24 @@
+# hive
+.pytest_out.txt
+.pytest_cache/
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+.hive/
+.omc/
+
+# Vendored upstreams are mined, not committed. Re-clone with:
+#   git clone --depth 1 --filter=blob:none <url> vendor/<name>
+vendor/
+
+# Research corpus: scraped third-party transcripts, papers and repo metadata.
+# 17MB of other people's content with unclear licensing — never publish it
+# alongside the code. The scripts that regenerate it ARE tracked.
+research/transcripts/
+research/papers/
+research/github/
+research/*.tsv
+research/*_ids.txt
+research/enumerated*.tsv

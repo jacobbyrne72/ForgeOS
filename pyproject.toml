@@ -1,0 +1,41 @@
+[project]
+name = "hive"
+version = "0.1.0"
+description = "Cost-governed agent harness: eliminate the request, then make it cheap, then prove what it cost."
+requires-python = ">=3.11"
+readme = "README.md"
+license = "MIT"
+dependencies = [
+    "pydantic>=2.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "httpx>=0.27",
+    # Used by the resource governor and the token preflight; both are on the
+    # default path, so they are hard requirements rather than extras.
+    "psutil>=5.9",
+    "tiktoken>=0.7",
+]
+
+[project.optional-dependencies]
+gateway = ["litellm"]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Deliberately NOT "-q": combined with a caller's own -q this becomes -qq, which
+# suppresses pytest's "N passed" summary entirely. That silently hid the test count
+# for most of this project's history and got misattributed to the RTK wrapper.
+addopts = "--tb=short"
+pythonpath = ["."]
+markers = [
+    # Tests that spawn real subprocesses (git, gitleaks, ruff, semgrep). They are
+    # the ones that genuinely prove the integrations work, and also the ones that
+    # make the suite unusable to run on every edit. Deselect with -m "not slow"
+    # during iteration; run everything at the merge boundary. This is the
+    # verification ladder from hive/economy/testselect.py applied to hive itself.
+    "slow: spawns real external processes; run at the merge boundary, not per-edit",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"

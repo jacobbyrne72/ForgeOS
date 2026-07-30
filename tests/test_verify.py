@@ -1,0 +1,305 @@
+"""Verification ladder and merge gate tests.
+
+The theme: every way a change could reach the base branch without being genuinely
+verified. Passing tests, a missing scanner, zero tests run, self-review, absent
+evidence — each is a route to a false green, and each has a test here.
+"""
+
+from __future__ import annotations
+
+import shutil
+
+import pytest
+
+from hive.core.verify import (
+    Finding,
+    Gate,
+    GateResult,
+    GateStatus,
+    MergeGate,
+    next_gate,
+    run_gitleaks,
+    run_lint,
+    run_security,
+    run_semgrep,
+)
+
+
+def _ok(gate=Gate.SECURITY) -> GateResult:
+    return GateResult(gate=gate, status=GateStatus.PASS, command="scan", evidence="0 findings")
+
+
+def _fail(gate=Gate.SECURITY, n=1) -> GateResult:
+    return GateResult(
+        gate=gate, status=GateStatus.FAIL, command="scan", evidence=f"{n} finding(s)",
+        findings=[Finding(rule="r", path="p.py", line=1, severity="high", message="m")] * n,
+    )
+
+
+def _unavailable(gate=Gate.SECURITY) -> GateResult:
+    return GateResult(gate=gate, status=GateStatus.UNAVAILABLE, evidence="tool not on PATH")
+
+
+GREEN = dict(tests_passed=13, tests_failed=0, evidence="13 passed in 1.2s",
+             commands_run=["python -m pytest -q"], reviewer_verdict="pass",
+             reviewer_worker="reviewer.a", implementer_worker="coder.b")
+
+
+# ------------------------------------------------------------- the ladder
+
+
+def test_ladder_climbs_one_rung_at_a_time():
+    assert next_gate(Gate.SYNTAX, True) is Gate.LINT
+    assert next_gate(Gate.LINT, True) is Gate.DIRECT_TESTS
+    assert next_gate(Gate.DIRECT_TESTS, True) is Gate.PACKAGE_TESTS
+    assert next_gate(Gate.PACKAGE_TESTS, True) is Gate.SECURITY
+    assert next_gate(Gate.SECURITY, True) is Gate.FULL_SUITE
+
+
+def test_ladder_refuses_to_climb_past_a_failure():
+    """Running the full suite after a lint failure wastes minutes to learn nothing."""
+    assert next_gate(Gate.LINT, False) is None
+    assert next_gate(Gate.DIRECT_TESTS, False) is None
+
+
+def test_ladder_terminates_at_the_top():
+    assert next_gate(Gate.FULL_SUITE, True) is None
+
+
+def test_security_sits_before_the_full_suite():
+    """Cheap security beats an expensive suite run on a patch that cannot merge."""
+    assert Gate.SECURITY < Gate.FULL_SUITE
+
+
+# ------------------------------------------------------- unavailable != pass
+
+
+def test_missing_tool_reports_unavailable_not_pass(monkeypatch):
+    """'We could not check' must never read as 'it is fine'."""
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    for res in (run_lint(["a.py"]), run_semgrep(["a.py"]), run_gitleaks(["a.py"])):
+        assert res.status is GateStatus.UNAVAILABLE
+        assert not res.passed
+        assert res.blocks_merge
+
+
+def test_unavailable_gate_blocks_the_merge():
+    v = MergeGate().evaluate(gates=[_unavailable()], **GREEN)
+    assert not v.allowed
+    assert any("could not be checked" in r for r in v.reasons)
+
+
+def test_no_paths_is_skipped_not_failed():
+    """A change with nothing to scan is not a security failure."""
+    assert run_lint([]).status is GateStatus.SKIPPED
+    assert run_semgrep([]).status is GateStatus.SKIPPED
+
+
+# ---------------------------------------------------------------- merge gate
+
+
+def test_green_change_with_clean_security_is_allowed():
+    v = MergeGate().evaluate(gates=[_ok()], **GREEN)
+    assert v.allowed, v.reasons
+
+
+def test_a7_functionally_correct_but_insecure_patch_is_blocked():
+    """THE acceptance criterion: all tests green, security finding present.
+
+    Published work shows agents produce patches that work and are still unsafe, so
+    green tests alone must never be sufficient evidence for merge.
+    """
+    v = MergeGate().evaluate(gates=[_fail(n=2)], **GREEN)
+    assert not v.allowed
+    assert any("security failed" in r for r in v.reasons)
+    assert v.blocking
+
+
+def test_leaked_secret_blocks_the_merge():
+    leak = GateResult(
+        gate=Gate.SECURITY, status=GateStatus.FAIL, evidence="1 secret(s) detected",
+        findings=[Finding(rule="generic-api-key", path="cfg.py", line=3, severity="high",
+                          message="API key committed")],
+    )
+    assert not MergeGate().evaluate(gates=[leak], **GREEN).allowed
+
+
+def test_failing_tests_block():
+    args = {**GREEN, "tests_failed": 1}
+    v = MergeGate().evaluate(gates=[_ok()], **args)
+    assert not v.allowed
+    assert any("failing" in r for r in v.reasons)
+
+
+def test_zero_tests_passed_is_not_green():
+    """'No tests ran' reported as success is the most common false green there is."""
+    args = {**GREEN, "tests_passed": 0}
+    v = MergeGate().evaluate(gates=[_ok()], **args)
+    assert not v.allowed
+    assert any("nothing was actually verified" in r for r in v.reasons)
+
+
+def test_missing_evidence_blocks():
+    args = {**GREEN, "evidence": "   "}
+    assert not MergeGate().evaluate(gates=[_ok()], **args).allowed
+
+
+def test_evidence_without_a_command_blocks():
+    """Evidence has to trace to something that actually ran."""
+    args = {**GREEN, "commands_run": []}
+    v = MergeGate().evaluate(gates=[_ok()], **args)
+    assert not v.allowed
+    assert any("no command" in r for r in v.reasons)
+
+
+def test_missing_independent_review_blocks():
+    args = {**GREEN, "reviewer_verdict": None}
+    assert not MergeGate().evaluate(gates=[_ok()], **args).allowed
+
+
+def test_reviewer_rejection_blocks():
+    args = {**GREEN, "reviewer_verdict": "fail"}
+    assert not MergeGate().evaluate(gates=[_ok()], **args).allowed
+
+
+def test_self_review_is_refused():
+    """The model that wrote the bug shares the blind spot that produced it."""
+    args = {**GREEN, "reviewer_worker": "same.worker", "implementer_worker": "same.worker"}
+    v = MergeGate().evaluate(gates=[_ok()], **args)
+    assert not v.allowed
+    assert any("must not be the implementer" in r for r in v.reasons)
+
+
+def test_all_blocking_reasons_are_reported_together():
+    """One fix at a time would mean one full verification cycle per problem."""
+    v = MergeGate().evaluate(
+        gates=[_fail(), _unavailable(gate=Gate.LINT)],
+        tests_passed=0, tests_failed=3, evidence="", commands_run=[],
+        reviewer_verdict=None, reviewer_worker="w", implementer_worker="w",
+    )
+    assert not v.allowed
+    assert len(v.reasons) >= 6
+
+
+# ------------------------------------------------------ real scanners, real diff
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(shutil.which("gitleaks") is None, reason="gitleaks not installed")
+def test_gitleaks_integration_returns_a_definite_verdict(tmp_path):
+    """One genuinely live scan, proving the integration and parsing work.
+
+    Deliberately NOT asserting a detection here. The obvious fake credentials to
+    plant are the vendor documentation examples, and scanners allowlist those on
+    purpose — a scanner that flagged `AKIAIOSFODNN7EXAMPLE` would be generating false
+    positives on every AWS tutorial in existence. Planting a *convincing* fake secret
+    to defeat the allowlist would be a worse idea than the test is worth.
+
+    So: this test proves gitleaks runs, its JSON parses, and it yields a definite
+    verdict. The FAIL path — a finding blocking the merge — is covered by the mocked
+    tests above, which is the right place to assert gate behaviour anyway.
+    """
+    import subprocess
+
+    (tmp_path / "cfg.py").write_text(
+        'AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"  # vendor doc example, allowlisted\n',
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"],
+        cwd=tmp_path, capture_output=True,
+    )
+
+    res = run_gitleaks(cwd=str(tmp_path))
+    # A definite verdict, never a crash and never an empty/unknown state.
+    assert res.status in (GateStatus.PASS, GateStatus.FAIL, GateStatus.UNAVAILABLE)
+    assert "gitleaks" in res.command and "detect" in res.command
+    if res.status is GateStatus.FAIL:
+        assert res.findings
+        assert MergeGate().evaluate(gates=[res], **GREEN).allowed is False
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(shutil.which("gitleaks") is None, reason="gitleaks not installed")
+def test_gitleaks_passes_a_clean_repo(tmp_path):
+    import subprocess
+
+    (tmp_path / "clean.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"],
+        cwd=tmp_path, capture_output=True,
+    )
+    res = run_gitleaks(cwd=str(tmp_path))
+    assert res.status in (GateStatus.PASS, GateStatus.UNAVAILABLE)
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(shutil.which("ruff") is None, reason="ruff not installed")
+def test_ruff_gate_runs_for_real(tmp_path):
+    bad = tmp_path / "bad.py"
+    bad.write_text("import os\n", encoding="utf-8")  # unused import
+    res = run_lint([str(bad)])
+    assert res.status in (GateStatus.PASS, GateStatus.FAIL)
+    assert "ruff" in res.command and "check" in res.command
+
+
+def test_combined_security_fails_if_either_scanner_fails(monkeypatch):
+    import hive.core.verify as v
+
+    monkeypatch.setattr(v, "run_semgrep", lambda p, cwd=None: _ok())
+    monkeypatch.setattr(v, "run_gitleaks", lambda p=None, cwd=None: _fail())
+    assert run_security(["a.py"]).status is GateStatus.FAIL
+
+
+def test_combined_security_is_unavailable_if_either_tool_is_missing(monkeypatch):
+    import hive.core.verify as v
+
+    monkeypatch.setattr(v, "run_semgrep", lambda p, cwd=None: _ok())
+    monkeypatch.setattr(v, "run_gitleaks", lambda p=None, cwd=None: _unavailable())
+    assert run_security(["a.py"]).status is GateStatus.UNAVAILABLE
+
+
+# --------------------------------- the gate must enforce its own contract
+# Each of these was proven merge-able by execution during review. They are the
+# difference between a gate and a ritual.
+
+
+def test_no_gates_at_all_cannot_merge():
+    """`gates=[]` merged clean: the gate enforced its headline contract only when a
+    caller volunteered the evidence against itself."""
+    v = MergeGate().evaluate(gates=[], **GREEN)
+    assert not v.allowed
+    assert any("no security gate" in r for r in v.reasons)
+
+
+@pytest.mark.parametrize("verdict", ["FAIL", "failed", "reject", "REJECTED", "no", ""])
+def test_only_the_exact_token_pass_counts_as_approval(verdict):
+    """Comparing against the literal "fail" meant every other spelling of rejection
+    read as approval."""
+    v = MergeGate().evaluate(gates=[_ok()], **{**GREEN, "reviewer_verdict": verdict})
+    assert not v.allowed, f"{verdict!r} was accepted as approval"
+
+
+def test_a_derived_reviewer_id_is_refused():
+    """'reviewer::a' reviewing 'a' is one worker wearing a label."""
+    v = MergeGate().evaluate(gates=[_ok()], **{**GREEN, "reviewer_worker": "reviewer::a",
+                                               "implementer_worker": "a"})
+    assert not v.allowed
+    assert any("derived from implementer" in r for r in v.reasons)
+
+
+def test_missing_reviewer_identity_is_refused_not_skipped():
+    """A truthiness guard meant empty ids skipped the independence check entirely."""
+    v = MergeGate().evaluate(gates=[_ok()], **{**GREEN, "reviewer_worker": "",
+                                               "implementer_worker": ""})
+    assert not v.allowed
+    assert any("independence unverifiable" in r for r in v.reasons)
+
+
+def test_a_genuinely_independent_clean_change_still_merges():
+    """The gate must not become unpassable — that would just get it bypassed."""
+    assert MergeGate().evaluate(gates=[_ok()], **GREEN).allowed

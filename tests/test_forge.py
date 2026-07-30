@@ -1,0 +1,334 @@
+"""End-to-end Forge tests — proof the parts are actually wired together.
+
+Every other test file proves one module works in isolation. These prove the machine
+runs: a task goes in, the router picks a tier, leases are taken, output is reduced,
+the merge gate rules, and a receipt comes out. Fourteen of fifteen modules had zero
+importers before this file existed, which is exactly the failure it guards against.
+
+The executor is injected and fake throughout — no network, no model, no subscription.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from hive.contracts import Budget, FailureClass, Scope, TaskSpec, TaskState, TestResults
+from hive.core.market import CapacityMarket, Entitlement, Forecast, TelemetrySource
+from hive.forge import ExecutionResult, Forge
+from hive.registry import Adapter, CostTier, Registry, WorkerProfile
+
+
+def _fleet() -> Registry:
+    return Registry([
+        WorkerProfile(worker_id="free.local", adapter=Adapter.JCODE, tier=CostTier.FREE,
+                      capabilities={"edit", "python", "mechanical"}, can_edit_files=True,
+                      prior_win_rate=0.85),
+        WorkerProfile(worker_id="premium.cloud", adapter=Adapter.OMC_TEAM,
+                      tier=CostTier.PREMIUM,
+                      capabilities={"edit", "python", "mechanical", "architecture"},
+                      can_edit_files=True, prior_win_rate=0.95),
+    ])
+
+
+@pytest.fixture()
+def forge(tmp_path):
+    f = Forge(home=tmp_path / "hive", registry=_fleet(), max_attempts=3)
+    yield f
+    f.close()
+
+
+def _task(subject="normalise retry parsing", paths=("src/retry.py",),
+          caps=("edit", "python")) -> TaskSpec:
+    return TaskSpec(job_id="pending", subject=subject, description="d",
+                    capabilities=list(caps), scope=Scope(paths=list(paths)),
+                    acceptance=["targeted tests pass"], budget=Budget(max_usd=2.0))
+
+
+def _green(**kw) -> ExecutionResult:
+    base = dict(
+        state=TaskState.DONE, evidence="13 passed in 1.2s",
+        commands_run=["python -m pytest -q"], files_touched=["src/retry.py"],
+        tests=TestResults(passed=13, failed=0),
+        tokens_in=1200, tokens_out=300, tokens_cached_in=4800,
+        usd_micros=4200, seconds=42.0,
+    )
+    base.update(kw)
+    return ExecutionResult(**base)
+
+
+def _pass_review(spec, worker):  # noqa: ARG001
+    return ExecutionResult(state=TaskState.DONE, evidence="no unresolved risk",
+                           commands_run=["git diff --stat"])
+
+
+# ============================================================ happy path
+
+
+def test_a_green_task_with_review_is_accepted(forge):
+    result = forge.run("ship failover", [_task()],
+                       executor=lambda s, w: _green(), reviewer=_pass_review)
+    assert result.accepted == 1, result.outcomes
+    assert result.rejected == 0
+    assert result.all_accepted
+    assert result.outcomes[0].reason == "merged"
+
+
+def test_spend_and_cache_are_recorded_end_to_end(forge):
+    result = forge.run("ship", [_task()], executor=lambda s, w: _green(),
+                       reviewer=_pass_review)
+    assert result.spend_usd == pytest.approx(0.0042)
+    assert result.cache_hit_pct == pytest.approx(80.0)
+    assert result.cost_per_accepted == pytest.approx(0.0042)
+
+
+def test_cheapest_capable_worker_is_chosen(forge):
+    """The cost thesis, end to end: free-and-capable must beat premium."""
+    result = forge.run("ship", [_task()], executor=lambda s, w: _green(),
+                       reviewer=_pass_review)
+    assert result.outcomes[0].worker_id == "free.local"
+
+
+def test_two_tasks_on_disjoint_paths_both_complete(forge):
+    a = _task("task a", paths=["src/a/"])
+    b = _task("task b", paths=["src/b/"])
+    result = forge.run("ship", [a, b], executor=lambda s, w: _green(),
+                       reviewer=_pass_review)
+    assert result.accepted == 2
+
+
+# ====================================================== the gates hold
+
+
+def test_a_task_with_no_tests_is_refused_by_the_merge_gate(forge):
+    """Zero tests passed is not green — 'nothing ran' reported as success is the
+    most common false green in an agent pipeline."""
+    result = forge.run("ship", [_task()],
+                       executor=lambda s, w: _green(tests=TestResults(passed=0, failed=0)),
+                       reviewer=_pass_review)
+    assert result.accepted == 0
+    assert any("nothing was actually verified" in r
+               for r in result.outcomes[0].merge_reasons)
+
+
+def test_a_task_without_evidence_is_refused(forge):
+    result = forge.run("ship", [_task()],
+                       executor=lambda s, w: _green(evidence="", commands_run=[]),
+                       reviewer=_pass_review)
+    assert result.accepted == 0
+    assert result.outcomes[0].merge_reasons
+
+
+def test_missing_independent_review_blocks_the_merge(forge):
+    """No reviewer passed in means no independent review happened."""
+    result = forge.run("ship", [_task()], executor=lambda s, w: _green())
+    assert result.accepted == 0
+    assert any("independent review" in r for r in result.outcomes[0].merge_reasons)
+
+
+def test_a_rejecting_reviewer_blocks_the_merge(forge):
+    def reject(spec, worker):  # noqa: ARG001
+        return ExecutionResult(state=TaskState.FAILED, evidence="unsafe pattern")
+
+    result = forge.run("ship", [_task()], executor=lambda s, w: _green(),
+                       reviewer=reject)
+    assert result.accepted == 0
+
+
+# ================================================ failure classification
+
+
+def test_an_environment_failure_does_not_burn_retries_on_a_stronger_model(forge):
+    """A broken venv fails identically at every price tier. Escalating it converts
+    a fixable problem into an expensive one."""
+    calls = {"n": 0}
+
+    def broken_env(spec, worker):  # noqa: ARG001
+        calls["n"] += 1
+        return ExecutionResult(state=TaskState.FAILED, blocker="ModuleNotFoundError: pytest",
+                               failure=FailureClass.ENVIRONMENT, usd_micros=1000)
+
+    result = forge.run("ship", [_task()], executor=broken_env, reviewer=_pass_review)
+    assert result.accepted == 0
+    assert calls["n"] == 1, "must not retry an environment failure"
+    assert "environment" in result.outcomes[0].reason
+
+
+def test_a_model_failure_does_retry(forge):
+    calls = {"n": 0}
+
+    def flaky(spec, worker):  # noqa: ARG001
+        calls["n"] += 1
+        if calls["n"] < 2:
+            return ExecutionResult(state=TaskState.FAILED,
+                                   failure=FailureClass.MODEL, usd_micros=1000)
+        return _green()
+
+    result = forge.run("ship", [_task()], executor=flaky, reviewer=_pass_review)
+    assert calls["n"] == 2
+    assert result.accepted == 1
+
+
+def test_attempts_are_bounded(forge):
+    calls = {"n": 0}
+
+    def always_fails(spec, worker):  # noqa: ARG001
+        calls["n"] += 1
+        return ExecutionResult(state=TaskState.FAILED, failure=FailureClass.MODEL,
+                               usd_micros=1000)
+
+    result = forge.run("ship", [_task()], executor=always_fails, reviewer=_pass_review)
+    assert calls["n"] == 3
+    assert "exhausted" in result.outcomes[0].reason
+
+
+# ================================================== budget and dependencies
+
+
+def test_the_governor_halts_a_runaway_task(forge):
+    def expensive(spec, worker):  # noqa: ARG001
+        return ExecutionResult(state=TaskState.RUNNING, usd_micros=9_000_000)
+
+    result = forge.run("ship", [_task()], executor=expensive, reviewer=_pass_review)
+    assert result.accepted == 0
+    assert "governor" in result.outcomes[0].reason
+
+
+def test_dependency_order_is_honoured(forge):
+    order: list[str] = []
+    first, second = _task("first", paths=["src/a/"]), _task("second", paths=["src/b/"])
+
+    def record(spec, worker):  # noqa: ARG001
+        order.append(spec.subject)
+        return _green()
+
+    forge.run("ship", [first, second], executor=record, reviewer=_pass_review,
+              dependencies={second.id: [first.id]})
+    assert order == ["first", "second"]
+
+
+def test_a_task_needing_an_absent_capability_is_reported_not_crashed(forge):
+    result = forge.run("ship", [_task(caps=["kubernetes"])],
+                       executor=lambda s, w: _green(), reviewer=_pass_review)
+    assert result.accepted == 0
+    assert "capabilit" in result.outcomes[0].reason
+
+
+def test_an_empty_task_list_completes_without_crashing(forge):
+    result = forge.run("nothing to do", [], executor=lambda s, w: _green())
+    assert result.accepted == 0 and result.rejected == 0
+
+
+# ===================================================== output reduction
+
+
+def test_raw_tool_output_is_reduced_before_it_can_reach_a_model(forge):
+    """A 3,000-line log must never be carried forward whole."""
+    noisy = "\n".join(f"tests/test_x.py::test_{i} PASSED" for i in range(1500))
+    noisy += "\n=================== 1500 passed in 4.20s ===================\n"
+
+    result = forge.run("ship", [_task()],
+                       executor=lambda s, w: _green(raw_output=noisy),
+                       reviewer=_pass_review)
+    assert result.accepted == 1
+    assert result.avoided_tokens > 0, "reduction must be recorded as a measured saving"
+
+
+# ============================================================ integration
+
+
+def test_forge_imports_and_wires_the_whole_stack():
+    """Guard against regression to a pile of unwired modules.
+
+    Fourteen of fifteen modules had zero importers before forge.py; this asserts the
+    spine keeps referencing them so a part cannot silently fall out of the machine.
+    """
+    import pathlib
+
+    src = pathlib.Path("hive/forge.py").read_text(encoding="utf-8")
+    for part in ("awareness", "governor", "market", "resources", "router",
+                 "scheduler", "timing", "verify", "avoidance", "reducer",
+                 "events", "leases", "ledger", "registry", "settings"):
+        assert part in src, f"forge.py no longer wires {part}"
+
+
+def test_doctor_reports_the_real_machine(forge):
+    text = forge.doctor()
+    assert "hive doctor" in text
+    assert "pools" in text and "providers" in text
+    assert "reasoning=" in text
+
+
+def test_doctor_includes_the_capacity_market_when_priced(tmp_path):
+    market = CapacityMarket()
+    market.record(Entitlement(resource_id="claude.sub", remaining=0.9,
+                              resets_at=None, source=TelemetrySource.OFFICIAL_CLI))
+    market.record(Entitlement(resource_id="openrouter", remaining=1.0,
+                              source=TelemetrySource.OFFICIAL_API, cash_cost=0.5))
+    market.forecast(Forecast(resource_id="claude.sub", expected_demand=0.1,
+                             confidence=0.9))
+    f = Forge(home=tmp_path / "h", registry=_fleet(), market=market)
+    try:
+        assert "claude.sub" in f.doctor()
+    finally:
+        f.close()
+
+
+def test_max_parallel_is_sized_to_this_machine(forge):
+    """A fixed worker count either starves a workstation or thrashes a laptop."""
+    assert forge.scheduler.max_parallel >= 1
+    assert forge.scheduler.max_parallel <= 8
+
+
+# ================================================ lowering (rung 0 in the spine)
+
+
+def _bulk_op(count=20_000, desc="find all import statements across the repository"):
+    from hive.economy.lowerer import Operation
+
+    return Operation(description=desc, item_count=count,
+                     per_item_tokens_estimate=120,
+                     has_deterministic_structure=True,
+                     sample_items=['import os', 'import sys'])
+
+
+def test_lowering_never_short_circuits_the_work(forge):
+    """Lowering is advice about HOW to do the work cheaply, never a substitute for
+    doing it. An accepted task with nothing run and no evidence would score a
+    perfect cost-per-accepted-task by performing no work at all."""
+    ran = {"n": 0}
+
+    def normal(spec, worker):  # noqa: ARG001
+        ran["n"] += 1
+        return _green()
+
+    spec = _task("extract fields", paths=["src/"])
+    result = forge.run("extract", [spec], executor=normal, reviewer=_pass_review,
+                       operations={spec.id: _bulk_op(count=50_000,
+                                                     desc="extract seven fields from each record")})
+    assert ran["n"] >= 1, "must fall back to the model path, not silently lower"
+    assert result.accepted == 1
+
+
+def test_a_reasoning_operation_is_never_lowered(forge):
+    """'Decide whether this architecture is sound' is not algorithmic."""
+    from hive.economy.lowerer import Operation
+
+    ran = {"n": 0}
+
+    def normal(spec, worker):  # noqa: ARG001
+        ran["n"] += 1
+        return _green()
+
+    spec = _task("architecture review", paths=["src/"])
+    op = Operation(description="decide whether this architecture is sound",
+                   item_count=1, per_item_tokens_estimate=4000,
+                   has_deterministic_structure=False)
+    forge.run("review", [spec], executor=normal, reviewer=_pass_review,
+              operations={spec.id: op})
+    assert ran["n"] == 1
+
+
+def test_a_task_with_no_declared_operation_runs_normally(forge):
+    result = forge.run("ship", [_task()], executor=lambda s, w: _green(),
+                       reviewer=_pass_review, operations={})
+    assert result.accepted == 1
