@@ -1,8 +1,7 @@
 """Per-worker circuit breaker: trip/stay-tripped/auto-recover."""
 from __future__ import annotations
 import time
-from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from threading import Lock
 

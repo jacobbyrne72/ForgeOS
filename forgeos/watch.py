@@ -6,9 +6,11 @@ deviates beyond expected bounds. Detects:
 - Silent burn (steady spend with zero task completion)
 - Budget leaks (tasks that never complete)
 """
+
 from __future__ import annotations
 import time
 from datetime import datetime
+
 
 def watch(ledger, job_id: str | None = None, interval_seconds: int = 30, max_alerts: int = 10) -> list[dict]:
     """Monitor spend rate and return anomalies."""
@@ -28,19 +30,21 @@ def watch(ledger, job_id: str | None = None, interval_seconds: int = 30, max_ale
         if len(history) >= 3:
             avg = sum(h[1] for h in history[-6:]) / min(len(history), 6)
             if spent > avg * threshold_multiplier and spent > 0:
-                alerts.append({
-                    "type": "cost_spike",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "spend_this_interval": spent,
-                    "rolling_average": avg,
-                    "multiplier": round(spent / avg, 2),
-                })
+                alerts.append(
+                    {
+                        "type": "cost_spike",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "spend_this_interval": spent,
+                        "rolling_average": avg,
+                        "multiplier": round(spent / avg, 2),
+                    }
+                )
         last_check = now
 
     return alerts
 
+
 def _get_spend_since(ledger, since_ts: float, job_id: str | None = None) -> float:
-    from forgeos.ledger import Ledger
     # Use ledger methods to get spend since timestamp
     if job_id:
         rows = ledger._conn.execute(

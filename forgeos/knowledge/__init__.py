@@ -19,15 +19,27 @@ from .claims import (
     VerificationStatus,
     claim_key,
 )
+from .memory import (
+    MEMORY_SCHEMA,
+    MemoryItem,
+    MemoryKind,
+    MemoryStore,
+    Provenance,
+)
 
 __all__ = [
     "CLAIMS_SCHEMA",
     "Claim",
     "ClaimStore",
     "ClaimType",
+    "MEMORY_SCHEMA",
     "MIN_SOURCES_TO_PROMOTE",
+    "MemoryItem",
+    "MemoryKind",
+    "MemoryStore",
     "NEVER_PROMOTABLE",
     "PromotionResult",
+    "Provenance",
     "VerificationStatus",
     "claim_key",
 ]

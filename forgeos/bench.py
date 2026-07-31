@@ -8,11 +8,13 @@ Compares a baseline (raw model call) vs. each optimization layer:
 Every result is written to the ledger as a benchmark job,
 so comparisons are reproducible and auditable.
 """
+
 from __future__ import annotations
-import time, hashlib, json
-from pathlib import Path
-from dataclasses import dataclass, field
+import time
+import hashlib
+from dataclasses import dataclass
 from enum import Enum
+
 
 class Layer(Enum):
     RAW = "raw"
@@ -20,15 +22,17 @@ class Layer(Enum):
     BREAKER = "compiler+breaker"
     FULL = "compiler+breaker+cache"
 
+
 @dataclass
 class BenchmarkResult:
     layer: Layer
     task_count: int
-    token_estimate: int       # modelled tokens saved
-    usd_saved_micros: int     # modelled cost saved
-    tree_sitter_ms: float     # time spent in compiler analysis
-    setup_ms: float           # time for circuit breaker / cache setup
+    token_estimate: int  # modelled tokens saved
+    usd_saved_micros: int  # modelled cost saved
+    tree_sitter_ms: float  # time spent in compiler analysis
+    setup_ms: float  # time for circuit breaker / cache setup
     total_ms: float
+
 
 def bench(objective: str, *, cwd: str = ".", iterations: int = 3) -> list[BenchmarkResult]:
     """Run benchmark across all layers and return results."""
@@ -72,7 +76,9 @@ def bench(objective: str, *, cwd: str = ".", iterations: int = 3) -> list[Benchm
                 if miss is None:
                     pc.put("openrouter", "sonnet", objective, "response", tokens_in=100)
                 compile_mission(objective, cwd=cwd)
-                tokens = len(objective.split()) * 0.05  # 95% saved (compiler + cache + breaker eliminate all calls)
+                tokens = (
+                    len(objective.split()) * 0.05
+                )  # 95% saved (compiler + cache + breaker eliminate all calls)
                 saved_tokens = int(len(objective.split()) * 0.95)
                 saved_usd = int(saved_tokens * 0.000015 * 1_000_000)
                 tree_ms = 0.0
@@ -81,16 +87,19 @@ def bench(objective: str, *, cwd: str = ".", iterations: int = 3) -> list[Benchm
             t1 = time.perf_counter()
             times.append((t1 - t0) * 1000)
 
-        results.append(BenchmarkResult(
-            layer=layer,
-            task_count=1,
-            token_estimate=saved_tokens,
-            usd_saved_micros=saved_usd,
-            tree_sitter_ms=0.0,
-            setup_ms=0.0,
-            total_ms=sum(times) / len(times),
-        ))
+        results.append(
+            BenchmarkResult(
+                layer=layer,
+                task_count=1,
+                token_estimate=saved_tokens,
+                usd_saved_micros=saved_usd,
+                tree_sitter_ms=0.0,
+                setup_ms=0.0,
+                total_ms=sum(times) / len(times),
+            )
+        )
     return results
+
 
 def format_benchmark(results: list[BenchmarkResult]) -> str:
     """Format benchmark results as a comparison table."""
@@ -98,8 +107,11 @@ def format_benchmark(results: list[BenchmarkResult]) -> str:
     lines.append("| Layer | Saved Tokens | Saved USD | Avg Latency |")
     lines.append("|---|---|---|---|")
     for r in results:
-        lines.append(f"| {r.layer.value} | +{r.token_estimate} | ${r.usd_saved_micros / 1_000_000:.4f} | {r.total_ms:.1f}ms |")
+        lines.append(
+            f"| {r.layer.value} | +{r.token_estimate} | ${r.usd_saved_micros / 1_000_000:.4f} | {r.total_ms:.1f}ms |"
+        )
     return "\n".join(lines)
+
 
 def run_benchmark_cli(objective: str, iterations: int = 3) -> str:
     """Run a benchmark and return a formatted report."""
@@ -115,8 +127,12 @@ def run_benchmark_cli(objective: str, iterations: int = 3) -> str:
     best_saved = best.token_estimate * 0.000015  # rough USD
     worst_saved = worst.token_estimate * 0.000015
     savings_vs_raw = best_saved / (worst_saved or 0.000001) * 100
-    report_lines.append(f"**Best layer:** {best.layer.value} ({best.total_ms:.1f}ms, saves ${best_saved:.4f}/task)")
-    report_lines.append(f"**Worst layer:** {worst.layer.value} ({worst.total_ms:.1f}ms, saves ${worst_saved:.4f}/task)")
+    report_lines.append(
+        f"**Best layer:** {best.layer.value} ({best.total_ms:.1f}ms, saves ${best_saved:.4f}/task)"
+    )
+    report_lines.append(
+        f"**Worst layer:** {worst.layer.value} ({worst.total_ms:.1f}ms, saves ${worst_saved:.4f}/task)"
+    )
     pct = min(savings_vs_raw, 99.9)
     report_lines.append(f"**Cost reduction vs raw:** {pct:.1f}%")
     return "\n".join(report_lines)

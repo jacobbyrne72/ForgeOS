@@ -1,6 +1,9 @@
 """Prompt prefix caching — SQLite-backed LRU with TTL."""
+
 from __future__ import annotations
-import hashlib, sqlite3, time
+import hashlib
+import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
@@ -29,13 +32,23 @@ CREATE INDEX IF NOT EXISTS idx_cache_expires ON prompt_cache(expires_at);
 
 CLEANUP_SQL = "DELETE FROM prompt_cache WHERE expires_at < ?"
 
+
 @dataclass
 class CacheEntry:
-    key: str; provider: str; model: str; response: str
-    tokens_in: int = 0; tokens_out: int = 0; usd_micros: int = 0
-    created_at: float = 0.0; expires_at: float = 0.0; hit_count: int = 1
+    key: str
+    provider: str
+    model: str
+    response: str
+    tokens_in: int = 0
+    tokens_out: int = 0
+    usd_micros: int = 0
+    created_at: float = 0.0
+    expires_at: float = 0.0
+    hit_count: int = 1
+
     def is_expired(self, at: float | None = None) -> bool:
         return (at or time.time()) >= self.expires_at
+
 
 class PromptCache:
     def __init__(
@@ -72,7 +85,8 @@ class PromptCache:
         with self._lock:
             row = self._conn.execute(
                 "SELECT response, tokens_in, tokens_out, usd_micros, expires_at, hit_count "
-                "FROM prompt_cache WHERE key = ?", (key,)
+                "FROM prompt_cache WHERE key = ?",
+                (key,),
             ).fetchone()
         if row is None:
             return None
@@ -87,25 +101,42 @@ class PromptCache:
             )
             self._conn.commit()
         entry = CacheEntry(
-            key=key, provider=provider, model=model, response=response,
-            tokens_in=tokens_in, tokens_out=tokens_out, usd_micros=usd_micros,
+            key=key,
+            provider=provider,
+            model=model,
+            response=response,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            usd_micros=usd_micros,
             expires_at=expires_at,
         )
         entry.hit_count = hit_count + 1
         return entry
 
     def put(
-        self, provider: str, model: str, prompt: str, response: str,
-        tokens_in: int = 0, tokens_out: int = 0, usd_micros: int = 0,
+        self,
+        provider: str,
+        model: str,
+        prompt: str,
+        response: str,
+        tokens_in: int = 0,
+        tokens_out: int = 0,
+        usd_micros: int = 0,
         ttl_seconds: float | None = None,
     ) -> None:
         key = self._make_key(provider, model, prompt)
         ttl = ttl_seconds or self.default_ttl
         now = time.time()
         entry = CacheEntry(
-            key=key, provider=provider, model=model, response=response,
-            tokens_in=tokens_in, tokens_out=tokens_out, usd_micros=usd_micros,
-            created_at=now, expires_at=now + ttl,
+            key=key,
+            provider=provider,
+            model=model,
+            response=response,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            usd_micros=usd_micros,
+            created_at=now,
+            expires_at=now + ttl,
         )
         with self._lock:
             count = self._conn.execute("SELECT COUNT(*) FROM prompt_cache").fetchone()[0]
@@ -119,8 +150,18 @@ class PromptCache:
                 "(key, prompt_sha256, provider, model, response, "
                 "tokens_in, tokens_out, usd_micros, created_at, expires_at, hit_count) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
-                (key, key, provider, model, response, tokens_in, tokens_out,
-                 usd_micros, entry.created_at, entry.expires_at),
+                (
+                    key,
+                    key,
+                    provider,
+                    model,
+                    response,
+                    tokens_in,
+                    tokens_out,
+                    usd_micros,
+                    entry.created_at,
+                    entry.expires_at,
+                ),
             )
             self._conn.commit()
             self._write_count += 1
@@ -137,9 +178,7 @@ class PromptCache:
             now = time.time()
             self._conn.execute(CLEANUP_SQL, (now,))
             # Also purge expired in bulk — more thorough cleanup
-            self._conn.execute(
-                "DELETE FROM prompt_cache WHERE expires_at < ?", (now,)
-            )
+            self._conn.execute("DELETE FROM prompt_cache WHERE expires_at < ?", (now,))
             self._conn.commit()
 
     def stats(self) -> dict:
@@ -150,8 +189,10 @@ class PromptCache:
             ).fetchone()[0]
             hits = self._conn.execute("SELECT SUM(hit_count) FROM prompt_cache").fetchone()[0] or 0
             return {
-                "entries": total, "expired": expired,
-                "total_hits": hits, "max_size": self.max_size,
+                "entries": total,
+                "expired": expired,
+                "total_hits": hits,
+                "max_size": self.max_size,
                 "default_ttl_seconds": self.default_ttl,
                 "utilization_pct": round(total / self.max_size * 100, 1) if self.max_size else 0,
             }

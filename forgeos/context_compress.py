@@ -5,7 +5,6 @@ filter the context to only what the task needs, cutting
 prompt tokens by 60-90% on typical tasks.
 """
 from __future__ import annotations
-from typing import Any
 
 def compress_context(
     objective: str,

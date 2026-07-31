@@ -11,7 +11,7 @@ expensive for another. This module makes per-task routing decisions.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from collections import defaultdict
+from typing import Any
 
 @dataclass
 class AdapterProfile:
@@ -114,7 +114,6 @@ Replays completed benchmark jobs and computes:
 - Wasted cost (dead worker calls, retry storms, cold starts)
 - Savings vs naive execution
 """
-from typing import Any
 
 def replay_job(ledger, job_id: str) -> dict[str, Any]:
     """Analyze a completed job and return cost breakdown."""
@@ -123,7 +122,6 @@ def replay_job(ledger, job_id: str) -> dict[str, Any]:
         return {"error": f"job {job_id} not found"}
 
     tasks = ledger.tasks_for_job(job_id)
-    reports = [ledger.reports_for_task(t.id) for t in tasks]
     spends = [ledger.task_spend_micros(t.id) for t in tasks]
 
     total_cost_usd = sum(s / 1_000_000 for s in spends)

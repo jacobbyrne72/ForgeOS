@@ -1,25 +1,33 @@
 """forgeos CLI — dispatch subcommands."""
+
 from __future__ import annotations
-import argparse, json, sys
+import argparse
+import json
+import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from forgeos.compiler import compile_mission
 from forgeos.circuit_breaker import CircuitBreaker
 from forgeos.prompt_cache import PromptCache
 
+
 def cmd_run(args) -> int:
     from forgeos import Forge
+
     forge = Forge()
     mission = compile_mission(args.objective, cwd=args.cwd or ".")
     print(f"Mission compiled: {len(mission.tasks)} tasks")
     for t in mission.tasks:
         print(f"  [{t.id[:12]}] {t.subject}")
-    print(f"Spending: ${args.budget:.2f}" if hasattr(args, 'budget') else "")
+    print(f"Spending: ${args.budget:.2f}" if hasattr(args, "budget") else "")
     print("Use forge resume <job-id> to track progress.")
     return 0
 
+
 def cmd_resume(args) -> int:
     from forgeos import open_ledger
+
     home = Path(args.state_dir or Path.cwd() / ".forgeos")
     ledger = open_ledger(home / "ledger.db")
     job_row = ledger.job(args.job_id)
@@ -29,8 +37,10 @@ def cmd_resume(args) -> int:
     print(f"Job {args.job_id}: state={job_row['state']}")
     return 0
 
+
 def cmd_report(args) -> int:
     from forgeos import open_ledger
+
     home = Path(args.state_dir or Path.cwd() / ".forgeos")
     ledger = open_ledger(home / "ledger.db")
     job_row = ledger.job(args.job_id)
@@ -53,8 +63,10 @@ def cmd_report(args) -> int:
             print(f"    cost: ${task_spend / 1e6:.4f}  state: {task.state.value}")
     return 0
 
+
 def cmd_doctor(args) -> int:
-    from forgeos.settings import Settings, default_settings
+    from forgeos.settings import Settings
+
     settings = Settings.load()
     usable = settings.usable_providers()
     total = len(settings.providers)
@@ -69,6 +81,7 @@ def cmd_doctor(args) -> int:
     cache.close()
     return 0
 
+
 def cmd_init(args) -> int:
     cwd = Path(args.cwd or Path.cwd())
     forgeos_dir = cwd / ".forgeos"
@@ -81,6 +94,7 @@ def cmd_init(args) -> int:
     settings_path = forgeos_dir / "settings.json"
     if not settings_path.exists():
         from forgeos.settings import default_settings
+
         settings_path.write_text(
             default_settings().model_dump_json(indent=2),
             encoding="utf-8",
@@ -90,6 +104,7 @@ def cmd_init(args) -> int:
         agents.write_text(f"# AGENTS.md\n\nProject: {cwd.name}\n", encoding="utf-8")
     print("Init complete! Run 'forge run <objective>' to start.")
     return 0
+
 
 def cmd_compile(args) -> int:
     mission = compile_mission(args.objective, cwd=args.cwd or ".")
@@ -101,6 +116,7 @@ def cmd_compile(args) -> int:
         print(f"    caps: {', '.join(t.capabilities)}")
     return 0
 
+
 def cmd_breaker(args) -> int:
     breaker = CircuitBreaker()
     stats = breaker.stats()
@@ -111,6 +127,7 @@ def cmd_breaker(args) -> int:
         icon = {"closed": "[OK]", "open": "[TRIP]", "half_open": "[TEST]"}.get(s["state"], "[?]")
         print(f"{icon} {wid}: {s['state']} ({s['total_calls']} calls, {s['failure_rate']:.0%} fail)")
     return 0
+
 
 def cmd_cache(args) -> int:
     cache = PromptCache()
@@ -125,6 +142,7 @@ def cmd_cache(args) -> int:
     cache.close()
     return 0
 
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="forge", description="ForgeOS CLI")
     sub = parser.add_subparsers(dest="command")
@@ -137,8 +155,7 @@ def main() -> int:
     # `cmd_run` referenced args.budget behind a hasattr() guard while no parser
     # ever defined it, so the guard silently swallowed the miss and a
     # cost-governed harness shipped with no way to cap a run's spend.
-    p_run.add_argument("--budget", type=float, default=None,
-                       help="hard USD ceiling for this run")
+    p_run.add_argument("--budget", type=float, default=None, help="hard USD ceiling for this run")
     p_resume = sub.add_parser("resume", help="Resume a crashed job")
     p_resume.add_argument("job_id")
     p_resume.add_argument("--state-dir", default=None)
@@ -169,10 +186,18 @@ def main() -> int:
         parser.print_help()
         return 0
     dispatch = {
-        "run": cmd_run, "resume": cmd_resume, "report": cmd_report, "adapt": cmd_adapt,
-        "compress": cmd_compress, "bench": cmd_bench, "watch": cmd_watch,
-        "doctor": cmd_doctor, "init": cmd_init, "compile": cmd_compile,
-        "cache": cmd_cache, "breaker": cmd_breaker,
+        "run": cmd_run,
+        "resume": cmd_resume,
+        "report": cmd_report,
+        "adapt": cmd_adapt,
+        "compress": cmd_compress,
+        "bench": cmd_bench,
+        "watch": cmd_watch,
+        "doctor": cmd_doctor,
+        "init": cmd_init,
+        "compile": cmd_compile,
+        "cache": cmd_cache,
+        "breaker": cmd_breaker,
     }
     handler = dispatch.get(args.command)
     if handler is None:
@@ -186,6 +211,7 @@ def main() -> int:
 
 def cmd_compress(args):
     from forgeos.context_compress import compress_context
+
     files = [(f, open(f).read()) for f in args.files] if args.files else []
     result = compress_context(args.objective, files)
     for path, filtered in result:
@@ -197,11 +223,13 @@ def cmd_compress(args):
 
 def cmd_adapt(args):
     from forgeos.adapt import AdapterProfiler
+
     profiler = AdapterProfiler()
     # Load any existing profiles from ledger
     try:
         from forgeos import open_ledger
         from pathlib import Path
+
         ledger = open_ledger(Path.home() / ".forgeos" / "ledger.db")
         rows = ledger._conn.execute(
             "SELECT task_id, worker_id, usd_micros, seconds FROM reports WHERE task_id IS NOT NULL"
@@ -220,13 +248,18 @@ def cmd_adapt(args):
         budget_usd_micros=args.budget,
     )
     if decision:
-        print(json.dumps({
-            "adapter": decision.adapter_name,
-            "reason": decision.reason,
-            "estimated_cost_usd": decision.estimated_cost_usd,
-            "estimated_seconds": decision.estimated_seconds,
-            "confidence": decision.confidence,
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "adapter": decision.adapter_name,
+                    "reason": decision.reason,
+                    "estimated_cost_usd": decision.estimated_cost_usd,
+                    "estimated_seconds": decision.estimated_seconds,
+                    "confidence": decision.confidence,
+                },
+                indent=2,
+            )
+        )
     else:
         print("No suitable adapter found")
     return 0
@@ -234,12 +267,14 @@ def cmd_adapt(args):
 
 def cmd_bench(args):
     from forgeos.bench import run_benchmark_cli
+
     print(run_benchmark_cli(args.objective, iterations=args.iterations or 3))
     return 0
 
 
 def cmd_watch(args):
     from forgeos.watch import watch
+
     print(f"Watching for cost anomalies (interval={args.interval}s)...")
     alerts = watch(None, interval_seconds=args.interval, max_alerts=args.max_alerts or 5)
     for a in alerts:
@@ -286,18 +321,31 @@ def cmd_fleet(args) -> int:
         print(f"  {hint}")
         print(f"  {'-' * 56}")
         for e in entries:
-            cost_label = {"local": "$0 (runs on your hardware)",
-                          "subscription": "$0 marginal (you already paid)",
-                          "api": "pay-per-token",
-                          "gateway": "pay-per-token (multi-provider)"}.get(e['kind'], e['kind'])
+            if e["auth"] == "subscription":
+                cost_label = "$0 marginal (you already paid)"
+            elif e["kind"] == "local":
+                cost_label = "$0 (runs on your hardware)"
+            elif e["kind"] == "gateway":
+                cost_label = "pay-per-token (multi-provider)"
+            else:
+                cost_label = "pay-per-token"
             print(f"  • {e['name']:<14} {cost_label}")
 
-    print_group("FREE / LOCAL — burn these first, they cost nothing",
-                free, "Ollama, local models. Unlimited. No quota. No meter.")
-    print_group("SUBSCRIPTION — you already paid, use every drop",
-                subscription, "Claude, Codex, Copilot. Flat-rate seat. Every task = $0 extra.")
-    print_group("METERED — last resort, every token costs real money",
-                metered, "DeepSeek, OpenRouter. Only when subscriptions are exhausted.")
+    print_group(
+        "FREE / LOCAL — burn these first, they cost nothing",
+        free,
+        "Ollama, local models. Unlimited. No quota. No meter.",
+    )
+    print_group(
+        "SUBSCRIPTION — you already paid, use every drop",
+        subscription,
+        "Claude, Codex, Copilot. Flat-rate seat. Every task = $0 extra.",
+    )
+    print_group(
+        "METERED — last resort, every token costs real money",
+        metered,
+        "DeepSeek, OpenRouter. Only when subscriptions are exhausted.",
+    )
 
     # The money shot
     print(f"\n{'=' * 62}")
@@ -306,21 +354,19 @@ def cmd_fleet(args) -> int:
     rung = 1
     for label, group in [("free/local", free), ("subscription", subscription), ("metered", metered)]:
         if group:
-            names = ", ".join(e['name'] for e in group)
+            names = ", ".join(e["name"] for e in group)
             print(f"  {rung}. {label:<14} → {names}")
             rung += 1
     if rung == 1:
         print("  (nothing configured — run 'forge init' then add providers)")
 
     if subscription:
-        names = ", ".join(e['name'] for e in subscription)
+        names = ", ".join(e["name"] for e in subscription)
         print(f"\n  → forgeos routes through {names} BEFORE touching metered API.")
-        print(f"    Every task your subscription handles = $0 extra cost.")
-        print(f"    Same subscription. 5x more tasks. That's the product.")
+        print("    Every task your subscription handles = $0 extra cost.")
+        print("    Same subscription. 5x more tasks. That's the product.")
     print()
     return 0
-
-
 
 
 def main() -> int:
@@ -362,10 +408,18 @@ def main() -> int:
         parser.print_help()
         return 0
     dispatch = {
-        "run": cmd_run, "resume": cmd_resume, "report": cmd_report,
-        "adapt": cmd_adapt, "compress": cmd_compress, "bench": cmd_bench,
-        "watch": cmd_watch, "doctor": cmd_doctor, "init": cmd_init,
-        "compile": cmd_compile, "cache": cmd_cache, "breaker": cmd_breaker,
+        "run": cmd_run,
+        "resume": cmd_resume,
+        "report": cmd_report,
+        "adapt": cmd_adapt,
+        "compress": cmd_compress,
+        "bench": cmd_bench,
+        "watch": cmd_watch,
+        "doctor": cmd_doctor,
+        "init": cmd_init,
+        "compile": cmd_compile,
+        "cache": cmd_cache,
+        "breaker": cmd_breaker,
         "fleet": cmd_fleet,
     }
     return dispatch[args.command](args)

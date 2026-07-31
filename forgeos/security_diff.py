@@ -1,8 +1,10 @@
 """Diff-aware security scanner — scans git diff, not whole files."""
+
 from __future__ import annotations
-import subprocess, re
+import subprocess
+import re
 from dataclasses import dataclass, field
-from typing import Optional
+
 
 @dataclass
 class DiffLine:
@@ -13,6 +15,7 @@ class DiffLine:
     content: str
     hunk_header: str = ""
 
+
 @dataclass
 class DiffResult:
     files_changed: list[str] = field(default_factory=list)
@@ -20,8 +23,10 @@ class DiffResult:
     lines_removed: list[DiffLine] = field(default_factory=list)
     hunks: list[str] = field(default_factory=list)
 
+
 NEW_FILE_RE2 = re.compile(r"^\+\+\+\s+(?:b/)?(.+)$")
 HUNK_RE = re.compile(r"^@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,(\d+))?\s+@@")
+
 
 def get_diff(
     staged: bool = False,
@@ -46,6 +51,7 @@ def get_diff(
     if result.returncode != 0:
         return DiffResult()
     return _parse_diff(result.stdout or "")
+
 
 def _parse_diff(raw: str) -> DiffResult:
     files_changed: list[str] = []
@@ -77,16 +83,26 @@ def _parse_diff(raw: str) -> DiffResult:
             line_type = raw_line[0] if raw_line else " "
             content = raw_line[1:] if len(raw_line) > 1 else ""
             if line_type == "+":
-                lines_added.append(DiffLine(
-                    path=current_file, old_line=0, new_line=current_new_line,
-                    diff_type="+", content=content,
-                ))
+                lines_added.append(
+                    DiffLine(
+                        path=current_file,
+                        old_line=0,
+                        new_line=current_new_line,
+                        diff_type="+",
+                        content=content,
+                    )
+                )
                 current_new_line += 1
             elif line_type == "-":
-                lines_removed.append(DiffLine(
-                    path=current_file, old_line=current_old_line, new_line=0,
-                    diff_type="-", content=content,
-                ))
+                lines_removed.append(
+                    DiffLine(
+                        path=current_file,
+                        old_line=current_old_line,
+                        new_line=0,
+                        diff_type="-",
+                        content=content,
+                    )
+                )
                 current_old_line += 1
             elif line_type == " ":
                 current_old_line += 1
@@ -99,26 +115,42 @@ def _parse_diff(raw: str) -> DiffResult:
         lines_removed=lines_removed,
     )
 
+
 def _tool_available(name: str) -> bool:
     from forgeos.toolpath import resolve_tool
+
     return resolve_tool(name) is not None
+
 
 def _resolve_tool(name: str) -> str:
     from forgeos.toolpath import resolve_tool
+
     t = resolve_tool(name)
     return t or name
+
 
 def run_semgrep_on_diff(diff: DiffResult, *, cwd: str | None = None):
     if not diff.lines_added:
         return {"status": "skipped", "evidence": "no added lines in diff"}
     if not _tool_available("semgrep"):
         return {"status": "unavailable", "evidence": "semgrep not on PATH"}
-    cmd = [_resolve_tool("semgrep"), "--config", "p/security-audit",
-           "--metrics=off", "--json", "--quiet", "--error", "--diff", "-"]
+    cmd = [
+        _resolve_tool("semgrep"),
+        "--config",
+        "p/security-audit",
+        "--metrics=off",
+        "--json",
+        "--quiet",
+        "--error",
+        "--diff",
+        "-",
+    ]
     try:
-        r = subprocess.run(cmd, input=_reconstruct_diff(diff),
-                         capture_output=True, text=True, timeout=120, cwd=cwd)
+        r = subprocess.run(
+            cmd, input=_reconstruct_diff(diff), capture_output=True, text=True, timeout=120, cwd=cwd
+        )
         import json as _json
+
         try:
             data = _json.loads(r.stdout or "{}")
             findings = data.get("results", [])
@@ -133,31 +165,51 @@ def run_semgrep_on_diff(diff: DiffResult, *, cwd: str | None = None):
     except subprocess.TimeoutExpired:
         return {"status": "unavailable", "evidence": "semgrep timed out"}
 
+
 def run_gitleaks_on_diff(diff: DiffResult, *, cwd: str | None = None):
     if not diff.lines_added:
         return {"status": "skipped", "evidence": "no added lines in diff"}
     if not _tool_available("gitleaks"):
         return {"status": "unavailable", "evidence": "gitleaks not on PATH"}
-    cmd = [_resolve_tool("gitleaks"), "detect", "--no-git", "--no-banner",
-           "--redact", "--report-format", "json", "--report-path", "-"]
+    cmd = [
+        _resolve_tool("gitleaks"),
+        "detect",
+        "--no-git",
+        "--no-banner",
+        "--redact",
+        "--report-format",
+        "json",
+        "--report-path",
+        "-",
+    ]
     try:
-        r = subprocess.run(cmd, input=_reconstruct_diff(diff),
-                         capture_output=True, text=True, timeout=120, cwd=cwd)
+        r = subprocess.run(
+            cmd, input=_reconstruct_diff(diff), capture_output=True, text=True, timeout=120, cwd=cwd
+        )
         import json as _json
+
         findings = []
         try:
-            for item in (_json.loads(r.stdout) or []):
-                findings.append({"rule": item.get("RuleID", ""),
-                                 "path": item.get("File", ""),
-                                 "line": item.get("StartLine", 0),
-                                 "message": item.get("Description", "")[:200]})
+            for item in _json.loads(r.stdout) or []:
+                findings.append(
+                    {
+                        "rule": item.get("RuleID", ""),
+                        "path": item.get("File", ""),
+                        "line": item.get("StartLine", 0),
+                        "message": item.get("Description", "")[:200],
+                    }
+                )
         except (ValueError, _json.JSONDecodeError):
             pass
-        return {"status": "fail" if findings else "pass",
-                "findings": findings, "tool": "gitleaks",
-                "evidence": f"{len(findings)} secret(s) in changed lines"}
+        return {
+            "status": "fail" if findings else "pass",
+            "findings": findings,
+            "tool": "gitleaks",
+            "evidence": f"{len(findings)} secret(s) in changed lines",
+        }
     except subprocess.TimeoutExpired:
         return {"status": "unavailable", "evidence": "gitleaks timed out"}
+
 
 def run_diff_security(diff: DiffResult, *, cwd: str | None = None):
     sem = run_semgrep_on_diff(diff, cwd=cwd)
@@ -180,6 +232,7 @@ def run_diff_security(diff: DiffResult, *, cwd: str | None = None):
         "lines_added": len(diff.lines_added),
         "command": "semgrep + gitleaks on diff",
     }
+
 
 def _reconstruct_diff(diff: DiffResult) -> str:
     lines = []

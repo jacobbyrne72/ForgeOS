@@ -17,6 +17,14 @@ carries the generation it was issued under (`Assignment.generation`), and
 current generation — it records the rejection as a `REPORT_FENCED` event
 (evidence an operator can see) rather than silently dropping it, and touches
 nothing else: no state change, no lease release, no spend, no governor call.
+
+`Scheduler.heartbeat` is fenced by the same counter. An orphan keeps ticking
+after it is reclaimed, and an unfenced tick would refresh the liveness of
+whichever attempt holds that task_id NOW — making a genuinely stuck
+replacement look healthy and postponing the very reclaim that expiry exists
+to perform. Heartbeat fencing differs from report fencing in two deliberate
+ways, each pinned by a test below: it checks the in-memory assignment rather
+than the ledger, and it accepts an unstamped call even after a bump.
 """
 
 from __future__ import annotations
@@ -33,6 +41,7 @@ from forgeos.contracts import (
     TaskState,
     Verdict,
     WorkerReport,
+    now,
 )
 from forgeos.core.governor import Action, Governor
 from forgeos.core.scheduler import Scheduler
@@ -326,3 +335,130 @@ def test_concurrent_reports_from_two_generations_resolve_to_exactly_one_winner(r
     fenced = [e for e in ev.for_task(a.id) if e.type is EventType.REPORT_FENCED]
     assert len(fenced) == 1
     assert fenced[0].payload["report_generation"] == 0
+
+
+# ------------------------------------------------------- heartbeat fencing
+
+
+def _overdue(sch, asn) -> float:
+    """Backdate an assignment so it is already past the reclaim deadline.
+
+    Lets a test assert on the observable consequence -- whether
+    `expire_heartbeats` reclaims -- instead of on a wall-clock delta, which
+    two `now()` calls in the same millisecond would make flaky.
+    """
+    asn.last_heartbeat = now() - (sch.heartbeat_timeout * 2)
+    return asn.last_heartbeat
+
+
+def test_matching_heartbeat_refreshes_the_current_assignment(rig):
+    """The holder of the current assignment can still prove it is alive."""
+    sch, _, _, _ = rig
+    j = _job()
+    a = _task(j, "a")
+    sch.submit(j, [a])
+    asn = sch.assign(j.id, a.id)
+    _overdue(sch, asn)
+
+    accepted = sch.heartbeat(a.id, generation=asn.generation, worker_id=asn.worker_id)
+
+    assert accepted is True
+    assert sch.expire_heartbeats() == []  # refreshed, no longer stale
+
+
+def test_orphan_heartbeat_cannot_refresh_a_newer_attempt(rig):
+    """The core bug: a reclaimed worker must not keep a LATER attempt alive.
+
+    Attempt 1 is reclaimed and attempt 2 takes the slot. The orphaned thread
+    from attempt 1 is still running and still heartbeating. If those
+    heartbeats land on attempt 2's assignment, a genuinely stuck attempt 2
+    looks healthy and its own reclaim is postponed indefinitely.
+    """
+    sch, _, _, _ = rig
+    j = _job()
+    a = _task(j, "a")
+    sch.submit(j, [a])
+
+    orphan = sch.assign(j.id, a.id)      # attempt 1, generation 0
+    _reclaim(sch, orphan)                # heartbeat expires, generation -> 1
+    current = sch.assign(j.id, a.id)     # attempt 2, generation 1, holds the slot
+
+    stamp_before = current.last_heartbeat
+
+    accepted = sch.heartbeat(
+        a.id, generation=orphan.generation, worker_id=orphan.worker_id
+    )
+
+    assert accepted is False
+    # Attempt 2's liveness is exactly as it was -- the orphan touched nothing.
+    assert sch._active[a.id] is current
+    assert sch._active[a.id].last_heartbeat == stamp_before
+    # And attempt 2 is still reclaimable on ITS OWN schedule, which is the
+    # consequence that matters: the orphan bought the stuck worker no time.
+    assert sch.expire_heartbeats(at=stamp_before + sch.heartbeat_timeout + 1) == [a.id]
+
+
+def test_heartbeat_from_a_different_worker_is_fenced(rig):
+    """Right generation, wrong worker. Two assignments can share a generation
+    (a task assigned twice with no reclaim between), so the worker identity is
+    checked as well rather than trusting the counter alone."""
+    sch, _, _, _ = rig
+    j = _job()
+    a = _task(j, "a")
+    sch.submit(j, [a])
+    asn = sch.assign(j.id, a.id)
+    stamp_before = _overdue(sch, asn)
+
+    accepted = sch.heartbeat(a.id, generation=asn.generation, worker_id="someone.else")
+
+    assert accepted is False
+    assert sch._active[a.id].last_heartbeat == stamp_before
+    assert sch.expire_heartbeats() == [a.id]  # still stale, still reclaimed
+
+
+def test_heartbeat_for_an_unknown_task_is_a_no_op(rig):
+    """No assignment to refresh is a False, not a KeyError."""
+    sch, _, _, _ = rig
+    assert sch.heartbeat("tsk-does-not-exist") is False
+
+
+# ------------------------------------------- heartbeat backwards compat
+
+
+def test_unstamped_heartbeat_still_refreshes(rig):
+    """A caller that predates heartbeat fencing must not be broken by it."""
+    sch, _, _, _ = rig
+    j = _job()
+    a = _task(j, "a")
+    sch.submit(j, [a])
+    asn = sch.assign(j.id, a.id)
+    _overdue(sch, asn)
+
+    assert sch.heartbeat(a.id) is True  # no generation, no worker_id
+    assert sch.expire_heartbeats() == []
+
+
+def test_unstamped_heartbeat_is_not_fenced_after_a_bump(rig):
+    """Deliberately ASYMMETRIC with `report()`, which fences unstamped calls
+    once a bump has happened.
+
+    The two cases have opposite cost profiles. An unstamped report accepted
+    after a bump writes a wrong result into the ledger permanently; refusing
+    it costs one retry. An unstamped heartbeat refused after a bump starves
+    the CURRENT, healthy worker of any way to prove liveness -- it gets
+    reclaimed, reassigned, refused again, forever. Accepting it costs only a
+    late reclaim of a stuck worker, which is the mild condition this fencing
+    exists to improve, not a corruption. So the strict rule is right for
+    reports and wrong for heartbeats.
+    """
+    sch, _, _, _ = rig
+    j = _job()
+    a = _task(j, "a")
+    sch.submit(j, [a])
+    orphan = sch.assign(j.id, a.id)
+    _reclaim(sch, orphan)
+    current = sch.assign(j.id, a.id)
+    _overdue(sch, current)
+
+    assert sch.heartbeat(a.id) is True
+    assert sch.expire_heartbeats() == []

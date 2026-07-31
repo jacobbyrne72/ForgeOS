@@ -43,7 +43,9 @@ class Assignment(BaseModel):
     # that eventually builds this worker's WorkerReport must stamp it with
     # this value (WorkerReport.generation) -- that round trip is what lets
     # Scheduler.report tell a live worker's result from an orphaned one still
-    # reporting under a generation the task has since moved past.
+    # reporting under a generation the task has since moved past. The same
+    # value fences Scheduler.heartbeat, so an orphan cannot refresh the
+    # liveness of whichever attempt holds this task_id now.
     generation: int = 0
 
     def stale(self, timeout: float = DEFAULT_HEARTBEAT_TIMEOUT, at: float | None = None) -> bool:
@@ -233,10 +235,60 @@ class Scheduler:
 
     # ------------------------------------------------------------- report
 
-    def heartbeat(self, task_id: str) -> None:
+    def heartbeat(
+        self,
+        task_id: str,
+        *,
+        generation: int | None = None,
+        worker_id: str | None = None,
+    ) -> bool:
+        """Refresh an assignment's liveness, iff the caller still holds it.
+
+        The same fence as `report`, for the same reason: a worker reclaimed by
+        `expire_heartbeats` is not killed, so it keeps heartbeating against a
+        task_id whose slot a DIFFERENT attempt now occupies. Unfenced, those
+        ticks refresh the replacement's stamp and a genuinely stuck attempt
+        looks healthy forever -- the one thing heartbeat expiry exists to
+        catch. Returns True when the stamp was refreshed, False when the
+        caller was fenced out or there was no assignment to refresh; an
+        orphan that gets False back has learned its attempt is over.
+
+        Checked against the in-memory assignment rather than the ledger's
+        generation, unlike `report`. It is the cheaper read -- heartbeats are
+        frequent and this keeps them off the database -- and it is the correct
+        one: the value being guarded IS `_active[task_id].last_heartbeat`, so
+        the holder of that entry is precisely who may write to it.
+        `worker_id` is checked too, because two assignments can share a
+        generation (a task assigned twice with no reclaim between) and the
+        counter alone would not tell them apart.
+
+        An unstamped call is accepted, deliberately UNLIKE `report`, which
+        fences unstamped calls once a bump has happened. The costs are not
+        symmetric. An unstamped report accepted after a bump writes a wrong
+        result into the ledger permanently, and refusing it costs one retry.
+        An unstamped heartbeat refused after a bump leaves the current,
+        healthy worker no way to prove liveness -- reclaimed, reassigned,
+        refused again, forever -- while accepting it costs only a late
+        reclaim of a stuck worker, the mild condition this fencing improves
+        rather than a corruption. Strictness is right there and wrong here.
+
+        A fenced heartbeat is not written to the event log. A fenced REPORT is
+        discarded work and worth an operator's attention exactly once; a
+        fenced heartbeat is a zombie ticking on a timer, and logging every one
+        would spend a stream of event rows proportional to how long the
+        orphan survives -- the supervision-cost failure this file exists to
+        avoid. The return value carries the signal to the only party that can
+        act on it.
+        """
         asn = self._active.get(task_id)
-        if asn is not None:
-            asn.last_heartbeat = now()
+        if asn is None:
+            return False
+        if generation is not None and generation != asn.generation:
+            return False
+        if worker_id is not None and worker_id != asn.worker_id:
+            return False
+        asn.last_heartbeat = now()
+        return True
 
     def report(self, report: WorkerReport, *, job_id: str, budget: Budget | None = None) -> Decision:
         """Record a worker's result, then let the governor rule on it.

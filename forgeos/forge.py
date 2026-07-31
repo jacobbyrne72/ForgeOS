@@ -51,6 +51,7 @@ from .core.governor import Action, Governor
 from .core.market import CapacityMarket
 from .core.resources import ResourceGovernor, WorkerKind, sample_pressure
 from .core.router import Router, Tier
+from .core.quota import QuotaTracker
 from .core.scheduler import Scheduler
 from .core.timing import Phase, SpanStore
 from .core.verify import GateResult, MergeGate, run_security
@@ -262,6 +263,7 @@ class Forge:
         self.settings = settings or Settings.load()
         self.registry = registry or default_registry()
         self.market = market or CapacityMarket()
+        self.quota = QuotaTracker()
 
         self.resources = ResourceGovernor()
         self.governor = Governor(self.ledger, self.events)
@@ -525,9 +527,17 @@ class Forge:
                     return None
 
             # --- route: cheapest tier that can finish, priced by the market ---
+            # Quota awareness: skip providers whose window is exhausted.
+            # A subscription with 0% remaining is not "cheapest capable" —
+            # routing there burns a retry and a rate-limit error. Fall through.
+            exhausted = {
+                name for name, state in self.quota._states.items()
+                if not state.available()
+            }
             with self._sched_lock:
                 stats = {r["worker_id"]: r
-                         for r in self.ledger.worker_stats(spec.capabilities)}
+                         for r in self.ledger.worker_stats(spec.capabilities)
+                         if not any(ex in r["worker_id"] for ex in exhausted)}
             route = self.router.route(
                 spec.capabilities,
                 stats=stats,
@@ -723,6 +733,12 @@ class Forge:
                                f"{self.governor.remedy_for(result.failure, attempts, self.max_attempts).value}",
                         usd_micros=self.ledger.task_spend_micros(spec.id),
                     )
+                # Quota learning: if the blocker mentions a rate limit or reset,
+                # feed it to the tracker so routing skips this provider until
+                # the window reopens. "resets in 2h 15m" → don't burn retries.
+                if result.blocker:
+                    provider = worker_id.split(".")[0] if "." in worker_id else worker_id
+                    self.quota.record_report(provider, result.blocker)
                 attempt_history.insert(0, _attempt_summary(attempts, result, evidence, kept_lines))
                 if result.failure is not None:
                     escalate_route = route
