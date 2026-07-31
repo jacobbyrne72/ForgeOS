@@ -15,6 +15,7 @@ on-disk ledger seeded directly through the public `Ledger` API, the same way
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -212,6 +213,38 @@ def test_receipts_totals_across_jobs(seeded_state_dir, capsys):
     cli.main(["receipts", "--state-dir", str(seeded_state_dir)])
     out = capsys.readouterr().out
     assert "Total: $2.2000 across 1 job(s), 1 accepted task(s), $2.2000/accepted" in out
+
+
+def test_receipts_json_reports_resume_candidates_and_spend_provenance(tmp_path, capsys):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    ledger = Ledger(state_dir / "ledger.db")
+    job = JobSpec(objective="find resumable work", cwd=".")
+    ledger.open_job(job)
+    done_task = TaskSpec(job_id=job.id, subject="finished", description="d")
+    pending_task = TaskSpec(job_id=job.id, subject="resume me", description="d")
+    ledger.add_task(done_task, state=TaskState.DONE)
+    ledger.add_task(pending_task, state=TaskState.PENDING)
+    ledger.record_spend(job.id, "worker", "model", 300_000, task_id=done_task.id)
+    ledger.record_spend(job.id, "worker", "subscription", 700_000,
+                        task_id=pending_task.id, kind="estimate")
+    ledger.close()
+
+    rc = cli.main(["receipts", "--state-dir", str(state_dir), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert payload["schema"] == "forgeos.receipts.v1"
+    assert payload["ok"] is True
+    receipt = payload["jobs"][0]
+    assert receipt["unfinished_tasks"] == 1
+    assert receipt["resume_available"] is True
+    assert receipt["resume_command"].startswith("python -m forgeos resume ")
+    assert receipt["isolate_worktrees"] is False
+    assert receipt["base_ref"] is None
+    assert receipt["measured_spend_usd"] == 0.3
+    assert receipt["modelled_spend_usd"] == 0.7
+    assert payload["totals"]["attributed_spend_usd"] == 1.0
 
 
 def test_receipts_with_no_accepted_tasks_reports_cost_as_not_applicable(tmp_path, capsys):

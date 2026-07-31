@@ -716,6 +716,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("fleet", help="What you have, what's alive, what's cheapest TODAY")
     p_receipts = sub.add_parser("receipts", help="Read-only ledger spend and acceptance summary")
     p_receipts.add_argument("--state-dir", default=None)
+    p_receipts.add_argument("--json", action="store_true", help="Machine-readable receipt/status output")
     # `python -m forgeos` owns team/serve-mcp/memory while `forge` owned the
     # other 43. Two entry points with disjoint command sets is a trap: the
     # README's own Team-mode section says to run team mode, and `forge team`

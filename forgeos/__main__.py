@@ -39,6 +39,7 @@ fast and makes each command trivial to monkeypatch in isolation from tests.
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -145,8 +146,17 @@ def cmd_receipts(args: argparse.Namespace) -> int:
     from forgeos.contracts import TaskState
 
     state_dir = _resolve_state_dir(args.state_dir)
+    machine_readable = bool(getattr(args, "json", False))
     ledger_path = state_dir / "ledger.db"
     if not ledger_path.exists():
+        if machine_readable:
+            print(json.dumps({
+                "schema": "forgeos.receipts.v1",
+                "ok": False,
+                "error": "ledger_not_found",
+                "ledger_path": str(ledger_path),
+            }, sort_keys=True))
+            return 1
         print(f"No ledger at {ledger_path}.")
         print("Fix: pass --state-dir to a directory forgeos has run a job in, or run one first.")
         return 1
@@ -156,6 +166,15 @@ def cmd_receipts(args: argparse.Namespace) -> int:
     try:
         ledger = Ledger(ledger_path)
     except (OSError, sqlite3.Error) as exc:
+        if machine_readable:
+            print(json.dumps({
+                "schema": "forgeos.receipts.v1",
+                "ok": False,
+                "error": "ledger_unreadable",
+                "ledger_path": str(ledger_path),
+                "message": str(exc),
+            }, sort_keys=True))
+            return 1
         print(f"Cannot open ledger at {ledger_path}: {exc}")
         print("Fix: check the file is a valid forgeos ledger and this process can read it.")
         return 1
@@ -169,32 +188,126 @@ def cmd_receipts(args: argparse.Namespace) -> int:
         # is not in scope for this task).
         jobs = ledger._conn.execute("SELECT * FROM jobs ORDER BY created_at DESC").fetchall()
         if not jobs:
+            if machine_readable:
+                print(json.dumps({
+                    "schema": "forgeos.receipts.v1",
+                    "ok": True,
+                    "state_dir": str(state_dir),
+                    "jobs": [],
+                    "workers": [],
+                    "totals": {
+                        "job_count": 0,
+                        "task_count": 0,
+                        "done_tasks": 0,
+                        "failed_tasks": 0,
+                        "unfinished_tasks": 0,
+                        "attributed_spend_usd": 0.0,
+                        "measured_spend_usd": 0.0,
+                        "modelled_spend_usd": 0.0,
+                    },
+                }, sort_keys=True))
+                return 0
             print("Ledger has no jobs recorded.")
             return 0
 
         total_spend_micros = 0
+        total_measured_micros = 0
+        total_modelled_micros = 0
         total_accepted = 0
-        print(f"Jobs: {len(jobs)}")
-        print("-" * 72)
+        total_failed = 0
+        total_unfinished = 0
+        receipt_jobs = []
+        if not machine_readable:
+            print(f"Jobs: {len(jobs)}")
+            print("-" * 72)
         for job in jobs:
             spend = ledger.job_spend_micros(job["id"])
+            measured, modelled = ledger.job_spend_split(job["id"])
             tasks = ledger.tasks_for_job(job["id"])
             done = sum(1 for t in tasks if t["state"] == TaskState.DONE.value)
             failed = sum(1 for t in tasks if t["state"] == TaskState.FAILED.value)
+            unfinished = len(ledger.unfinished_tasks(job["id"]))
             per_accepted = f"${spend / done / 1e6:.4f}" if done else "n/a"
             status = job["state"] + (" (closed)" if job["closed_at"] is not None else "")
-            print(f"  [{job['id'][:16]}] {job['objective'][:44]}")
-            print(
-                f"    state={status}  tasks={len(tasks)} done={done} failed={failed}"
-                f"  spend=${spend / 1e6:.4f}  $/accepted={per_accepted}"
-            )
+            if not machine_readable:
+                print(f"  [{job['id'][:16]}] {job['objective'][:44]}")
+                print(
+                    f"    state={status}  tasks={len(tasks)} done={done} failed={failed}"
+                    f"  spend=${spend / 1e6:.4f}  $/accepted={per_accepted}"
+                )
             total_spend_micros += spend
+            total_measured_micros += measured
+            total_modelled_micros += modelled
             total_accepted += done
+            total_failed += failed
+            total_unfinished += unfinished
+            if machine_readable:
+                resume_available = unfinished > 0
+                receipt_jobs.append({
+                    "id": job["id"],
+                    "objective": job["objective"],
+                    "cwd": job["cwd"],
+                    "state": job["state"],
+                    "closed_at": job["closed_at"],
+                    "isolate_worktrees": bool(job["isolate_worktrees"]),
+                    "base_ref": job["base_ref"],
+                    "task_count": len(tasks),
+                    "done_tasks": done,
+                    "failed_tasks": failed,
+                    "unfinished_tasks": unfinished,
+                    "resume_available": resume_available,
+                    "resume_command": (
+                        f"python -m forgeos resume {job['id']} --state-dir {state_dir}"
+                        if resume_available else None
+                    ),
+                    "attributed_spend_usd": round(spend / 1e6, 6),
+                    "measured_spend_usd": round(measured / 1e6, 6),
+                    "modelled_spend_usd": round(modelled / 1e6, 6),
+                    "cost_per_accepted_usd": round(spend / done / 1e6, 6) if done else None,
+                    "measured_cost_per_accepted_usd": (
+                        round(measured / done / 1e6, 6) if done else None
+                    ),
+                })
 
         by_worker = ledger._conn.execute(
             "SELECT worker_id, COUNT(*) AS calls, COALESCE(SUM(usd_micros),0) AS micros"
             " FROM spend GROUP BY worker_id ORDER BY micros DESC"
         ).fetchall()
+        if machine_readable:
+            workers = [
+                {
+                    "worker_id": row["worker_id"],
+                    "calls": row["calls"],
+                    "attributed_spend_usd": round(row["micros"] / 1e6, 6),
+                }
+                for row in by_worker
+            ]
+            print(json.dumps({
+                "schema": "forgeos.receipts.v1",
+                "ok": True,
+                "state_dir": str(state_dir),
+                "jobs": receipt_jobs,
+                "workers": workers,
+                "totals": {
+                    "job_count": len(jobs),
+                    "task_count": total_accepted + total_failed + total_unfinished,
+                    "done_tasks": total_accepted,
+                    "failed_tasks": total_failed,
+                    "unfinished_tasks": total_unfinished,
+                    "attributed_spend_usd": round(total_spend_micros / 1e6, 6),
+                    "measured_spend_usd": round(total_measured_micros / 1e6, 6),
+                    "modelled_spend_usd": round(total_modelled_micros / 1e6, 6),
+                    "cost_per_accepted_usd": (
+                        round(total_spend_micros / total_accepted / 1e6, 6)
+                        if total_accepted else None
+                    ),
+                    "measured_cost_per_accepted_usd": (
+                        round(total_measured_micros / total_accepted / 1e6, 6)
+                        if total_accepted else None
+                    ),
+                },
+            }, sort_keys=True))
+            return 0
         if by_worker:
             print()
             print("Spend by worker:")
@@ -546,6 +659,7 @@ def main(argv: list[str] | None = None) -> int:
     p_receipts.add_argument(
         "--state-dir", help="Where the ledger lives (default: forgeos's DEFAULT_HOME, ~/.forgeos)"
     )
+    p_receipts.add_argument("--json", action="store_true", help="Machine-readable receipt/status output")
 
     p_watch = sub.add_parser(
         "watch", help="Unattended job-queue daemon: poll --queue, run each job, write receipts"
