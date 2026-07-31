@@ -9,6 +9,27 @@ description = "Cost-governed agent harness: eliminate the request, auto-discover
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"
+authors = [{name = "jacobbyrne72"}]
+keywords = [
+    "ai", "llm", "agents", "coding-agent", "cost-optimization",
+    "token-optimization", "orchestration", "multi-agent", "harness",
+]
+# Trove classifiers are how PyPI search and filtering work at all; without
+# them the listing is unfindable by anyone who does not already know the
+# name. Kept to claims that are true today: 3.11/3.12 are what CI proves.
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
 scripts = {forge = "forgeos.cli:main"}
 dependencies = [
     "pydantic>=2.0",
@@ -24,6 +45,18 @@ dependencies = [
 [project.optional-dependencies]
 gateway = ["litellm"]
 dev = ["pytest>=8"]
+
+# Declared AFTER every array in [project]: a TOML table header captures
+# everything until the next header, so placing this above `dependencies`
+# silently swallowed it into the urls table — the package would have shipped
+# with no declared dependencies at all. Caught by parsing the file back and
+# checking what landed where, which is the only way this class of TOML bug
+# announces itself.
+[project.urls]
+Homepage = "https://github.com/jacobbyrne72/ForgeOS"
+Repository = "https://github.com/jacobbyrne72/ForgeOS"
+Issues = "https://github.com/jacobbyrne72/ForgeOS/issues"
+Changelog = "https://github.com/jacobbyrne72/ForgeOS/releases"
 
 [tool.setuptools.packages.find]
 # hooks/ and research/ are tooling and corpus scripts, not part of the
