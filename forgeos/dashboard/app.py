@@ -272,7 +272,7 @@ class ChatApproval(BaseModel):
 # ------------------------------------------------------------------- app
 
 
-def create_app(state_dir: str | Path) -> FastAPI:
+def create_app(state_dir: str | Path, queue_dir: str | Path | None = None) -> FastAPI:
     """Build one dashboard instance over the stores rooted at `state_dir`.
 
     A factory rather than a module-level singleton so tests can point each
@@ -281,6 +281,11 @@ def create_app(state_dir: str | Path) -> FastAPI:
     """
     state_dir = Path(state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
+    queue_dir = Path(
+        queue_dir
+        if queue_dir is not None
+        else os.environ.get("FORGEOS_QUEUE_DIR", str(state_dir / "queue"))
+    )
 
     ledger = Ledger(state_dir / LEDGER_DB)
     event_log = EventLog(state_dir / EVENTS_DB)
@@ -550,6 +555,17 @@ def create_app(state_dir: str | Path) -> FastAPI:
     @app.get("/api/quota")
     def get_quota() -> dict[str, Any]:
         return _quota_view()
+
+    @app.get("/api/queue/status")
+    def get_queue_status(stale_after_seconds: float = 30.0) -> dict[str, Any]:
+        """Read queue liveness without starting Forge or contacting a provider."""
+        if not math.isfinite(stale_after_seconds) or stale_after_seconds <= 0:
+            raise HTTPException(status_code=422, detail="stale_after_seconds must be positive and finite")
+        from ..watch import queue_status
+
+        return queue_status(
+            queue_dir, stale_after_seconds=stale_after_seconds
+        ).model_dump(mode="json")
 
     @app.get("/api/jobs")
     def get_jobs() -> dict[str, Any]:

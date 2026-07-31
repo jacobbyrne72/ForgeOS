@@ -8,6 +8,8 @@ that breaks naive dashboards (divide-by-zero, absent keys, NaN).
 
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
 
 import pytest
@@ -80,6 +82,29 @@ def test_jobs_on_fresh_empty_db_is_an_empty_list(client: TestClient):
     res = client.get("/api/jobs")
     assert res.status_code == 200
     assert res.json() == {"jobs": []}
+
+
+def test_queue_status_endpoint_reports_heartbeat_without_provider_calls(state_dir: Path):
+    queue = state_dir / "queue"
+    queue.mkdir(parents=True)
+    (queue / "heartbeat.json").write_text(
+        json.dumps({
+            "ts": time.time(), "state": "idle", "current_job": None,
+            "jobs_done": 4, "jobs_failed": 0,
+        }),
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(state_dir, queue_dir=queue))
+
+    res = client.get("/api/queue/status")
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["heartbeat_valid"] is True
+    assert body["stale"] is False
+    assert body["state"] == "idle"
+    assert body["jobs_done"] == 4
+    assert body["jobs_failed"] == 0
 
 
 def test_job_detail_missing_job_is_404(client: TestClient):

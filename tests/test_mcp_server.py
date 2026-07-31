@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -121,7 +122,10 @@ def test_tools_list_shape(server):
     resp = _recv(server)
 
     tools = {t["name"]: t for t in resp["result"]["tools"]}
-    assert set(tools) == {"forgeos_doctor", "forgeos_receipts", "forgeos_plan", "forgeos_submit_job"}
+    assert set(tools) == {
+        "forgeos_doctor", "forgeos_receipts", "forgeos_plan",
+        "forgeos_submit_job", "forgeos_queue_status",
+    }
     for tool in tools.values():
         assert isinstance(tool["description"], str) and tool["description"]
         assert tool["inputSchema"]["type"] == "object"
@@ -182,6 +186,39 @@ def test_plan_call_with_blank_objective_is_a_tool_error(server):
 
     result = resp["result"]
     assert result["isError"] is True
+
+
+# ---------------------------------------------------------- queue_status
+
+
+def test_queue_status_call_returns_read_only_heartbeat_snapshot(tmp_path):
+    queue = tmp_path / "queue"
+    queue.mkdir()
+    (queue / "heartbeat.json").write_text(
+        json.dumps({
+            "ts": time.time(), "state": "idle", "current_job": None,
+            "jobs_done": 3, "jobs_failed": 1,
+        }),
+        encoding="utf-8",
+    )
+    proc = _start_server(tmp_path, queue=queue)
+    try:
+        _initialize(proc)
+        _send(proc, {
+            "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+            "params": {"name": "forgeos_queue_status", "arguments": {}},
+        })
+        resp = _recv(proc)
+        result = resp["result"]
+        assert result["isError"] is False
+        status = json.loads(result["content"][0]["text"])
+        assert status["heartbeat_valid"] is True
+        assert status["stale"] is False
+        assert status["state"] == "idle"
+        assert status["jobs_done"] == 3
+        assert status["jobs_failed"] == 1
+    finally:
+        _shutdown(proc)
 
 
 # --------------------------------------------------------------- submit_job

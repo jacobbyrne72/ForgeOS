@@ -910,6 +910,14 @@
       <div class="ledger-cells" id="stat-grid"></div>
     </section>
 
+    <section class="panel" id="queue-panel">
+      <div class="panel-head">
+        <h2>Queue monitor</h2>
+        <span class="hint">heartbeat + OS ownership lock · read-only</span>
+      </div>
+      <div id="queue-status-body" class="muted">Loading queue status…</div>
+    </section>
+
     <section class="panel" id="jobs-panel">
       <div class="panel-head">
         <h2>Jobs</h2>
@@ -998,7 +1006,7 @@
 
 <script>
   const state = {
-    summary: null, jobs: [], workers: [], activity: [],
+    summary: null, queue: null, jobs: [], workers: [], activity: [],
     selectedJobId: null, jobDetail: null, selectedRow: null,
   };
   let ws = null;
@@ -1178,6 +1186,20 @@
         <p class="sub">waiting on a decision</p>
       </div>
     `;
+  }
+
+  function renderQueueStatus() {
+    const q = state.queue;
+    const body = document.getElementById("queue-status-body");
+    if (!q) return;
+    const healthy = q.heartbeat_valid && !q.stale;
+    const label = healthy ? "healthy" : q.heartbeat_valid ? "stale" : "unavailable";
+    const tone = healthy ? "done" : q.stale ? "blocked" : "failed";
+    const age = q.heartbeat_age_seconds == null ? "—" : fmtNum(q.heartbeat_age_seconds) + "s";
+    const error = q.heartbeat_error ? ` · ${esc(q.heartbeat_error)}` : "";
+    body.innerHTML = `<span class="badge badge-${tone}">${esc(label)}</span>
+      <span class="num"> owner ${q.owner_active ? "active" : "idle"} · heartbeat ${q.heartbeat_valid ? "valid" : "invalid"} · age ${esc(age)}</span>
+      <span class="muted"> · state ${esc(q.state || "—")} · job ${esc(q.current_job || "—")} · done ${esc(fmtNum(q.jobs_done))} · failed ${esc(fmtNum(q.jobs_failed))}${error}</span>`;
   }
 
   // ---------------------------------------------------------- top-rail
@@ -1615,6 +1637,11 @@
     renderSummary();
   }
 
+  async function loadQueueStatus() {
+    state.queue = await api("/api/queue/status");
+    renderQueueStatus();
+  }
+
   async function loadJobs() {
     const d = await api("/api/jobs");
     state.jobs = d.jobs;
@@ -1732,7 +1759,7 @@
   async function init() {
     try {
       await Promise.all([
-        loadSummary(), loadJobs(), loadEconomy(), loadWorkers(), loadProviders(), loadActivity(),
+        loadSummary(), loadQueueStatus(), loadJobs(), loadEconomy(), loadWorkers(), loadProviders(), loadActivity(),
       ]);
     } catch (e) {
       showError(e);
@@ -1748,6 +1775,7 @@
       if (settings.feed === "paused") return;
       loadEconomy();
       loadWorkers();
+      loadQueueStatus();
     }, 10000);
   }
 

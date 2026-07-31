@@ -51,6 +51,8 @@
 - `forgeos/core/quota_ingest.py`, `forgeos/core/router.py`, `forgeos/registry.py`, `tests/test_quota_ingest.py`, `tests/test_router.py` — offline header/report normalization and effective-cost arbitration for mapped subscription capacity.
 - `forgeos/cli.py`, `forgeos/core/quota_ingest.py`, `tests/test_cli_dispatch.py` — safe local `quota ingest` / `ingest` commands for header JSON and copied CLI reports; fixed duration-suffix parsing.
 - `forgeos/core/effort.py`, `forgeos/cli.py`, `forgeos/prompts/prefix.py`, `tests/test_effort.py` — task-difficulty effort routing and a real bounded `forge init` repository scan (committed in `4c9390f`).
+- `forgeos/mcp_server.py`, `forgeos/dashboard/app.py`, `forgeos/dashboard/static/index.html` — exposed the read-only queue heartbeat/OS-lock monitor through MCP and the dashboard API/UI.
+- `tests/test_mcp_server.py`, `tests/test_dashboard.py` — wire-level MCP and dashboard queue-status regression coverage.
 
 ## Commands run
 - `rtk proxy python -m pytest tests -q -m "not slow"`
@@ -82,10 +84,14 @@
 - `python -m pytest tests/test_router.py tests/test_quota.py -q` (80 passed)
 - `ruff check forgeos/cli.py forgeos/core/quota_ingest.py tests/test_cli_dispatch.py`; `python -m py_compile ...` (passed)
 - `python -m pytest tests/test_effort.py -q` (28 passed)
+- `python -m pytest tests/test_mcp_server.py tests/test_dashboard.py -q --timeout=300` (34 passed, 1 existing FastAPI/httpx deprecation warning)
+- `python -m py_compile forgeos/mcp_server.py forgeos/dashboard/app.py`; `git diff --check` (passed)
+- `python C:\Users\byrne\.codex-brain\sweep.py run forgeos-mcp-dashboard-regression --timeout 600 --cmd 'python -m pytest "{item}" -q --timeout=600' --items <90 test files>` (90 items passed, rc 0, 634s)
+- `preflight.py` for queue monitor follow-up (empty prior-work output); `pulse.py watch --quiet` (only unrelated edge-council warnings)
 
 ## Test status
 - Passing: full checkpointed suite (`forgeos-final-suite-clean`, rc 0, 188.4s); 26 diagnostics/dashboard-chat tests; 28 effort tests; 147 CLI dispatch tests; 4 quota-ingest tests; 80 router/quota tests; 106 focused quota/Forge/dashboard tests; 164 focused benchmark/CLI/aggregator tests; Ruff; compileall; CLI dogfood and no-call benchmark smoke checks.
-- Failing: full non-slow sweep currently has one unrelated concurrent failure in `tests/test_forgebench_packing.py::test_definition_weighting_is_what_makes_that_true` while `forgeos/forgebench.py` is concurrently modified.
+- Failing: none in the latest 90-item checkpointed full-suite sweep; Ruff was unavailable in this shell (`No module named ruff`).
 - Not run: live provider calls or live execution (intentionally gated); the full suite was run without provider calls.
 
 ## Known blockers
@@ -115,3 +121,4 @@
 - Real CLI dogfood passed: a helper process held the queue lock, a duplicate `python -m forgeos watch --once` returned rc 2 with `another worker owns the queue`, then clean handoff returned rc 0 and wrote an `idle` heartbeat; the lock marker persisted safely and the owner exited rc 0. No provider work was queued.
 - Added read-only `queue-status` monitor contract in `38fe18a`: JSON/text output reports OS lock ownership, heartbeat validity/age, state, current job, and counts; exit 0 means fresh valid heartbeat, exit 1 means missing/invalid/stale. Real CLI dogfood returned fresh rc 0 and stale rc 1. Focused watch/CLI tests passed 200, and the fresh checkpointed full suite (`forgeos-final-suite-after-queue-status`, sweep timeout 600) passed rc 0 in 184s.
 - New concurrent work is dirty in dashboard/chat, diagnostics, auto-discovery, resources, CLI, and Forge integration files; preserve those files and do not stage or revert them without ownership evidence.
+- Queue monitor exposure is complete and remains read-only: MCP requires `--queue`; dashboard uses `queue_dir=` or `FORGEOS_QUEUE_DIR`, defaulting to `<state_dir>/queue`. No provider calls were made.

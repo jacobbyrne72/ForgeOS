@@ -24,6 +24,8 @@ re-deriving it:
 - `forgeos_submit_job` -> `forgeos.watch._parse_job_spec` (the exact validator
                         `watch_queue` itself uses on a picked-up file), then
                         writes the same validated JSON into `--queue/incoming`
+- `forgeos_queue_status` -> `forgeos.watch.queue_status` (read-only heartbeat
+                        and OS-lock inspection; never starts Forge)
 
 `forgeos_submit_job` refuses without an explicit `budget_usd`, same rule
 `watch_queue` and `team` already enforce -- forgeos never invents a spending
@@ -40,6 +42,7 @@ import argparse
 import contextlib
 import io
 import json
+import math
 import sys
 import uuid
 from pathlib import Path
@@ -138,6 +141,23 @@ class McpServer:
                     "required": ["objective", "budget_usd"],
                 },
             },
+            {
+                "name": "forgeos_queue_status",
+                "description": (
+                    "Read-only queue liveness: OS ownership lock, heartbeat validity, "
+                    "age, current job, and completed/failed counts. Requires --queue; "
+                    "never starts Forge or calls a provider."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "stale_after_seconds": {
+                            "type": "number",
+                            "description": "Heartbeat age threshold (default: 30 seconds)",
+                        },
+                    },
+                },
+            },
         ]
 
     # ------------------------------------------------------------- tool calls
@@ -214,11 +234,30 @@ class McpServer:
         (incoming / name).write_text(json.dumps(raw), encoding="utf-8")
         return json.dumps({"queued": name, "path": str(incoming / name)})
 
+    def _call_queue_status(self, arguments: dict[str, Any]) -> str:
+        if not self.queue_dir:
+            raise _ToolError("queue status unavailable: this server was not started with --queue")
+        stale_after = arguments.get("stale_after_seconds", 30.0)
+        if (
+            isinstance(stale_after, bool)
+            or not isinstance(stale_after, (int, float))
+            or not math.isfinite(stale_after)
+            or stale_after <= 0
+        ):
+            raise _ToolError("stale_after_seconds must be a finite positive number")
+
+        from .watch import queue_status
+
+        return queue_status(
+            self.queue_dir, stale_after_seconds=float(stale_after)
+        ).model_dump_json()
+
     _HANDLERS = {
         "forgeos_doctor": _call_doctor,
         "forgeos_receipts": _call_receipts,
         "forgeos_plan": _call_plan,
         "forgeos_submit_job": _call_submit_job,
+        "forgeos_queue_status": _call_queue_status,
     }
 
 
