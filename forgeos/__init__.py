@@ -100,6 +100,8 @@ __all__ = [
     "AdaptiveBatch",
     "SmartBatchPredictor",
     "CostAuditor",
+    "CostRouter",
+    "Route",
 ]
 
 from .adaptive_batch import AdaptiveBatch
@@ -108,3 +110,4 @@ from .smart_batch import SmartBatchPredictor
 from .cost_audit import CostAuditor
 
 from .cost_router import CostRouter, Route
+from .cost_tracker import CostTracker

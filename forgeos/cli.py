@@ -394,7 +394,7 @@ def main() -> int:
     sub.add_parser("adaptbatch", help="Auto-select cheapest batch strategy for any workload")
     sub.add_parser("smartbatch", help="ML-inspired batch cost predictor using history")
     p_audit = sub.add_parser("audit", help="Scan project for AI cost waste")
-    p_route = sub.add_parser("route", help="Route tasks to cheapest execution path")
+    sub.add_parser("route", help="Route tasks to cheapest execution path")
     p_audit.add_argument("--dir", default=".", dest="audit_dir")
     args = parser.parse_args()
     if not args.command:
@@ -419,6 +419,7 @@ def main() -> int:
         "smartbatch": cmd_smartbatch,
         "audit": cmd_audit,
         "route": cmd_route,
+        "track": cmd_track,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -504,8 +505,36 @@ def cmd_smartbatch(args):
 
 
 
+
+
+def cmd_track(args):
+    from forgeos.cost_tracker import CostTracker
+    t = CostTracker()
+    print("=== Cost Tracker ===")
+    total = t.total_saved()
+    print("Total savings: $" + str(total["total_usd"]))
+    print("Total events:", total["total_events"])
+    print("Total tokens saved:", total["total_tokens"])
+    print()
+    by_type = t.by_task_type()
+    if by_type:
+        print("By task type:")
+        for bt in by_type:
+            print("  " + bt["task_type"] + ": $" + str(bt["total_usd"]) + " (" + str(bt["count"]) + " events)")
+    print()
+    proj = t.monthly_projection()
+    print("Monthly projection: $" + str(proj["monthly_usd"]))
+    print("Yearly projection: $" + str(proj["yearly_usd"]))
+    print()
+    recent = t.recent(5)
+    if recent:
+        print("Recent events:")
+        for r in recent:
+            print("  " + r["task_type"] + ": $" + str(r["saved_usd"]) + " (" + r["strategy"] + ")")
+    return 0
+
 def cmd_route(args):
-    from forgeos.cost_router import CostRouter, Route
+    from forgeos.cost_router import CostRouter
     router = CostRouter()
     print("=== Cost Router ===")
     demo_tasks = [
