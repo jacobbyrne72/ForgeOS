@@ -378,6 +378,8 @@ def main() -> int:
     p_models.add_argument("--max-cost", type=float, default=1.0, dest="max_cost")
     p_compress.add_argument("objective")
     p_compress.add_argument("--files", nargs="*", default=[])
+    p_output_compress = sub.add_parser("output-compress", help="Compress generated output to a token budget")
+    p_output_compress.add_argument("--max-tokens", type=int, default=100, dest="max_tokens")
     p_adapt = sub.add_parser("adapt", help="Adaptive adapter selection")
     p_adapt.add_argument("--capabilities", default="")
     p_adapt.add_argument("--budget", type=int, default=None)
@@ -409,6 +411,7 @@ def main() -> int:
     p_guard.add_argument("--guard-budget", type=float, default=1.0, dest="guard_budget")
     sub.add_parser("track", help="Show recorded cost savings")
     sub.add_parser("efficiency", help="Show token efficiency metrics")
+    sub.add_parser("dashboard", help="Show the ForgeOS cost dashboard")
     p_audit.add_argument("--dir", default=".", dest="audit_dir")
     args = parser.parse_args()
     if not args.command:
@@ -442,6 +445,7 @@ def main() -> int:
         "forecast": cmd_forecast,
         "efficiency": cmd_efficiency,
         "dashboard": cmd_dashboard,
+        "output-compress": cmd_output_compress,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -659,11 +663,7 @@ def cmd_schedule(args):
 
 def cmd_dashboard(args):
     from forgeos.cost_audit import CostAuditor
-    from forgeos.cost_router import CostRouter
-    from forgeos.cost_scheduler import CostScheduler
     from forgeos.cost_guard import CostGuard
-    from forgeos.cost_forecast import CostForecast
-    from forgeos.cost_efficiency import CostEfficiency
     from forgeos.cost_tracker import CostTracker
     print("=" * 56)
     print("  FORGEOS COST DASHBOARD")
@@ -707,13 +707,11 @@ def cmd_dashboard(args):
     print()
 
     # 5. Efficiency
-    eff = CostEfficiency()
     print("  EFFICIENCY")
     print("    Track this command for ongoing metrics")
     print()
 
     # 6. Router
-    router = CostRouter()
     print("  ROUTING RULES")
     rules = {
         "format": "local",
@@ -730,6 +728,21 @@ def cmd_dashboard(args):
     print("=" * 56)
     print("  v" + __import__("forgeos").__version__)
     print("=" * 56)
+    return 0
+
+
+def cmd_output_compress(args):
+    from forgeos.output_compressor import compress_output
+    # Create a large demo output
+    demo = "\n".join(["model generated line " + str(i) + ": code here" for i in range(200)])
+    result, info = compress_output(demo, target_tokens=args.max_tokens)
+    print("=== Output Compressor ===")
+    print("Original tokens:", info["original_tokens"])
+    print("Compressed tokens:", info["compressed_tokens"])
+    print("Tokens saved:", info["tokens_saved"])
+    print("Savings:", str(info["savings_pct"]) + "%")
+    print()
+    print("Preview:", result[:300])
     return 0
 
 
