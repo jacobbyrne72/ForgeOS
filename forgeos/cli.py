@@ -1038,3 +1038,16 @@ def cmd_prompt_cache(args):
 
     return 0
 
+
+def cmd_adaptive_batch(args):
+    from forgeos.adaptive_batch_cost import AdaptiveBatchCostOptimizer
+    opt = AdaptiveBatchCostOptimizer()
+    for i in range(args.tasks):
+        result = opt.recommend_batch_size("code_gen", args.tokens)
+        print("Task %d: batch=%d cost=$%.4f savings=$%.4f" % (
+            i+1, result["optimal_batch_size"],
+            result["estimated_cost_per_task"], result["savings_vs_individual"]))
+    trend = opt.get_savings_trend()
+    print("Trend:", trend["trend"], "-", trend["total_optimized_tasks"], "tasks optimized")
+    return 0
+
