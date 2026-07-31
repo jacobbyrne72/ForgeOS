@@ -78,6 +78,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -251,6 +252,17 @@ class OMCTeamAdapter(WorkerAdapter):
             return False, (
                 f"omc plugin entrypoint not found at '{self._bin_path}'; "
                 "install/update the oh-my-claudecode plugin or pass bin_path/OMC_BIN_PATH"
+            )
+        # On native Windows the omc team runtime hard-requires a tmux-compatible
+        # binary (psmux provides one); without it the runtime prints a warning
+        # and dies before running any task. Observed live: a "healthy" adapter
+        # billed three tier-prior attempts producing empty event streams. A
+        # backend that cannot execute must say so HERE, not at spawn time.
+        if sys.platform == "win32" and not shutil.which("tmux"):
+            return False, (
+                "omc team runtime needs a tmux-compatible binary on native "
+                "Windows and none is on PATH; install psmux "
+                "(winget install psmux) or run under WSL2"
             )
         return True, f"'{self._node_command}' on PATH and omc entrypoint present at '{self._bin_path}'"
 
