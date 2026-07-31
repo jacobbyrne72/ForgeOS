@@ -59,7 +59,7 @@ prompt etiquette. A parallel-safety pre-flight sequences tasks that would
 silently conflict before they're ever run together, path leases stop
 same-file writes in-process, and an awareness board lets each agent see
 what its teammates currently hold. Per-task worktrees add filesystem-level
-isolation on top of leases — opt-in, still landing. Nothing merges without
+isolation on top of leases, opt-in via `isolate_worktrees`. Nothing merges without
 a security scan, a test-tampering check, and independent review by a
 genuinely different worker, and per-worker budgets keep any single agent
 from spending the team's money unaccounted.

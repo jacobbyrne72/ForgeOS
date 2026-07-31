@@ -435,19 +435,17 @@ def check_repeat_work(
     Anything else — no fingerprint match, or a failure count under the
     threshold — is a clean ALLOW.
 
-    NOT WIRED into `Forge.run` yet — this is exposed for a caller to adopt,
-    not yet adopted. The intended call site is per `TaskSpec` in `Forge.run`,
-    right before `self.scheduler.submit(job, tasks)`: call
-    `check_repeat_work(self.ledger, spec)` for each task and, on
-    `REFUSE_DUPLICATE`, finish that task as a FAILED/refused `TaskOutcome`
-    with `verdict.reason` as the reason — never routing or executing it —
-    the same shape `Forge.run` already gives a governor trip. It is not
-    wired here because `forge.py`'s existing "preflight" step (see its module
-    docstring) is a PER-MODEL-CALL budget/context check made inside the
-    Gateway once a task is already routed to a worker, not a pre-submission,
-    per-task ledger check — there is no existing call site of THIS shape to
-    extend cleanly, and `forge.py`'s attempt loop is a separate, actively
-    changing piece of surface this change does not touch.
+    WIRED into `Forge.run`: called per `TaskSpec` immediately before
+    `self.scheduler.submit(job, tasks)`. A `REFUSE_DUPLICATE` finishes that
+    task as a refused `TaskOutcome` carrying `verdict.reason` — never routed,
+    never executed, no lease taken — the same shape `Forge.run` already gives
+    a governor trip. `Forge.run(allow_repeat_work=True)` is the caller's
+    opt-out for a deliberate re-run.
+
+    Note this is a DIFFERENT check from the "preflight" named in `forge.py`'s
+    module docstring: that one is a per-model-call budget/context refusal made
+    inside the Gateway once a task is already routed. This one is a
+    pre-submission ledger check, and runs before routing exists at all.
     """
     if skip:
         return ReceiptVerdict(decision=Decision.ALLOW, reason="prior-work check skipped by caller")

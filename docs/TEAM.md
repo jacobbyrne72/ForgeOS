@@ -62,7 +62,7 @@ Proof: `tests/test_awareness.py`;
 `tests/test_forge.py::test_worker_prompt_carries_teammate_board_context`
 proves the digest reaches the actual prompt, not just the unit.
 
-## 5. Per-task worktrees — landing
+## 5. Per-task worktrees — merged, opt-in
 
 Prevents a worker's uncommitted edits ever touching another worker's files
 on disk, even if that worker ignored its own lease — leases stop the
@@ -72,13 +72,17 @@ turns out wrong anyway. `forgeos/worktrees.py` creates
 both deterministic from `task_id` alone; `merge_check` runs a
 non-destructive `git merge-tree --write-tree` before `merge_accepted`
 attempts a real `--no-ff` merge, aborting cleanly rather than half-applying.
-The module is merged and tested today. Wiring it into `Forge.run` — a
-per-task `cwd` override, gate-accept triggering the merge back to the main
-branch, honest refusal plus worktree teardown (branch kept for forensics) on
-conflict — is landing now behind an opt-in flag (`isolate_worktrees`), so
-default behavior is unchanged until it's proven out. Proof:
+Both the module and its `Forge.run` wiring are merged: a per-task `cwd`
+override, gate-accept triggering the merge back to the main branch, and an
+honest refusal (`"merge conflict against main"`) plus worktree teardown with
+the branch kept for forensics on conflict. It stays behind the opt-in
+`isolate_worktrees` flag, so default behavior is byte-identical to a build
+without it. Every task in a job bases its worktree off one SHA pinned at job
+start, not a per-task `HEAD` read — otherwise thread scheduling, not the
+edits themselves, would decide whether two changes "conflict". Proof:
 `tests/test_worktrees.py` (`@pytest.mark.slow` — real git subprocesses, real
-merges, real conflicts); wiring tests land in `tests/test_forge.py`.
+merges, real conflicts) and the `isolate_worktrees` tests in
+`tests/test_forge.py`, including one proving a retry reuses its worktree.
 
 ## 6. Batch merge (Bors-style bisection)
 

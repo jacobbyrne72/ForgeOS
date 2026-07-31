@@ -86,6 +86,12 @@ def _print_catalog_staleness(catalog) -> None:
         print(f"  oldest stamped price: {max(ages):.1f} day(s) old")
     else:
         print("  staleness: unknown (no stamped price data found)")
+    # A diagnosis with no remedy gets worked around, exactly as `policy.py`'s
+    # `ripper_command` says about a denial with no next step. Stale prices are
+    # not cosmetic here: every routing decision and every receipt is priced off
+    # this table, so a months-old row silently misprices the work.
+    if stale:
+        print("  fix: python tools/refresh_catalog.py        (fetches live prices)")
 
 
 def _print_degradations() -> None:
