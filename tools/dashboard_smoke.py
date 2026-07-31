@@ -22,6 +22,7 @@ from urllib.error import HTTPError
 from urllib.request import urlopen
 
 REPORT_SCHEMA = "forgeos.dashboard_smoke.v1"
+SNAPSHOT_SCHEMA = "forgeos.dashboard_snapshot.v1"
 
 
 def _receipt(model_ref: str, forgeos_usd_micros: int) -> dict[str, object]:
@@ -105,7 +106,16 @@ def _inspect_api(base_url: str, timeout: float, *, expect_fixture: bool) -> dict
             payload = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         raise AssertionError(f"/api/leaderboard returned HTTP {exc.code}") from exc
-    return _validate_payload(payload, expect_fixture=expect_fixture)
+    result = _validate_payload(payload, expect_fixture=expect_fixture)
+    try:
+        with urlopen(f"{base_url}/api/snapshot", timeout=timeout) as response:
+            snapshot = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        raise AssertionError(f"/api/snapshot returned HTTP {exc.code}") from exc
+    if not isinstance(snapshot, dict) or snapshot.get("schema") != SNAPSHOT_SCHEMA:
+        raise AssertionError(f"unexpected snapshot schema: {snapshot.get('schema') if isinstance(snapshot, dict) else None!r}")
+    result["snapshot_schema"] = snapshot["schema"]
+    return result
 
 
 async def _inspect(
@@ -131,6 +141,15 @@ async def _inspect(
             payload = await api_response.json()
             validated = _validate_payload(payload, expect_fixture=expect_fixture)
             rollup = validated["fleet_rollup"]
+            snapshot_response = await page.request.get(f"{base_url}/api/snapshot")
+            if snapshot_response.status != 200:
+                raise AssertionError(f"/api/snapshot returned HTTP {snapshot_response.status}")
+            snapshot = await snapshot_response.json()
+            if not isinstance(snapshot, dict) or snapshot.get("schema") != SNAPSHOT_SCHEMA:
+                raise AssertionError(
+                    f"unexpected snapshot schema: "
+                    f"{snapshot.get('schema') if isinstance(snapshot, dict) else None!r}"
+                )
 
             await page.goto(f"{base_url}/", wait_until="domcontentloaded")
             await page.locator("#leaderboard-body tr").first.wait_for(state="visible")
@@ -147,6 +166,7 @@ async def _inspect(
                 await page.screenshot(path=str(screenshot), full_page=True)
             return {
                 "schema": validated["schema"],
+                "snapshot_schema": snapshot["schema"],
                 "fleet_rollup": rollup,
                 "rows": rows.splitlines(),
                 "meta": meta,
