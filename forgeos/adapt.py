@@ -106,7 +106,6 @@ class AdapterProfiler:
     def all_profiles(self) -> dict[str, AdapterProfile]:
         return dict(self._profiles)
 
-
 """Re-run cost measurement on historical jobs to identify waste.
 
 Replays completed benchmark jobs and computes:
@@ -115,7 +114,6 @@ Replays completed benchmark jobs and computes:
 - Wasted cost (dead worker calls, retry storms, cold starts)
 - Savings vs naive execution
 """
-from __future__ import annotations
 from typing import Any
 
 def replay_job(ledger, job_id: str) -> dict[str, Any]:
