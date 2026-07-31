@@ -124,6 +124,22 @@ class QueueAlreadyOwned(RuntimeError):
     """Another live process already owns this queue's OS lock."""
 
 
+class QueueStatus(BaseModel):
+    """Read-only, machine-readable state for an external queue monitor."""
+
+    queue_dir: str
+    owner_active: bool = False
+    heartbeat_present: bool = False
+    heartbeat_valid: bool = False
+    heartbeat_age_seconds: float | None = None
+    stale: bool = True
+    state: str | None = None
+    current_job: str | None = None
+    jobs_done: int = 0
+    jobs_failed: int = 0
+    heartbeat_error: str | None = None
+
+
 class _QueueOwnership:
     """Cross-process, crash-safe single-writer lock for one queue directory.
 
@@ -176,6 +192,49 @@ class _QueueOwnership:
         finally:
             self._handle.close()
             self._handle = None
+
+
+def queue_status(queue_dir: str | Path, *, stale_after_seconds: float = 30.0) -> QueueStatus:
+    """Inspect queue liveness without starting Forge or touching providers.
+
+    ``owner_active`` comes from the OS lock, not a PID guess. Heartbeat validity
+    and age are reported separately so a monitor can distinguish a live worker
+    from a worker that is alive but no longer publishing supervision state.
+    """
+    if stale_after_seconds <= 0:
+        raise ValueError("stale_after_seconds must be positive")
+    queue = Path(queue_dir)
+    status = QueueStatus(queue_dir=str(queue))
+    lock_path = queue / QUEUE_LOCK_FILE
+    if lock_path.exists():
+        probe = _QueueOwnership(queue)
+        try:
+            probe.acquire()
+        except QueueAlreadyOwned:
+            status.owner_active = True
+        else:
+            probe.release()
+
+    heartbeat_path = queue / "heartbeat.json"
+    if not heartbeat_path.exists():
+        status.heartbeat_error = "heartbeat.json is missing"
+        return status
+    status.heartbeat_present = True
+    try:
+        raw = json.loads(heartbeat_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("heartbeat must be a JSON object")
+        timestamp = float(raw["ts"])
+        status.heartbeat_age_seconds = max(0.0, time.time() - timestamp)
+        status.stale = status.heartbeat_age_seconds > stale_after_seconds
+        status.state = raw.get("state")
+        status.current_job = raw.get("current_job")
+        status.jobs_done = int(raw.get("jobs_done", 0))
+        status.jobs_failed = int(raw.get("jobs_failed", 0))
+        status.heartbeat_valid = True
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        status.heartbeat_error = f"{type(exc).__name__}: {exc}"
+    return status
 
 
 class _JobSpecError(Exception):
@@ -404,7 +463,9 @@ __all__ = [
     "QUEUE_LOCK_FILE",
     "WATCH_HALT_KEY",
     "QueueAlreadyOwned",
+    "QueueStatus",
     "WatchStats",
+    "queue_status",
     "watch",
     "watch_queue",
 ]

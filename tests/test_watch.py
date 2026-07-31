@@ -20,6 +20,7 @@ from forgeos.watch import (
     WatchStats,
     _QueueOwnership,
     _write_heartbeat,
+    queue_status,
     watch_queue,
 )
 
@@ -205,6 +206,32 @@ def test_heartbeat_publication_is_atomic_and_leaves_no_temp_snapshot(tmp_path):
     assert list(tmp_path.glob(".heartbeat-*.tmp")) == []
 
 
+def test_queue_status_reports_fresh_heartbeat_and_idle_owner(tmp_path):
+    _write_heartbeat(tmp_path, state="idle", current_job=None, stats=WatchStats(jobs_done=2))
+
+    status = queue_status(tmp_path)
+
+    assert status.owner_active is False
+    assert status.heartbeat_valid is True
+    assert status.stale is False
+    assert status.jobs_done == 2
+
+
+def test_queue_status_reports_stale_heartbeat_and_bad_json(tmp_path):
+    import time
+
+    (tmp_path / "heartbeat.json").write_text(
+        json.dumps({"ts": time.time() - 100, "state": "running"}), encoding="utf-8"
+    )
+    stale = queue_status(tmp_path, stale_after_seconds=10)
+    assert stale.heartbeat_valid is True and stale.stale is True
+
+    (tmp_path / "heartbeat.json").write_text("{not-json", encoding="utf-8")
+    broken = queue_status(tmp_path)
+    assert broken.heartbeat_valid is False
+    assert "JSONDecodeError" in (broken.heartbeat_error or "")
+
+
 def test_second_queue_worker_refuses_before_constructing_forge(tmp_path):
     queue = tmp_path / "queue"
     queue.mkdir()
@@ -369,3 +396,15 @@ def test_cli_watch_returns_nonzero_for_an_ownership_conflict(tmp_path, monkeypat
     out = capsys.readouterr().out
     assert rc == 2
     assert "another worker owns the queue" in out
+
+
+def test_forge_cli_queue_status_forwards_machine_readable_monitor_state(tmp_path, capsys):
+    from forgeos import cli
+
+    _write_heartbeat(tmp_path, state="idle", current_job=None, stats=WatchStats())
+    rc = cli.main(["queue-status", "--queue", str(tmp_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert payload["heartbeat_valid"] is True
+    assert payload["stale"] is False

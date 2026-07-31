@@ -677,6 +677,12 @@ def cmd_memory(args) -> int:
     return _forward_to_main("memory", args, ("--mine", "--state-dir"))
 
 
+def cmd_queue_status(args) -> int:
+    return _forward_to_main(
+        "queue-status", args, ("--queue", "--stale-after", "--json")
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="forge", description="ForgeOS - cost-governed AI coding")
     sub = parser.add_subparsers(dest="command")
@@ -807,6 +813,12 @@ def main(argv: list[str] | None = None) -> int:
     p_watch = sub.add_parser("watch", help="Continuous cost monitoring")
     p_watch.add_argument("--interval", type=int, default=30)
     p_watch.add_argument("--max-alerts", type=int, default=5)
+    p_queue_status = sub.add_parser(
+        "queue-status", help="Read-only queue heartbeat and ownership status"
+    )
+    p_queue_status.add_argument("--queue", required=True)
+    p_queue_status.add_argument("--stale-after", type=float, default=30.0)
+    p_queue_status.add_argument("--json", action="store_true")
     p_budget = sub.add_parser("budget", help="Token budget enforcer")
     p_budget.add_argument("--max-tokens", type=int, default=4096, dest="max_tokens")
     p_budget.add_argument("--warn-at", type=float, default=0.8, dest="warn_at")
@@ -867,6 +879,7 @@ def main(argv: list[str] | None = None) -> int:
         "forgebench": cmd_forgebench,
         "forgebench-table": cmd_forgebench_table,
         "watch": cmd_watch,
+        "queue-status": cmd_queue_status,
         "budget": cmd_budget,
         "replace": cmd_replace,
         "adaptbatch": cmd_adbatch,

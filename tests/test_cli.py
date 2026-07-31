@@ -273,7 +273,9 @@ def test_main_dispatch_is_reachable_for_every_registered_subcommand():
         and any(getattr(t, "id", "") == "dispatch" for t in node.targets)
         and isinstance(node.value, ast.Dict)
     )
-    assert registered == {"doctor", "receipts", "watch", "team", "serve-mcp", "memory"}
+    assert registered == {
+        "doctor", "receipts", "watch", "queue-status", "team", "serve-mcp", "memory"
+    }
     assert dispatch_keys == registered
     # And main() must actually call the dispatch table, not just build it.
     returns = [n for n in ast.walk(main_node) if isinstance(n, ast.Return)]

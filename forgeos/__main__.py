@@ -226,6 +226,29 @@ def cmd_watch(args: argparse.Namespace) -> int:
     return 2 if stats.ownership_conflict else 0
 
 
+def cmd_queue_status(args: argparse.Namespace) -> int:
+    """Read queue supervision state without starting a worker or provider."""
+    import json
+
+    from forgeos.watch import queue_status
+
+    status = queue_status(args.queue, stale_after_seconds=args.stale_after)
+    if args.json:
+        print(json.dumps(status.model_dump(), sort_keys=True))
+    else:
+        print(f"queue: {status.queue_dir}")
+        print(f"owner active: {'yes' if status.owner_active else 'no'}")
+        if status.heartbeat_valid:
+            age = f"{status.heartbeat_age_seconds:.1f}s"
+            print(f"heartbeat: {status.state or 'unknown'} ({age} old)")
+            print(f"current job: {status.current_job or '-'}")
+            print(f"jobs: {status.jobs_done} done, {status.jobs_failed} failed")
+            print(f"stale: {'yes' if status.stale else 'no'}")
+        else:
+            print(f"heartbeat: unavailable ({status.heartbeat_error})")
+    return 0 if status.heartbeat_valid and not status.stale else 1
+
+
 # ------------------------------------------------------------------------ team
 
 
@@ -493,6 +516,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Seconds between polls when not --once (default: 5)",
     )
 
+    p_queue_status = sub.add_parser(
+        "queue-status", help="Read-only queue heartbeat and ownership status"
+    )
+    p_queue_status.add_argument("--queue", required=True, help="Queue directory to inspect")
+    p_queue_status.add_argument(
+        "--stale-after", type=float, default=30.0,
+        help="Heartbeat age in seconds that counts as stale (default: 30)",
+    )
+    p_queue_status.add_argument("--json", action="store_true", help="Machine-readable output")
+
     p_team = sub.add_parser(
         "team", help="Compile an objective into a task graph and run it end-to-end"
     )
@@ -540,6 +573,7 @@ def main(argv: list[str] | None = None) -> int:
         "doctor": cmd_doctor,
         "receipts": cmd_receipts,
         "watch": cmd_watch,
+        "queue-status": cmd_queue_status,
         "team": cmd_team,
         "serve-mcp": cmd_serve_mcp,
         "memory": cmd_memory,
