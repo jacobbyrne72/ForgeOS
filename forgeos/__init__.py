@@ -119,6 +119,7 @@ __all__ = [
     "estimate_prompt_tokens",
     "ModelRanker",
     "truncate_response",
+    "BatchProjection",
 ]
 
 from .adaptive_batch import AdaptiveBatch
