@@ -327,8 +327,11 @@ def main() -> int:
     sub.add_parser("breaker", help="Circuit breaker state")
     p_compress = sub.add_parser("compress", help="AST-based context compression")
     p_models = sub.add_parser("models", help="Select cheapest capable model")
-    p_profile = sub.add_parser("profile", help="Model performance profiles")
+    sub.add_parser("profile", help="Model performance profiles")
     p_opt = sub.add_parser("optimize", help="Show cost optimization plan for a task type")
+    p_auto = sub.add_parser("auto", help="Automatic cost optimization with savings report")
+    p_auto.add_argument("--task-type", default="code_gen", dest="task_type")
+    p_auto.add_argument("--daily-tasks", type=int, default=100, dest="daily_tasks")
     p_opt.add_argument("task_type", nargs="?", default="code_gen", choices=["simple_edit","code_gen","security_scan","review","planning","debug","refactor"])
     p_opt.add_argument("--daily-tasks", type=int, default=100, dest="daily_tasks")
     p_models.add_argument("--capabilities", default="")
@@ -358,6 +361,7 @@ def main() -> int:
         "models": cmd_models,
         "profile": cmd_profile,
         "optimize": cmd_optimize,
+        "auto": cmd_auto,
         "bench": cmd_bench,
         "watch": cmd_watch,
         "doctor": cmd_doctor,
@@ -367,6 +371,12 @@ def main() -> int:
         "breaker": cmd_breaker,
         "fleet": cmd_fleet,
     }
+
+    handler = dispatch.get(args.command)
+    if handler is None:
+        print(f"ERROR: no handler registered for '{args.command}'", file=sys.stderr)
+        return 2
+    return handler(args)
 
 def cmd_optimize(args):
     from forgeos.optimizer import CostOptimizer
@@ -383,12 +393,26 @@ def cmd_optimize(args):
     print(f"  Yearly savings:  ${est['yearly_savings_usd']:.2f}")
     return 0
 
-    handler = dispatch.get(args.command)
-    if handler is None:
-        print(f"ERROR: no handler registered for '{args.command}'", file=sys.stderr)
-        return 2
-    return handler(args)
 
+def cmd_auto(args):
+    from forgeos.auto_optimize import AutoOptimizer
+    from forgeos.optimizer import CostOptimizer
+    a = AutoOptimizer()
+    o = CostOptimizer()
+    plan = o.plan_for(args.task_type)
+    est = o.estimate_savings(args.task_type, daily_tasks=args.daily_tasks)
+    opt = a.apply(args.task_type, "")
+    print("=== auto-optimizer report ===")
+    print(f"Task type: {args.task_type}")
+    print(f"Optimization plan: {', '.join(plan.steps)}")
+    print(f"Auto-applied steps: {', '.join(opt.steps_applied)}")
+    print(f"Per-task savings: ${opt.saved_usd:.4f}")
+    print(f"Tokens saved/task: {opt.saved_tokens}")
+    print(f"Latency overhead: {opt.latency_ms:.0f}ms")
+    print(f"At {args.daily_tasks} tasks/day:")
+    print(f"  Monthly: ${est['monthly_savings_usd']:.2f}")
+    print(f"  Yearly:  ${est['yearly_savings_usd']:.2f}")
+    return 0
 
 def cmd_models(args):
     from forgeos.model_select import ModelSelector
@@ -408,8 +432,6 @@ def cmd_models(args):
     return 0
 
 
-if __name__ == "__main__":
-    sys.exit(main())
 
 def cmd_profile(args):
     from forgeos.profile import ModelProfiler
@@ -430,3 +452,7 @@ def cmd_profile(args):
     return 0
 
 
+
+
+if __name__ == "__main__":
+    sys.exit(main())

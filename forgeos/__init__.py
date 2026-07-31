@@ -32,6 +32,7 @@ from .watch import watch
 from .adapt import AdapterProfiler, AdapterDecision, AdapterProfile
 from .model_select import ModelSelector, ModelRecommendation
 from .profile import ModelProfiler, ModelProfile
+from .auto_optimize import AutoOptimizer, AutoOptimizeResult
 from .model_select import ModelSelector, ModelRecommendation
 
 __all__ = [

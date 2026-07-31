@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import subprocess
 from enum import Enum, IntEnum
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -271,8 +272,23 @@ def _only_in(findings: list[Finding], paths: list[str] | None) -> list[Finding]:
 
 def run_security(paths: list[str], *, cwd: str | None = None) -> GateResult:
     """Both scanners combined. Either one failing fails the gate."""
-    sem = run_semgrep(paths, cwd=cwd)
-    leaks = run_gitleaks(paths, cwd=cwd)
+    scan_paths = paths
+    if cwd and paths:
+        root = Path(cwd)
+        scan_paths = [
+            path
+            for path in paths
+            if (Path(path) if Path(path).is_absolute() else root / path).exists()
+        ]
+        if not scan_paths:
+            return GateResult(
+                gate=Gate.SECURITY,
+                status=GateStatus.SKIPPED,
+                evidence="no existing paths to scan",
+            )
+
+    sem = run_semgrep(scan_paths, cwd=cwd)
+    leaks = run_gitleaks(scan_paths, cwd=cwd)
 
     findings = sem.findings + leaks.findings
     if sem.status is GateStatus.FAIL or leaks.status is GateStatus.FAIL:
