@@ -54,6 +54,9 @@ reported honestly either way; only its *bankedness* is what this flag adds.
 
 from __future__ import annotations
 
+import inspect
+from functools import lru_cache
+
 import asyncio
 import re
 import time
@@ -337,6 +340,55 @@ class _SessionOutcome:
     stream_error: str = ""  # non-empty when send()/start() raised, vs. yielding ERROR
 
 
+def _effort_for(spec) -> str:
+    """Reasoning effort for a task, from the task itself.
+
+    Classified HERE because this is where the whole TaskSpec is -- objective,
+    scope width and capabilities. The gateway adapter sees only a rendered
+    prompt, and a prompt carries file context, so classifying it would read the
+    CODE's vocabulary rather than the task's ("race" in a comment, "why" in a
+    docstring) and route on noise.
+
+    Never raises: an effort setting is an optimisation, and failing a task
+    because its difficulty could not be guessed would trade a real job for a
+    routing detail.
+    """
+    try:
+        from ..core.effort import route_effort
+
+        _difficulty, effort = route_effort(
+            getattr(spec, "subject", "") or "",
+            scope_paths=len(getattr(getattr(spec, "scope", None), "paths", []) or []) or 1,
+            capabilities=set(getattr(spec, "capabilities", []) or []),
+        )
+        return effort
+    except Exception:
+        return ""
+
+
+@lru_cache(maxsize=64)
+def _accepts_effort(adapter_cls: type) -> bool:
+    """Whether this adapter's `start` takes `reasoning_effort`.
+
+    Introspected rather than assumed. `WorkerAdapter` is a Protocol, so anything
+    with a matching `start` satisfies it -- including every test double and any
+    third-party adapter written against the older three-argument shape. Passing
+    a fourth argument unconditionally raises TypeError inside the stream, which
+    surfaces as "the worker produced nothing" rather than as a signature
+    mismatch: a silent, badly-mislabelled failure.
+    """
+    try:
+        return "reasoning_effort" in inspect.signature(adapter_cls.start).parameters
+    except (TypeError, ValueError):  # builtins, C extensions, exotic callables
+        return False
+
+
+async def _start_session(adapter, spec: TaskSpec, cwd: str, model_profile: str) -> str:
+    if not _accepts_effort(type(adapter)):
+        return await adapter.start(spec.id, cwd, model_profile)
+    return await adapter.start(spec.id, cwd, model_profile, reasoning_effort=_effort_for(spec))
+
+
 async def _run_session(
     adapter: WorkerAdapter, spec: TaskSpec, cwd: str, model_profile: str,
     timeout_seconds: float, checkpoint_store: CheckpointStore | None = None,
@@ -368,7 +420,7 @@ async def _run_session(
         )
         session_id = (
             await adapter.resume(checkpoint) if checkpoint is not None
-            else await adapter.start(spec.id, cwd, model_profile)
+            else await _start_session(adapter, spec, cwd, model_profile)
         )
         async for event in adapter.send(session_id, _build_prompt(spec)):
             _fold(agg, event)

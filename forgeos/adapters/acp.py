@@ -354,7 +354,8 @@ class ACPAdapter(WorkerAdapter):
         except KeyError:
             raise KeyError(f"no active ACP session: {session_id}") from None
 
-    async def start(self, task_id: str, cwd: str, model_profile: str) -> str:
+    async def start(self, task_id: str, cwd: str, model_profile: str,
+                    reasoning_effort: str = "") -> str:
         acp = _import_acp()
         queue: asyncio.Queue[WorkerEvent] = asyncio.Queue()
         client = _HiveClient(acp, queue)

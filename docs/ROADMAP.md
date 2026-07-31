@@ -3,10 +3,17 @@
 *The operating system for cheap, fast, verified AI coding.*
 
 This document is the working brainstorm for taking ForgeOS from a sound kernel
-to the most-watched agent-infrastructure repo of the year. It is split into:
-what we already have that nobody else ships, what to build next, what to mine
-from existing open source, and how to launch. Claims here follow the house
-rule: **measured, replayed or modelled — never asserted.**
+to something worth other people's time. It is split into: what is already
+built, what to build next, what to mine from existing open source, and how to
+launch. Claims here follow the house rule: **measured, replayed or modelled —
+never asserted.**
+
+That rule applies to competitive claims too, and this file used to break it.
+An earlier revision aimed at "the most-watched agent-infrastructure repo of the
+year" and tabled a column of "Nobody else ships" checkmarks against no survey
+of what anyone else ships. In a project whose entire pitch is that it does not
+assert what it has not measured, an unfalsifiable claim about competitors is
+the cheapest possible way to lose the argument.
 
 ---
 
@@ -20,7 +27,7 @@ machine for each other.
 
 ForgeOS's differentiators, already built and tested:
 
-| Differentiator | Status | Nobody else ships |
+| Differentiator | Status | Why it matters |
 |---|---|---|
 | Cost per **accepted** task as the only optimisation target | ✅ kernel-wide | Frameworks report per-call cost, which rewards doubled retries |
 | Integer-microdollar ledger, no float drift, no unrecorded call | ✅ | Most harnesses have no ledger at all |
@@ -75,7 +82,7 @@ Ranked by (novelty × demand ÷ effort):
    (`prompts/prefix.py` is the seed; make it a public, framework-agnostic tool.)
 3. **Cost-per-accepted-task leaderboard** — a public, reproducible harness where
    models/fleets compete on `$ per merged, reviewed, scanner-clean task`, not
-   on benchmark accuracy. This is the SWE-bench nobody has run: the one with a
+   on benchmark accuracy. A benchmark shaped like this is what the claim would need: the one with a
    bill attached. Massive social-proof flywheel.
 4. **The refusal engine as a product** — preflight that *refuses* calls
    (answer already in vault, task is a tree-sitter query, capsule over budget)
@@ -121,7 +128,7 @@ Worth cloning next (direct-use candidates):
 - `microsoft/LLMLingua-2` — faster compression model for the capsule.
 - `qdrant/fastembed` or `lancedb` — embedded vault search when Obsidian absent.
 
-## 5. Launch plan (repo-of-the-year mechanics)
+## 5. Launch plan
 
 What actually moved the needle for breakout infra repos: one undeniable demo,
 one number, zero setup friction.

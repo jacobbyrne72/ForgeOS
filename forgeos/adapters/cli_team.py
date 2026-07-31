@@ -286,7 +286,8 @@ class OMCTeamAdapter(WorkerAdapter):
         except KeyError:
             raise KeyError(f"no active omc team session: {session_id}") from None
 
-    async def start(self, task_id: str, cwd: str, model_profile: str) -> str:
+    async def start(self, task_id: str, cwd: str, model_profile: str,
+                    reasoning_effort: str = "") -> str:
         # No omc job exists yet (see `_Session`'s docstring) — this only
         # opens the local bookkeeping a forgeos session_id needs. `team_name`
         # can be resolved now (it only depends on task_id); `job_id` cannot.

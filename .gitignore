@@ -24,3 +24,4 @@ research/github/
 research/*.tsv
 research/*_ids.txt
 research/enumerated*.tsv
+FORGEOS_UPGRADE_AUDIT.md

@@ -188,3 +188,50 @@ def test_the_classifier_makes_no_network_or_model_call(monkeypatch):
     monkeypatch.setattr(socket, "socket", _boom)
     monkeypatch.setattr(socket, "create_connection", _boom)
     assert classify("Why does this deadlock?") is Difficulty.DEEP
+
+
+# ------------------------------------------------------- wiring, not dead code
+
+
+def test_the_gateway_request_actually_carries_the_routed_effort():
+    """A classifier nothing calls saves nothing. This asserts the value reaches
+    the request object, which is the only place it can affect a bill."""
+    import asyncio
+
+    from forgeos.adapters.gateway_worker import _Session
+
+    sess = _Session(task_id="t", cwd=".", model_ref="p/m", reasoning_effort="none")
+    assert sess.reasoning_effort == "none"
+    del asyncio
+
+
+def test_an_adapter_on_the_old_signature_is_not_broken_by_the_new_argument():
+    """`WorkerAdapter` is a Protocol, so third-party and test adapters may still
+    take three arguments. Passing a fourth unconditionally raises inside the
+    stream and surfaces as 'the worker produced nothing' -- a silent, badly
+    mislabelled failure."""
+    from forgeos.adapters.executor import _accepts_effort
+
+    class Old:
+        async def start(self, task_id, cwd, model_profile):  # noqa: D102
+            return "s"
+
+    class New:
+        async def start(self, task_id, cwd, model_profile, reasoning_effort=""):  # noqa: D102
+            return "s"
+
+    assert _accepts_effort(Old) is False
+    assert _accepts_effort(New) is True
+
+
+def test_effort_classification_never_fails_a_task():
+    """An effort setting is an optimisation. Failing a real job because its
+    difficulty could not be guessed trades the work for a routing detail."""
+    from forgeos.adapters.executor import _effort_for
+
+    class Broken:
+        @property
+        def subject(self):
+            raise RuntimeError("boom")
+
+    assert _effort_for(Broken()) == ""

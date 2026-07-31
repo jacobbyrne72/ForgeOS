@@ -273,7 +273,7 @@ saving is only ever as strong as its weakest input.
 ## Install
 
 ```bash
-git clone <this-repo> ForgeOS && cd ForgeOS
+git clone https://github.com/jacobbyrne72/ForgeOS.git && cd ForgeOS
 pip install -e ".[dev]"
 
 # Fast-path test (no real subprocess scanners):
@@ -281,14 +281,27 @@ python -m pytest tests -m "not slow"
 
 # Full suite (incl. real semgrep, gitleaks, ruff):
 python -m pytest tests
+```
 
-# CLI:
-forge doctor          # check readiness
-forge compile "Add X"  # dry-run a mission
-forge run "Add X" --budget-usd 0.50  # compile and execute under a hard cap
-forge run "Add X" --dry-run          # inspect the graph without spending
-forge init            # bootstrap a new repo
-forge report <job-id> # cost breakdown
+**Everything below spends nothing.** Run the whole block; none of it can bill
+you.
+
+```bash
+forge doctor --probe        # which providers actually work (lists models, never completes)
+forge init                  # scan this repo, write CLAUDE.md + local settings
+forge compile "Add X"       # see the task graph a model call would have produced
+forge run "Add X" --dry-run # same, through the full runner
+forge forgebench --dry-run  # price the benchmark suite without running it
+forge receipts              # what you have actually spent, from the ledger
+```
+
+**These spend real money.** Separated deliberately: the two `run` forms differ
+by one flag, and a first-timer pasting a mixed block would find that out from
+their bill.
+
+```bash
+forge run "Add X" --budget-usd 0.50   # hard cap; refuses rather than exceeding it
+forge forgebench --budget-usd 0.25    # paired live benchmark, both arms
 ```
 
 Python 3.11+. Optional and detected, never required: `semgrep`, `gitleaks`,

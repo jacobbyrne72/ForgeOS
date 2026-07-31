@@ -73,6 +73,11 @@ class _Session:
     cwd: str
     model_ref: str
     model_refs: list[str] = field(default_factory=list)
+    # Routed per task by `core.effort`, empty when the caller did not classify.
+    # Empty means "send the provider's own default" rather than a guess: this
+    # adapter has the prompt but not the objective, and classifying a prompt
+    # that carries file context would read the CODE's words, not the task's.
+    reasoning_effort: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
     usd_micros: int = 0
@@ -174,7 +179,8 @@ class GatewayWorkerAdapter(WorkerAdapter):
             return list(resolver(requested))
         return [requested] if requested else []
 
-    async def start(self, task_id: str, cwd: str, model_profile: str) -> str:
+    async def start(self, task_id: str, cwd: str, model_profile: str,
+                    reasoning_effort: str = "") -> str:
         self._counter += 1
         session_id = f"gw-{self._counter}"
         requested = model_profile or self._default_model_ref
@@ -184,6 +190,7 @@ class GatewayWorkerAdapter(WorkerAdapter):
             cwd=cwd,
             model_ref=model_refs[0] if model_refs else requested,
             model_refs=model_refs,
+            reasoning_effort=reasoning_effort,
         )
         return session_id
 
@@ -213,6 +220,13 @@ class GatewayWorkerAdapter(WorkerAdapter):
                 model_ref=model_ref,
                 prompt_tail=prompt,
                 max_output_tokens=self._max_output_tokens,
+                # Routed from the task's difficulty when the caller classified
+                # it. Measured on ForgeBench: leaving this at its "medium"
+                # default on lookup-shaped work burned 66% of output tokens on
+                # chain-of-thought nobody reads, and on three of six tasks the
+                # cap was exhausted mid-thought and the answer came back empty.
+                **({"reasoning_effort": sess.reasoning_effort}
+                   if sess.reasoning_effort else {}),
             )
 
             try:

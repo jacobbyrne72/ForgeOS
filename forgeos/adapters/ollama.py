@@ -156,7 +156,8 @@ class OllamaAdapter(WorkerAdapter):
         except KeyError:
             raise KeyError(f"no active ollama session: {session_id}") from None
 
-    async def start(self, task_id: str, cwd: str, model_profile: str) -> str:
+    async def start(self, task_id: str, cwd: str, model_profile: str,
+                    reasoning_effort: str = "") -> str:
         session_id = uuid.uuid4().hex
         self._sessions[session_id] = _Session(task_id=task_id, cwd=cwd, model_profile=model_profile)
         return session_id

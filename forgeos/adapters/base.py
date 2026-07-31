@@ -113,7 +113,8 @@ class WorkerAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def start(self, task_id: str, cwd: str, model_profile: str) -> str:
+    async def start(self, task_id: str, cwd: str, model_profile: str,
+                    reasoning_effort: str = "") -> str:
         """Start a session for a task. Returns a session_id."""
         raise NotImplementedError
 

@@ -1,5 +1,15 @@
 # Dogfood log — the harness debugging itself, live
 
+> **Provenance: this is a work log, not a receipt.** The dollar figures below
+> were recorded by hand while the runs happened. No committed ledger export
+> backs them, and the local ledgers on the machine that produced them no longer
+> hold matching rows. Read them as a narrative of what was done, not as
+> measurements — the numbers this project stands behind are the ones
+> `forge receipts` and `forge forgebench --json-out` print from the ledger, with
+> their provenance attached. Flagged here rather than quietly deleted, because
+> a project whose rule is "measured, never asserted" does not get to keep
+> unbacked figures just because they are its own.
+
 One real job, run repeatedly through the full kernel with real headless
 Claude seats, on 2026-07-31: *"add a tested retry helper to a scratch
 repo."* Every run below spent real money, billed through the real ledger,
