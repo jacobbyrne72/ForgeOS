@@ -104,6 +104,7 @@ __all__ = [
     "CostRouter",
     "Route",
     "CostTracker",
+    "CostReplayer",
     "optimize_prompt",
     "estimate_tokens",
     "LocalExecutor",
