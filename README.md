@@ -1,5 +1,9 @@
 # ForgeOS
 
+[![ci](https://github.com/jacobbyrne72/ForgeOS/actions/workflows/ci.yml/badge.svg)](https://github.com/jacobbyrne72/ForgeOS/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/jacobbyrne72/ForgeOS)](https://github.com/jacobbyrne72/ForgeOS/releases)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **The cost-governed AI coding harness. Every dollar saved is measured, not claimed.**
 
 ## Measured live — same question, same model, same ledger
