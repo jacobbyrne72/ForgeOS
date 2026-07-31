@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from enum import Enum
 from .circuit_breaker import CircuitBreaker
+from .diagnostics import record_degradation
 
 
 class Route(Enum):
@@ -63,14 +64,17 @@ class CostRouter:
         # Check any worker's breaker state for OPEN
         try:
             breaker_open = False
-            for worker_id, record in self._breaker._records.items():
-                if record.state.value == "open":
-                    breaker_open = True
-                    break
+            breaker_open = any(
+                state.value == "open"
+                for state in self._breaker.get_all_states().values()
+            )
             if breaker_open and route == Route.FULL_MODEL:
                 route = Route.CHEAP_MODEL
-        except Exception:
-            pass  # Silently fall through to original route
+        except Exception as exc:
+            record_degradation(
+                "cost_router", "circuit-breaker inspection failed", exc,
+                consequence="routing used the original tier; a failing full-model lane may not have been downgraded",
+            )
 
         key = route.value
         self.routes_taken[key] = self.routes_taken.get(key, 0) + 1

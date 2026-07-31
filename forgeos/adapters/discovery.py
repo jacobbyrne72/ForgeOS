@@ -50,6 +50,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from .base import WorkerCapabilities
+from ..diagnostics import record_degradation
 
 PROBE_CACHE_PATH = Path(os.path.expanduser("~/.forgeos/probes.json"))
 
@@ -370,7 +371,11 @@ class ProbeCache:
             return {}
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            record_degradation(
+                "adapter_probe_cache", "cache load failed", exc,
+                consequence="cached CLI capabilities were ignored and will be re-probed",
+            )
             return {}
         return raw if isinstance(raw, dict) else {}
 
@@ -538,13 +543,21 @@ def discover_mcp_servers(paths: list[str | Path] | None = None) -> list[McpServe
                     data = tomllib.load(fh)
             else:
                 data = json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            record_degradation(
+                "mcp_discovery", "config parse failed", exc,
+                consequence=f"MCP servers from {p.name} were skipped",
+            )
             continue
 
         for raw in _find_mcp_server_dicts(data):
             try:
                 servers.append(_mcp_server_from_entry(raw, source))
-            except Exception:
+            except Exception as exc:
+                record_degradation(
+                    "mcp_discovery", "server entry parse failed", exc,
+                    consequence=f"one MCP entry from {p.name} was skipped",
+                )
                 continue
 
     return servers

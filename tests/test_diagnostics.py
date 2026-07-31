@@ -223,3 +223,25 @@ def test_auto_discover_entry_point_scan_failure_is_recorded_not_swallowed(monkey
     assert degs[0].subsystem == "adapter_discovery"
     assert "corrupt entry-points metadata" in degs[0].reason
     assert "smaller" in degs[0].consequence
+
+
+def test_corrupt_probe_cache_is_recorded_not_silent(tmp_path):
+    from forgeos.adapters.discovery import ProbeCache
+
+    path = tmp_path / "probes.json"
+    path.write_text("{not-json", encoding="utf-8")
+    assert ProbeCache(path)._data == {}
+    [degradation] = degradations()
+    assert degradation.subsystem == "adapter_probe_cache"
+    assert "cached CLI capabilities" in degradation.consequence
+
+
+def test_malformed_mcp_config_is_recorded_not_silent(tmp_path):
+    from forgeos.adapters.discovery import discover_mcp_servers
+
+    path = tmp_path / "broken.json"
+    path.write_text("{not-json", encoding="utf-8")
+    assert discover_mcp_servers(paths=[path]) == []
+    [degradation] = degradations()
+    assert degradation.subsystem == "mcp_discovery"
+    assert "broken.json" in degradation.consequence
