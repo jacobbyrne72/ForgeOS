@@ -172,6 +172,21 @@ def test_run_delegates_to_guarded_team_runner(monkeypatch):
     }
 
 
+def test_resume_forwards_job_id_and_state_dir(monkeypatch):
+    from forgeos import __main__ as runtime_cli
+
+    captured = {}
+
+    def fake_resume(args):
+        captured["job_id"] = args.job_id
+        captured["state_dir"] = args.state_dir
+        return 0
+
+    monkeypatch.setattr(runtime_cli, "cmd_resume", fake_resume)
+    assert cli.main(["resume", "job-123", "--state-dir", "state"]) == 0
+    assert captured == {"job_id": "job-123", "state_dir": "state"}
+
+
 def test_forgebench_forwards_json_receipt_path(monkeypatch):
     from types import SimpleNamespace
     from forgeos import forgebench

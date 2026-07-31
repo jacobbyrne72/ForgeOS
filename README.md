@@ -73,6 +73,20 @@ spending anything. Full mechanism-by-mechanism breakdown (merged vs. still
 landing) in [docs/TEAM.md](docs/TEAM.md); a runnable walkthrough in
 [examples/README.md](examples/README.md).
 
+## Crash-safe resume
+
+Jobs persist their objective, budget, task contracts, and dependency edges in
+the ledger before workers run. If a process dies, resume only the interrupted
+work without redoing accepted or rejected tasks:
+
+```
+python -m forgeos resume <job-id> --state-dir ~/.forgeos
+```
+
+The resumed receipt includes the earlier terminal outcomes, and the event log
+records the restart as `mission_resumed`. Resume never widens the original
+budget; it continues under the ledger's already-recorded spend.
+
 ## The benchmark gate
 
 `forge forgebench` runs a pinned 6-task suite through two arms and applies the

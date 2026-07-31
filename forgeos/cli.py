@@ -31,16 +31,7 @@ def cmd_run(args) -> int:
 
 
 def cmd_resume(args) -> int:
-    from forgeos import open_ledger
-
-    home = Path(args.state_dir or Path.cwd() / ".forgeos")
-    ledger = open_ledger(home / "ledger.db")
-    job_row = ledger.job(args.job_id)
-    if job_row is None:
-        print(f"ERROR: Job '{args.job_id}' not found")
-        return 1
-    print(f"Job {args.job_id}: state={job_row['state']}")
-    return 0
+    return _forward_to_main("resume", args, ("--state-dir",), "job_id")
 
 
 def cmd_report(args) -> int:

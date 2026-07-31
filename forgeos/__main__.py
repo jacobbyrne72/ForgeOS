@@ -418,6 +418,44 @@ def cmd_team(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_resume(args: argparse.Namespace) -> int:
+    """Resume a crashed job from its persisted ledger/event contract."""
+    from forgeos import Forge
+
+    state_dir = _resolve_state_dir(args.state_dir)
+    try:
+        forge = Forge(home=state_dir)
+    except OSError as exc:
+        print(f"Cannot use forgeos's home directory: {exc}")
+        return 1
+
+    try:
+        row = forge.ledger.job(args.job_id)
+        if row is None:
+            print(f"ERROR: Job '{args.job_id}' not found")
+            return 1
+        default_executor = getattr(forge, "default_executor", None)
+        reviewer = default_executor(cwd=row["cwd"]) if callable(default_executor) else None
+        try:
+            result = forge.resume(args.job_id, reviewer=reviewer)
+        except ValueError as exc:
+            print(f"Cannot resume job '{args.job_id}': {exc}")
+            return 1
+    finally:
+        forge.close()
+
+    print(f"Resumed job {result.job_id}: {result.objective}")
+    _print_outcomes(result.outcomes)
+    print(
+        f"Result: accepted={result.accepted} rejected={result.rejected}"
+        f" spend=${result.spend_usd:.4f}"
+        f" $/accepted={result.cost_per_accepted if result.cost_per_accepted is not None else 'n/a'}"
+    )
+    if result.halted_reason:
+        print(f"Halted: {result.halted_reason}")
+    return 0 if result.all_accepted else 2
+
+
 # ------------------------------------------------------------------- serve-mcp
 
 
@@ -543,6 +581,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Print the compiled task graph and exit without spending anything",
     )
 
+    p_resume = sub.add_parser(
+        "resume", help="Resume a crashed job from its persisted ledger"
+    )
+    p_resume.add_argument("job_id")
+    p_resume.add_argument(
+        "--state-dir", help="Where the ledger lives (default: forgeos's DEFAULT_HOME, ~/.forgeos)"
+    )
+
     p_mcp = sub.add_parser(
         "serve-mcp",
         help="MCP server over stdio -- expose doctor/receipts/plan/submit-job as tools for any MCP-speaking agent",
@@ -575,6 +621,7 @@ def main(argv: list[str] | None = None) -> int:
         "watch": cmd_watch,
         "queue-status": cmd_queue_status,
         "team": cmd_team,
+        "resume": cmd_resume,
         "serve-mcp": cmd_serve_mcp,
         "memory": cmd_memory,
     }

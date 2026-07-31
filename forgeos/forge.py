@@ -41,6 +41,7 @@ from .contracts import (
     Budget,
     FailureClass,
     JobSpec,
+    Scope,
     TaskSpec,
     TaskState,
     TestResults,
@@ -376,6 +377,30 @@ def _cap_attempt_history(
     return kept
 
 
+def _task_from_ledger_row(row) -> TaskSpec:
+    """Rehydrate one persisted task for crash recovery.
+
+    The ledger stores the original contract as JSON so a resumed job does not
+    ask a model to reconstruct scope, budgets, or dependency edges from prose.
+    Older ledgers predate the ``depends_on`` column and receive the honest empty
+    dependency list from SQLite's migration default.
+    """
+    keys = set(row.keys())
+    return TaskSpec(
+        id=row["id"],
+        job_id=row["job_id"],
+        parent_id=row["parent_id"],
+        subject=row["subject"],
+        description=row["description"],
+        acceptance=json.loads(row["acceptance"]),
+        scope=Scope.model_validate(json.loads(row["scope"])),
+        capabilities=json.loads(row["capabilities"]),
+        budget=Budget.model_validate(json.loads(row["budget"])),
+        depends_on=json.loads(row["depends_on"]) if "depends_on" in keys else [],
+        created_at=float(row["created_at"]),
+    )
+
+
 class Forge:
     """The assembled harness. One object, one loop, every part wired."""
 
@@ -551,6 +576,7 @@ class Forge:
         operations: dict[str, Operation] | None = None,
         isolate_worktrees: bool = False,
         allow_repeat_work: bool = False,
+        resume_job_id: str | None = None,
     ) -> ForgeResult:
         """Run a job to completion.
 
@@ -573,6 +599,7 @@ class Forge:
         merges into the repo's current branch; a conflict turns an
         otherwise-accepted task into an honest refusal instead of a false green.
         """
+        resume_mode = resume_job_id is not None
         executor_is_default = executor is None
         # Per-job, in-memory: see `adapters.executor.CheckpointStore`. Created
         # unconditionally (a bare dict costs nothing) but only ever populated
@@ -586,9 +613,36 @@ class Forge:
         self._trip_reason = ""
         repo_root = _detect_git_repo_root(cwd) if isolate_worktrees else None
         job_base_ref = _resolve_head(repo_root) if repo_root is not None else None
-        job = JobSpec(objective=objective, cwd=cwd,
-                      budget=budget or Budget(max_usd=20.0, max_seconds=7200,
-                                              max_iterations=60))
+        if resume_mode:
+            row = self.ledger.job(resume_job_id)
+            if row is None:
+                raise ValueError(f"job {resume_job_id!r} not found")
+            job = JobSpec(
+                id=row["id"],
+                objective=row["objective"],
+                cwd=row["cwd"],
+                budget=Budget(
+                    max_usd=from_micros(int(row["max_usd_micros"])),
+                    max_seconds=int(row["max_seconds"]),
+                    max_iterations=int(row["max_iterations"]),
+                ),
+                created_at=float(row["created_at"]),
+            )
+            resumed_ids = set(self.scheduler.resume(job.id))
+            if not resumed_ids:
+                raise ValueError(f"job {job.id!r} has no non-terminal work to resume")
+            self.ledger.reopen_job(job.id)
+            self.events.append(job.id, EventType.MISSION_RESUMED,
+                               resumed_tasks=sorted(resumed_ids))
+            tasks = [
+                _task_from_ledger_row(task_row)
+                for task_row in self.ledger.tasks_for_job(job.id)
+                if task_row["id"] in resumed_ids
+            ]
+        else:
+            job = JobSpec(objective=objective, cwd=cwd,
+                          budget=budget or Budget(max_usd=20.0, max_seconds=7200,
+                                                  max_iterations=60))
         for t in tasks:
             t.job_id = job.id
 
@@ -598,9 +652,23 @@ class Forge:
         # specifies. A refusal here is an outcome, not an error, and carries
         # the prior receipt so the caller sees what it already paid.
         outcomes: list[TaskOutcome] = []
+        if resume_mode:
+            resumed_ids = {t.id for t in tasks}
+            for task_row in self.ledger.tasks_for_job(job.id):
+                if task_row["id"] in resumed_ids:
+                    continue
+                accepted = any(
+                    event.type is EventType.TASK_ACCEPTED
+                    for event in self.events.for_task(task_row["id"])
+                )
+                outcomes.append(TaskOutcome(
+                    task_id=task_row["id"], subject=task_row["subject"],
+                    accepted=accepted,
+                    reason="already terminal before resume",
+                ))
         submitted: list[TaskSpec] = []
         for t in tasks:
-            verdict = check_repeat_work(self.ledger, t, skip=allow_repeat_work)
+            verdict = check_repeat_work(self.ledger, t, skip=allow_repeat_work or resume_mode)
             if verdict.decision is PreflightDecision.REFUSE_DUPLICATE:
                 outcomes.append(TaskOutcome(
                     task_id=t.id, subject=t.subject, accepted=False,
@@ -609,7 +677,8 @@ class Forge:
                 continue
             submitted.append(t)
         tasks = submitted
-        self.scheduler.submit(job, tasks)
+        if not resume_mode:
+            self.scheduler.submit(job, tasks)
 
         halted = ""
         # `TaskSpec.depends_on` is the obvious place to declare a dependency, so it
@@ -731,6 +800,30 @@ class Forge:
             self._log_hooks(job.id, None, HookEvent.JOB_END, hook_result)
 
         return result
+
+    def resume(
+        self,
+        job_id: str,
+        executor: Executor | None = None,
+        *,
+        reviewer: Executor | None = None,
+        isolate_worktrees: bool = False,
+    ) -> ForgeResult:
+        """Resume one persisted job without redoing terminal tasks.
+
+        The original objective, budget, task contracts, and dependency edges
+        come from the ledger. Only tasks whose event projection was non-terminal
+        are requeued; accepted or rejected work is carried into the receipt but
+        never charged a second implementation attempt.
+        """
+        row = self.ledger.job(job_id)
+        if row is None:
+            raise ValueError(f"job {job_id!r} not found")
+        return self.run(
+            row["objective"], [], executor=executor, cwd=row["cwd"],
+            reviewer=reviewer, isolate_worktrees=isolate_worktrees,
+            resume_job_id=job_id,
+        )
 
     def _run_task_guarded(self, job: JobSpec, spec: TaskSpec, executor: Executor,
                           reviewer: Executor | None, *, isolate_worktrees: bool = False,

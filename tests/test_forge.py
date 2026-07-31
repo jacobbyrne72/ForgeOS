@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from forgeos.contracts import Budget, FailureClass, Scope, TaskSpec, TaskState, TestResults
+from forgeos.contracts import Budget, FailureClass, JobSpec, Scope, TaskSpec, TaskState, TestResults
 from forgeos.core.market import CapacityMarket, Entitlement, Forecast, TelemetrySource
 from forgeos.events import EventType
 from forgeos.forge import ExecutionResult, Forge, current_task_cwd
@@ -155,6 +155,49 @@ def test_missing_independent_review_blocks_the_merge(forge):
     result = forge.run("ship", [_task()], executor=lambda s, w: _green())
     assert result.accepted == 0
     assert any("independent review" in r for r in result.outcomes[0].merge_reasons)
+
+
+def test_resume_rehydrates_only_nonterminal_work_and_preserves_dependencies(tmp_path):
+    home = tmp_path / "resume-home"
+    first = Forge(home=home, registry=_fleet(), max_attempts=1)
+    job = JobSpec(objective="resume the interrupted mission", cwd=str(tmp_path),
+                  budget=Budget(max_usd=2.0))
+    done = _task("already accepted", paths=("src/done.py",))
+    interrupted = _task("finish the interrupted task", paths=("src/next.py",))
+    interrupted.depends_on = [done.id]
+    done.job_id = job.id
+    interrupted.job_id = job.id
+    first.scheduler.submit(job, [done, interrupted])
+    first.ledger.set_task_state(done.id, TaskState.DONE)
+    first.events.append(job.id, EventType.TASK_ACCEPTED, task_id=done.id)
+    first.events.append(job.id, EventType.TASK_READY, task_id=interrupted.id)
+    first.events.append(job.id, EventType.WORKER_ASSIGNED,
+                        task_id=interrupted.id, worker="free.local")
+    first.events.append(job.id, EventType.SESSION_STARTED,
+                        task_id=interrupted.id, worker="free.local")
+    first.ledger.set_task_state(interrupted.id, TaskState.RUNNING)
+    first.close()
+
+    calls: list[str] = []
+
+    def execute(spec, worker):  # noqa: ARG001
+        calls.append(spec.id)
+        return _green(files_touched=["src/next.py"])
+
+    resumed = Forge(home=home, registry=_fleet(), max_attempts=1)
+    try:
+        result = resumed.resume(job.id, executor=execute, reviewer=_pass_review)
+        job_row = resumed.ledger.job(job.id)
+        resumed_events = [event.type for event in resumed.events.replay(job.id)]
+    finally:
+        resumed.close()
+
+    assert calls == [interrupted.id]
+    assert result.accepted == 2
+    assert result.rejected == 0
+    assert result.all_accepted
+    assert job_row["state"] == TaskState.DONE.value
+    assert EventType.MISSION_RESUMED in resumed_events
 
 
 def test_a_rejecting_reviewer_blocks_the_merge(forge):

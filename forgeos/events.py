@@ -25,6 +25,7 @@ class EventType(str, Enum):
     MISSION_CREATED = "mission_created"
     MISSION_COMPILED = "mission_compiled"
     MISSION_COMPLETED = "mission_completed"
+    MISSION_RESUMED = "mission_resumed"
     TASK_CREATED = "task_created"
     TASK_READY = "task_ready"
     WORKER_ASSIGNED = "worker_assigned"

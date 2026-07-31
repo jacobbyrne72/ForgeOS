@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     scope TEXT NOT NULL,
     capabilities TEXT NOT NULL,
     budget TEXT NOT NULL,
+    depends_on TEXT NOT NULL DEFAULT '[]',
     state TEXT NOT NULL,
     -- Bumped every time a task is reclaimed from a worker that went silent
     -- (Scheduler.expire_heartbeats), BEFORE the freed lease/slot can reach a
@@ -202,6 +203,10 @@ class Ledger:
             self._conn.execute("ALTER TABLE tasks ADD COLUMN generation INTEGER NOT NULL DEFAULT 0")
         except sqlite3.OperationalError:
             pass
+        try:
+            self._conn.execute("ALTER TABLE tasks ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]'")
+        except sqlite3.OperationalError:
+            pass
         self._conn.commit()
 
     def close(self) -> None:
@@ -242,6 +247,14 @@ class Ledger:
     def job(self, job_id: str) -> sqlite3.Row | None:
         return self._conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
 
+    def reopen_job(self, job_id: str) -> None:
+        """Mark a persisted job active again after a crash-safe resume."""
+        with self._tx() as c:
+            c.execute(
+                "UPDATE jobs SET state=?, closed_at=NULL WHERE id=?",
+                (TaskState.RUNNING.value, job_id),
+            )
+
     def active_jobs(self) -> list[sqlite3.Row]:
         return self._conn.execute(
             "SELECT * FROM jobs WHERE closed_at IS NULL ORDER BY created_at DESC"
@@ -253,8 +266,8 @@ class Ledger:
         with self._tx() as c:
             c.execute(
                 "INSERT INTO tasks (id, job_id, parent_id, subject, description, acceptance,"
-                " scope, capabilities, budget, state, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                " scope, capabilities, budget, depends_on, state, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     task.id,
                     task.job_id,
@@ -265,6 +278,7 @@ class Ledger:
                     task.scope.model_dump_json(),
                     json.dumps(task.capabilities),
                     task.budget.model_dump_json(),
+                    json.dumps(task.depends_on),
                     state.value,
                     task.created_at,
                     task.created_at,

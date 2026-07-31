@@ -53,6 +53,9 @@
 - `forgeos/core/effort.py`, `forgeos/cli.py`, `forgeos/prompts/prefix.py`, `tests/test_effort.py` — task-difficulty effort routing and a real bounded `forge init` repository scan (committed in `4c9390f`).
 - `forgeos/mcp_server.py`, `forgeos/dashboard/app.py`, `forgeos/dashboard/static/index.html` — exposed the read-only queue heartbeat/OS-lock monitor through MCP and the dashboard API/UI.
 - `tests/test_mcp_server.py`, `tests/test_dashboard.py` — wire-level MCP and dashboard queue-status regression coverage.
+- `forgeos/ledger.py`, `forgeos/forge.py`, `forgeos/events.py` — persisted task-contract/dependency recovery and real crash-safe `Forge.resume()`.
+- `forgeos/cli.py`, `forgeos/__main__.py`, `README.md` — canonical `resume` command and operator documentation.
+- `tests/test_forge.py`, `tests/test_cli.py`, `tests/test_cli_dispatch.py` — resume rehydration, dispatch, and CLI forwarding coverage.
 
 ## Commands run
 - `rtk proxy python -m pytest tests -q -m "not slow"`
@@ -88,10 +91,14 @@
 - `python -m py_compile forgeos/mcp_server.py forgeos/dashboard/app.py`; `git diff --check` (passed)
 - `python C:\Users\byrne\.codex-brain\sweep.py run forgeos-mcp-dashboard-regression --timeout 600 --cmd 'python -m pytest "{item}" -q --timeout=600' --items <90 test files>` (90 items passed, rc 0, 634s)
 - `preflight.py` for queue monitor follow-up (empty prior-work output); `pulse.py watch --quiet` (only unrelated edge-council warnings)
+- `python -m pytest tests/test_forge.py tests/test_scheduler.py tests/test_cli_dispatch.py -q --timeout=300` (229 passed)
+- `python -m pytest tests/test_cli.py -q --timeout=300` (23 passed)
+- `python -m py_compile forgeos/forge.py forgeos/ledger.py forgeos/events.py forgeos/cli.py forgeos/__main__.py`; `git diff --check` (passed)
+- checkpointed 90-file sweep `forgeos-final-suite-after-resume-clean`: 89 passed, 1 stale CLI expected-set failure; patched expectation, then `forgeos-resume-cli-fix` passed (23 tests).
 
 ## Test status
 - Passing: full checkpointed suite (`forgeos-final-suite-clean`, rc 0, 188.4s); 26 diagnostics/dashboard-chat tests; 28 effort tests; 147 CLI dispatch tests; 4 quota-ingest tests; 80 router/quota tests; 106 focused quota/Forge/dashboard tests; 164 focused benchmark/CLI/aggregator tests; Ruff; compileall; CLI dogfood and no-call benchmark smoke checks.
-- Failing: none in the latest 90-item checkpointed full-suite sweep; Ruff was unavailable in this shell (`No module named ruff`).
+- Failing: none in focused/current post-fix checks; the 90-file sweep recorded one pre-fix `tests/test_cli.py` failure caused by the newly added `resume` parser, then the corrected file passed. Ruff was unavailable in this shell (`No module named ruff`).
 - Not run: live provider calls or live execution (intentionally gated); the full suite was run without provider calls.
 
 ## Known blockers
