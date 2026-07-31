@@ -21,6 +21,12 @@ dependencies = [
 gateway = ["litellm"]
 dev = ["pytest>=8"]
 
+[tool.setuptools.packages.find]
+# hooks/ and research/ are tooling and corpus scripts, not part of the
+# installable package; without this pin setuptools' flat-layout discovery
+# refuses to build ("Multiple top-level packages discovered").
+include = ["forgeos*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Deliberately NOT "-q": combined with a caller's own -q this becomes -qq, which
