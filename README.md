@@ -78,6 +78,10 @@ failing. That is now a measured fact to fix, not an assumption.
 Reproduce without spending: `forge forgebench --dry-run --json-out artifacts/forgebench.json`.
 The receipt contains all six pinned task contracts, per-task acceptance slots,
 proof hashes, and the modelled suite estimate; `--live` is not implicit.
+Aggregate receipts without making provider calls:
+`python tools/aggregate_bench.py artifacts/forgebench-*.json --json-out artifacts/forgebench-table.json`.
+The table keeps dry-run, failed, aborted, and voided receipts visible, and only
+computes savings from measured live Class-A runs with matching acceptance.
 
 ## The layers — built and tested, NOT individually benchmarked
 

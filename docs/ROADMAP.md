@@ -52,8 +52,9 @@ ForgeOS's differentiators, already built and tested:
 5. **The benchmark that sells it** 🚧 — `forge forgebench` now exposes the
    pinned six-task correctness-gated suite as a machine-readable JSON receipt;
    `tools/ab_bench.py` remains the one-question context probe with a safe
-   no-call default. The public live bill table remains the next milestone; post
-   the table, not adjectives.
+   no-call default. `tools/aggregate_bench.py` now turns receipts into a
+   reproducible table while retaining excluded runs; public live data still
+   requires explicit `--live` provider calls. Post the table, not adjectives.
 
 ## 3. Novel tools worth building (none exist in the wild today)
 
