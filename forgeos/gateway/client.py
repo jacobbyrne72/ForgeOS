@@ -26,10 +26,12 @@ turn off caching for every call that follows.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import threading
 import time
+from functools import lru_cache
 from typing import Literal, Protocol
 
 import httpx
@@ -269,6 +271,27 @@ CACHE_CONTROL_MIN_TOKENS = 1024
 # structured content blocks with this key to an endpoint that does not expect it
 # is at best ignored and at worst a 400, so this is an allowlist, never a guess.
 CACHE_CONTROL_PROVIDERS = frozenset({"anthropic", "openrouter", "gateway"})
+
+
+@lru_cache(maxsize=64)
+def _accepts_prompt_prefix_type(cls: type) -> bool:
+    try:
+        params = inspect.signature(cls.complete).parameters
+    except (TypeError, ValueError):  # builtin or otherwise un-introspectable
+        return False
+    return "prompt_prefix" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
+def _accepts_prompt_prefix(transport) -> bool:
+    """Whether this transport's `complete` takes the optional prefix.
+
+    Cached per class, not per instance: signatures do not change at runtime, and
+    a fresh `inspect.signature` on every model call would be a real cost on the
+    hot path.
+    """
+    return _accepts_prompt_prefix_type(type(transport))
 
 
 def _content_blocks(prompt: str, prefix: str, *, mark_cache: bool) -> str | list[dict]:
@@ -835,18 +858,22 @@ class Gateway:
             transport = by_name[name]
             start = time.monotonic()
             try:
-                # The prefix travels alongside the assembled prompt, not instead
-                # of it: a transport that ignores it sends exactly what it sent
-                # before, and one that supports cache breakpoints knows where the
-                # byte-stable boundary is without re-deriving it.
-                raw = transport.complete(
-                    model_id=card.model_id,
-                    prompt=prompt,
-                    max_output_tokens=request.max_output_tokens,
-                    reasoning_effort=request.reasoning_effort,
-                    tools_schema=request.tools_schema,
-                    prompt_prefix=request.prompt_prefix,
-                )
+                # `prompt_prefix` is passed only to transports that declare it.
+                # Adding a required argument to the Transport protocol would
+                # break every existing implementation — including third-party
+                # ones — to deliver an optional optimisation, which is a bad
+                # trade. A transport that does not accept it sends exactly the
+                # payload it sent before.
+                kwargs = {
+                    "model_id": card.model_id,
+                    "prompt": prompt,
+                    "max_output_tokens": request.max_output_tokens,
+                    "reasoning_effort": request.reasoning_effort,
+                    "tools_schema": request.tools_schema,
+                }
+                if _accepts_prompt_prefix(transport):
+                    kwargs["prompt_prefix"] = request.prompt_prefix
+                raw = transport.complete(**kwargs)
             except ModelUnavailableError as e:
                 # NOT a health event. The endpoint answered; this model is simply
                 # not on it. Penalising the transport here would drop the whole

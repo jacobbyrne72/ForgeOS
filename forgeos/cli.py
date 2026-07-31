@@ -328,6 +328,9 @@ def main() -> int:
     p_compress = sub.add_parser("compress", help="AST-based context compression")
     p_models = sub.add_parser("models", help="Select cheapest capable model")
     p_profile = sub.add_parser("profile", help="Model performance profiles")
+    p_opt = sub.add_parser("optimize", help="Show cost optimization plan for a task type")
+    p_opt.add_argument("task_type", nargs="?", default="code_gen", choices=["simple_edit","code_gen","security_scan","review","planning","debug","refactor"])
+    p_opt.add_argument("--daily-tasks", type=int, default=100, dest="daily_tasks")
     p_models.add_argument("--capabilities", default="")
     p_models.add_argument("--complexity", default="simple", choices=["simple","medium","complex"])
     p_models.add_argument("--max-cost", type=float, default=1.0, dest="max_cost")
@@ -354,6 +357,7 @@ def main() -> int:
         "compress": cmd_compress,
         "models": cmd_models,
         "profile": cmd_profile,
+        "optimize": cmd_optimize,
         "bench": cmd_bench,
         "watch": cmd_watch,
         "doctor": cmd_doctor,
@@ -363,6 +367,22 @@ def main() -> int:
         "breaker": cmd_breaker,
         "fleet": cmd_fleet,
     }
+
+def cmd_optimize(args):
+    from forgeos.optimizer import CostOptimizer
+    o = CostOptimizer()
+    plan = o.plan_for(args.task_type)
+    est = o.estimate_savings(args.task_type, daily_tasks=args.daily_tasks)
+    print(f"Task type: {args.task_type}")
+    print(f"Optimization steps: {', '.join(plan.steps)}")
+    print(f"Per-task savings: ${plan.estimated_savings_usd:.4f}")
+    print(f"Rationale: {plan.rationale}")
+    print()
+    print(f"At {args.daily_tasks} tasks/day:")
+    print(f"  Monthly savings: ${est['monthly_savings_usd']:.2f}")
+    print(f"  Yearly savings:  ${est['yearly_savings_usd']:.2f}")
+    return 0
+
     handler = dispatch.get(args.command)
     if handler is None:
         print(f"ERROR: no handler registered for '{args.command}'", file=sys.stderr)

@@ -240,7 +240,7 @@ def test_forget_deletes_one_row(store):
 
 @pytest.mark.parametrize("field", ["subject", "body", "source_ref"])
 def test_secret_shaped_values_are_refused_in_every_text_field(store, field):
-    secret = "AKIAABCDEFGHIJKLMNOP"  # AWS-access-key shaped
+    secret = "AKIAABCDEFGHIJKLMNOP"  # AWS-access-key shaped  # gitleaks:allow
     kw = dict(
         kind=MemoryKind.FACT,
         subject="ok subject",
@@ -257,13 +257,13 @@ def test_secret_shaped_values_are_refused_in_every_text_field(store, field):
 @pytest.mark.parametrize(
     "secret",
     [
-        "AKIAABCDEFGHIJKLMNOP",
-        "ghp_" + "a" * 40,
-        "sk-ant-" + "b" * 30,
-        "sk-" + "c" * 30,
-        "xoxb-" + "1" * 20,
-        "api_key: 0123456789abcdef",
-        "-----BEGIN RSA PRIVATE KEY-----",
+        "AKIAABCDEFGHIJKLMNOP",  # gitleaks:allow
+        "ghp_" + "a" * 40,  # gitleaks:allow
+        "sk-ant-" + "b" * 30,  # gitleaks:allow
+        "sk-" + "c" * 30,  # gitleaks:allow
+        "xoxb-" + "1" * 20,  # gitleaks:allow
+        "api_key: 0123456789abcdef",  # gitleaks:allow
+        "-----BEGIN RSA PRIVATE KEY-----",  # gitleaks:allow
     ],
 )
 def test_a_variety_of_secret_shapes_are_all_caught(secret):
