@@ -52,6 +52,15 @@ _BARE_SUMMARY_RE = re.compile(
     r"(?:,\s*)?)+\s*in\s+[\d.]+s?\b.*$",
     re.IGNORECASE,
 )
+# Wrapper-tool renderings of the same truth. RTK's pytest matcher replaces the
+# real summary with "Pytest: 5 passed" — no ruler, no timing — which a worker
+# cannot bypass in a non-interactive session (observed live: the worker proved
+# the counts via --junitxml and still failed the gate for want of the exact
+# line). The explicit "pytest:" prefix is what keeps prose out.
+_WRAPPED_SUMMARY_RE = re.compile(
+    r"^pytest:\s*(?:\d+\s+(?:passed|failed|errors?|skipped)(?:,\s*)?)+\s*$",
+    re.IGNORECASE,
+)
 
 _LIB_MARKERS = ("site-packages", ".venv", "dist-packages")
 
@@ -168,7 +177,7 @@ def _find_result_line(lines: list[str]) -> str:
     # timing — so prose that merely mentions "passed" still never parses.
     for ln in reversed(lines):
         s = ln.strip()
-        if _BARE_SUMMARY_RE.match(s):
+        if _BARE_SUMMARY_RE.match(s) or _WRAPPED_SUMMARY_RE.match(s):
             return s
     return ""
 
