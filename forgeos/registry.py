@@ -47,6 +47,7 @@ class Adapter(str, Enum):
     CLI_TEAM = "cli_team"
     GATEWAY = "gateway"
     OLLAMA = "ollama"
+    LOCAL_COMMAND = "local_command"
 
 
 class WorkerProfile(BaseModel):
@@ -59,6 +60,8 @@ class WorkerProfile(BaseModel):
     worker_id: str
     adapter: Adapter
     model: str = ""
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
     # `agent_type` is forgeos's ROLE vocabulary (executor, architect, explore...).
     # `vendor` is which backing CLI actually runs it (claude, codex, gemini...).
     # These are different namespaces and conflating them is a real bug: the omc

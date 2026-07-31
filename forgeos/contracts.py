@@ -239,6 +239,14 @@ class WorkerReport(BaseModel):
     verdict: Verdict | None = None
     escalations: list[EscalationKind] = Field(default_factory=list)
     created_at: float = Field(default_factory=now)
+    # The task generation this report's worker was issued at assignment time
+    # (see `core.scheduler.Assignment.generation`). `Scheduler.report` fences
+    # any report whose generation is not the task's current one -- that is how
+    # an orphaned worker from a reclaimed attempt is stopped from overwriting
+    # a result nobody is waiting on. `None` means the caller predates
+    # generation fencing; see `ledger._generation_accepted` for exactly how
+    # that is handled without breaking it.
+    generation: int | None = None
 
     @property
     def succeeded(self) -> bool:

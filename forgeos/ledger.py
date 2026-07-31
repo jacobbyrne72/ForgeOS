@@ -78,6 +78,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     capabilities TEXT NOT NULL,
     budget TEXT NOT NULL,
     state TEXT NOT NULL,
+    -- Bumped every time a task is reclaimed from a worker that went silent
+    -- (Scheduler.expire_heartbeats), BEFORE the freed lease/slot can reach a
+    -- replacement. A WorkerReport.report() call is only honoured when it
+    -- carries this exact value -- see Ledger.record_report_if_current. This is
+    -- what fences an orphaned-but-still-running worker out after its task has
+    -- moved on: it started thread pool execution, and nothing before it
+    -- stopped a reclaimed worker's late report from overwriting a result
+    -- nobody was waiting on.
+    generation INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -154,6 +163,27 @@ CREATE TABLE IF NOT EXISTS trips (
 """
 
 
+def _generation_accepted(report_generation: int | None, current_generation: int) -> bool:
+    """Whether a report's stamped generation still authorizes it to take effect.
+
+    `report_generation is None` means the report came from a caller that
+    predates generation fencing -- it must not crash, but it also cannot PROVE
+    it belongs to the live attempt, so it is trusted only when the task has
+    never been reclaimed (`current_generation == 0`, the value every task is
+    created with and the only value a report with no opinion on generation
+    could possibly have been issued under). The moment a bump has happened,
+    an unstamped report is exactly as unverifiable as a stale one and is
+    fenced the same way. This is the deliberate choice: existing callers that
+    never set `generation` keep working on the common, never-reclaimed path,
+    while the one path this feature exists to close -- a reclaimed task's
+    orphaned worker reporting late -- is fenced regardless of whether that
+    orphan happens to be an old caller or a new one.
+    """
+    if report_generation is None:
+        return current_generation == 0
+    return report_generation == current_generation
+
+
 class Ledger:
     def __init__(self, path: str | Path):
         self.path = str(path)
@@ -163,6 +193,15 @@ class Ledger:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA)
+        # Upgrade path for a `tasks` table persisted before generation fencing
+        # existed. `CREATE TABLE IF NOT EXISTS` in SCHEMA above never adds a
+        # column to an already-existing table, so a pre-existing on-disk ledger
+        # needs this explicitly. A fresh (or already-migrated) database raises
+        # "duplicate column name", which is the expected, harmless case.
+        try:
+            self._conn.execute("ALTER TABLE tasks ADD COLUMN generation INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         self._conn.commit()
 
     def close(self) -> None:
@@ -253,6 +292,67 @@ class Ledger:
             "SELECT * FROM tasks WHERE job_id=? AND state NOT IN (?,?) ORDER BY created_at",
             (job_id, TaskState.DONE.value, TaskState.FAILED.value),
         ).fetchall()
+
+    # ---------------- generation fencing ----------------
+    # A task's generation counter starts at 0 and only moves forward. It exists
+    # to fence out a worker that outlived its assignment: `bump_generation` is
+    # called the moment a task is reclaimed, before any replacement worker can
+    # start, and `record_report_if_current` refuses to act on a report stamped
+    # with anything but the task's current generation.
+
+    def task_generation(self, task_id: str) -> int:
+        """The task's current generation, or 0 if the task is unknown.
+
+        0 doubles as "never reclaimed" for `_generation_accepted`'s backwards
+        compatibility rule, and as a harmless default for a missing task rather
+        than raising -- callers that care whether the task exists already have
+        `task()` for that.
+        """
+        row = self.task(task_id)
+        return int(row["generation"]) if row is not None else 0
+
+    def bump_generation(self, task_id: str) -> int:
+        """Advance a task's generation by one and return the new value.
+
+        Called by the scheduler at the moment a task is reclaimed from a
+        worker that went silent -- BEFORE its lease is freed or its state
+        returns to QUEUED, so the fence is up before a replacement worker
+        could possibly exist. `generation = generation + 1` is one atomic
+        UPDATE statement (SQLite evaluates it under the single write lock
+        `_tx()` takes), so no separate read-modify-write guard is needed here
+        the way `record_report_if_current` needs `exclusive()` below.
+        """
+        with self._tx() as c:
+            c.execute(
+                "UPDATE tasks SET generation = generation + 1, updated_at = ? WHERE id = ?",
+                (now(), task_id),
+            )
+            row = c.execute("SELECT generation FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        return int(row["generation"]) if row is not None else 0
+
+    def record_report_if_current(self, report: WorkerReport) -> tuple[bool, int]:
+        """Record a report iff its generation still matches the task's current one.
+
+        Returns `(accepted, current_generation_at_check_time)`. A caller that
+        gets `accepted=False` back MUST NOT treat this as a normal report: the
+        task's state was not touched and nothing was written to `reports` --
+        the scheduler is responsible for logging the rejection as its own
+        event so an operator can still see that a stale worker phoned home.
+
+        The read (current generation) and the conditional write (record or
+        not) happen under one `exclusive()` acquisition on purpose: this is a
+        check-then-act sequence, and checking-then-acting as two separately
+        locked steps would let a `bump_generation` land in the gap between
+        them -- a report that was current at the moment it was checked could
+        still be recorded a moment after it stopped being current. The same
+        hazard `leases.LeaseStore.acquire` had to close for lease grants.
+        """
+        with self._conn.exclusive():
+            current = self.task_generation(report.task_id)
+            if not _generation_accepted(report.generation, current):
+                return False, current
+            self.record_report(report)
+            return True, current
 
     # ---------------- reports ----------------
 
@@ -362,6 +462,21 @@ class Ledger:
             "tokens_out": int(r["out"]),
             "cache_hit_pct": round(100.0 * cached / total, 1) if total else 0.0,
         }
+
+    def spend_rows(self, job_id: str) -> list[sqlite3.Row]:
+        """Per-call spend for a job: model, token shape, and the micros actually billed.
+
+        The row-level granularity `job_spend_micros`/`cache_stats` sum away — a job
+        that used two different models needs each call priced against ITS OWN model
+        card, not the job's aggregate token counts against one card. Callers that
+        need to decompose `usd_micros` by cost component (fresh input / cached
+        input / output) start here rather than re-deriving this query.
+        """
+        sql = (
+            "SELECT model, tokens_in, tokens_out, tokens_cached_in, usd_micros"
+            " FROM spend WHERE job_id=? ORDER BY created_at, rowid"
+        )
+        return self._conn.execute(sql, (job_id,)).fetchall()
 
     def cache_health(self, job_id: str | None = None, *, group_by: str = "worker") -> dict:
         """Is prompt caching still working, or did it silently stop?

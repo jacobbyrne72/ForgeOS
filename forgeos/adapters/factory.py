@@ -94,6 +94,15 @@ def _construct(
         model = profile.model or ""
         return (OllamaAdapter(model) if model else OllamaAdapter()), "ollama adapter built"
 
+    if profile.adapter is Adapter.LOCAL_COMMAND:
+        if not profile.command:
+            return None, f"{profile.worker_id} has no local command configured"
+        try:
+            from .local_command import LocalCommandAdapter
+        except Exception as exc:
+            return None, f"local command adapter unimportable: {exc}"
+        return LocalCommandAdapter(profile.command, profile.args), "local command adapter built"
+
     if profile.adapter is Adapter.CLI_TEAM:
         try:
             from .cli_team import CliTeamAdapter

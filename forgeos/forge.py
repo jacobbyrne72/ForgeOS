@@ -175,6 +175,47 @@ def _attempt_summary(attempt_no: int, result: ExecutionResult, evidence: str,
     )
 
 
+# Merge-gate refusals a worker could plausibly fix on a second attempt: it did
+# the work but skipped the proof, or its own output failed. Matched against
+# `MergeGate.evaluate`'s reason strings.
+_FIXABLE_REFUSALS = (
+    "nothing was actually verified",   # it never ran the tests
+    "no evidence recorded",            # it ran them and did not report
+    "no command was run",              # evidence with nothing behind it
+    "test(s) failing",                 # its own output is wrong
+    "security failed",                 # a finding in code it just wrote
+)
+
+# Refusals no retry can clear, because they are properties of the machine or the
+# fleet rather than of the attempt. Retrying these buys a guaranteed second
+# refusal at full price. Checked FIRST -- "could not be checked" contains no
+# fixable substring, but "no independent review" must beat any loose match.
+_STRUCTURAL_REFUSALS = (
+    "no security gate was run",        # no scanner installed here
+    "could not be checked",            # gate UNAVAILABLE, same cause
+    "no independent review",           # no second worker exists to review
+    "reviewer identity missing",       # fleet composition, not the worker
+    "reviewer must not be the implementer",
+    "is derived from implementer",
+)
+
+
+def _refusal_is_fixable(reasons: list[str]) -> bool:
+    """Whether a second attempt could plausibly clear this refusal.
+
+    Conservative in the expensive direction: ANY structural reason makes the
+    whole refusal unfixable, even alongside fixable ones. A task refused for
+    both "no tests passed" and "no independent review" would still be refused
+    after the worker adds tests, so paying for that attempt is certain waste.
+    """
+    if not reasons:
+        return False
+    blob = " ".join(reasons).lower()
+    if any(s in blob for s in _STRUCTURAL_REFUSALS):
+        return False
+    return any(f in blob for f in _FIXABLE_REFUSALS)
+
+
 def _cap_attempt_history(
     history: list[AttemptSummary], *, max_tokens: int = ATTEMPT_HISTORY_MAX_TOKENS
 ) -> list[AttemptSummary]:
@@ -753,6 +794,20 @@ class Forge:
                         usd_micros=0,
                     )
                 )
+
+            # A refusal is worth retrying only when the worker could plausibly
+            # fix it. Blanket-retrying triples the bill for a guaranteed second
+            # refusal -- observed exactly that way with a text-only gateway
+            # worker refused for "no tests passed; no commands run", which it is
+            # structurally incapable of ever satisfying. Blanket-never wastes the
+            # case the retry context was built for: the gate's reasons are now
+            # carried into the next prompt, so "you did not run the tests" is
+            # actionable feedback rather than a dead end.
+            if not verdict.allowed and _refusal_is_fixable(merge_reasons):
+                attempt_history.insert(
+                    0, _attempt_summary(attempts, result, "; ".join(merge_reasons), [])
+                )
+                continue
 
             return TaskOutcome(
                 task_id=spec.id, subject=spec.subject, accepted=verdict.allowed,

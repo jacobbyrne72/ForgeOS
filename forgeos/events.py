@@ -50,6 +50,14 @@ class EventType(str, Enum):
     GOVERNOR_TRIPPED = "governor_tripped"
     LEASE_ACQUIRED = "lease_acquired"
     LEASE_RELEASED = "lease_released"
+    # A worker's report was rejected because its generation was not the task's
+    # current one -- it was reclaimed (heartbeat expiry) and reassigned, and
+    # this report is the orphaned, still-running previous attempt phoning home
+    # after the fact. Deliberately absent from `_PROJECTION` below: a fenced
+    # report has no effect on task state by definition, and adding it there
+    # would be the exact bug this event exists to prevent, expressed in the
+    # projection instead of the scheduler.
+    REPORT_FENCED = "report_fenced"
 
 
 # The only transitions the projection honours. An event that would move a task

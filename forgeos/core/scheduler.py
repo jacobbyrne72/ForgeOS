@@ -39,6 +39,12 @@ class Assignment(BaseModel):
     lease_ids: list[str] = Field(default_factory=list)
     assigned_at: float = Field(default_factory=now)
     last_heartbeat: float = Field(default_factory=now)
+    # The task's generation at the moment this assignment was made. The caller
+    # that eventually builds this worker's WorkerReport must stamp it with
+    # this value (WorkerReport.generation) -- that round trip is what lets
+    # Scheduler.report tell a live worker's result from an orphaned one still
+    # reporting under a generation the task has since moved past.
+    generation: int = 0
 
     def stale(self, timeout: float = DEFAULT_HEARTBEAT_TIMEOUT, at: float | None = None) -> bool:
         return ((at or now()) - self.last_heartbeat) > timeout
@@ -193,6 +199,7 @@ class Scheduler:
             task_id=task_id,
             worker_id=chosen,
             lease_ids=acquired,
+            generation=self.ledger.task_generation(task_id),
         )
         self._active[task_id] = asn
         self.ledger.set_task_state(task_id, TaskState.RUNNING)
@@ -232,8 +239,37 @@ class Scheduler:
             asn.last_heartbeat = now()
 
     def report(self, report: WorkerReport, *, job_id: str, budget: Budget | None = None) -> Decision:
-        """Record a worker's result, then let the governor rule on it."""
-        self.ledger.record_report(report)
+        """Record a worker's result, then let the governor rule on it.
+
+        Fencing happens first, before anything else in this method runs. A
+        report whose generation does not match the task's current one came
+        from a worker that outlived its assignment -- reclaimed by
+        `expire_heartbeats` and (possibly) handed to someone else, but never
+        actually killed, so it eventually calls in anyway. That report is
+        recorded as a fenced event for an operator to see and then discarded:
+        no state change, no lease release, no spend, no governor call. Acting
+        on it even partially would mean the task's truth in the ledger is
+        whichever of two attempts happened to finish last, which is exactly
+        the corruption this exists to prevent.
+        """
+        accepted, current_generation = self.ledger.record_report_if_current(report)
+        if not accepted:
+            self.events.append(
+                job_id,
+                EventType.REPORT_FENCED,
+                task_id=report.task_id,
+                worker=report.worker_id,
+                report_generation=report.generation,
+                current_generation=current_generation,
+            )
+            return Decision(
+                action=Action.CONTINUE,
+                reason=(
+                    f"fenced stale report: worker={report.worker_id!r} task={report.task_id} "
+                    f"report_generation={report.generation!r} current_generation={current_generation}"
+                ),
+            )
+
         asn = self._active.get(report.task_id)
 
         # heartbeat() already carries task_id; the event log takes it as its own
@@ -292,9 +328,15 @@ class Scheduler:
         reclaimed: list[str] = []
         for task_id, asn in list(self._active.items()):
             if asn.stale(self.heartbeat_timeout, at):
+                # Bump BEFORE anything else: the fence must be up before the
+                # lease is even freed, let alone before any replacement worker
+                # could be assigned. A late report from `asn`'s worker carries
+                # `asn.generation`, which is now stale the instant this runs.
+                new_generation = self.ledger.bump_generation(task_id)
                 self.events.append(
                     asn.job_id, EventType.WORKER_REASSIGNED, task_id=task_id,
                     reason="heartbeat expired", worker=asn.worker_id,
+                    generation=new_generation,
                 )
                 self._release(asn, asn.job_id)
                 self.ledger.set_task_state(task_id, TaskState.QUEUED)

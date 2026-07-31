@@ -37,7 +37,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from ..contracts import from_micros, new_id, now
+from ..catalog import Catalog, default_catalog
+from ..contracts import from_micros, new_id, now, to_micros
 from ..core.timing import SpanStore
 from ..events import EventLog, EventType
 from ..ledger import Ledger
@@ -201,6 +202,34 @@ def savings_pct(actual: Figure, baseline: Figure) -> Figure:
     )
 
 
+def cost_per_accepted_task(cash_cost: Figure, acceptance_passed: int) -> Figure | None:
+    """Billed cost per accepted task — the figure `SavingsProof` leads with.
+
+    `None`, never `0.0` and never infinite, when nothing was accepted: a
+    per-task cost is undefined at zero accepted tasks. Returning `0.0` would
+    read as "this cost nothing"; a naive `cash_cost / 0` would raise or,
+    worse, produce `inf`, which breaks JSON round-tripping and any later
+    budget comparison silently. `None` is the only honest answer.
+
+    Provenance matches `cash_cost`'s own: `acceptance_passed` is a plain
+    validated int on `SavingsProof`, not itself a `Figure` with its own
+    uncertainty, so dividing by it neither strengthens nor weakens what
+    `cash_cost` already claims about itself.
+    """
+    if acceptance_passed <= 0:
+        return None
+    note = f"{cash_cost.note} / {acceptance_passed} accepted task(s)" if cash_cost.note else (
+        f"{acceptance_passed} accepted task(s)"
+    )
+    return Figure(
+        value=cash_cost.value / acceptance_passed,
+        unit=cash_cost.unit,
+        provenance=cash_cost.provenance,
+        confidence=cash_cost.confidence,
+        note=note,
+    )
+
+
 # ---------------------------------------------------------------- the proof
 
 
@@ -261,6 +290,7 @@ class SavingsProof(BaseModel):
     acceptance_passed: int = Field(ge=0)
     acceptance_total: int = Field(ge=0)
     actual: dict[str, Figure] = Field(default_factory=dict)
+    cost_per_accepted_task: Figure | None = None
     baseline: Baseline
     savings: dict[str, Figure] = Field(default_factory=dict)
     contract_hash: str = ""
@@ -376,12 +406,198 @@ def build_proof(
         acceptance_passed=acceptance_passed,
         acceptance_total=acceptance_total,
         actual=actual,
+        cost_per_accepted_task=cost_per_accepted_task(actual["cash_cost"], acceptance_passed),
         baseline=baseline,
         savings=savings,
         contract_hash=contract_hash,
         actual_trace_hash=actual_trace_hash,
         baseline_trace_hash=baseline_trace_hash,
         test_artifact_hash=test_artifact_hash,
+    )
+
+
+# ------------------------------------------------------- billed cost breakdown
+
+
+def _allocate_micros(total_micros: int, weights: list[float]) -> list[int]:
+    """Split an integer total across `weights`' shares, summing back EXACTLY.
+
+    Largest-remainder apportionment (Hamilton's method): floor each share, then
+    hand the microdollars lost to flooring to the shares with the largest
+    fractional remainder, ties broken by earlier index (Python's sort is
+    stable, so this falls out of iterating `range(len(weights))` in order —
+    no extra tie-break key needed). This is what lets a cost breakdown claim
+    "these parts sum to the measured total" as fact rather than
+    "approximately": independent per-share rounding can drift by a
+    microdollar or two, and a budget ledger has no tolerance for "or two".
+
+    Precondition (enforced by the only caller, not re-checked here to keep
+    this a plain arithmetic primitive): `total_micros >= 0`, every weight
+    `>= 0`, and `sum(weights) > 0`.
+    """
+    total_weight = sum(weights)
+    shares = [total_micros * w / total_weight for w in weights]
+    result = [int(s) for s in shares]  # floor: every share is non-negative
+    remainder = total_micros - sum(result)
+    order = sorted(range(len(weights)), key=lambda i: shares[i] - result[i], reverse=True)
+    for i in order[:remainder]:
+        result[i] += 1
+    return result
+
+
+class BilledCostBreakdown(BaseModel):
+    """Cache-write / cache-read / fresh-input / output split of a job's measured spend.
+
+    See `billed_cost_breakdown()` for exactly how each figure is derived and why
+    `cache_write` is UNKNOWN rather than zero. `unpriced` is deliberately not one
+    of the four requested categories — it is the honesty valve for spend this
+    function has no pricing basis to attribute anywhere. It is 0 whenever every
+    spend row's model carries usable catalog pricing, which is the common case
+    for calls routed through `Gateway.complete`.
+    """
+
+    job_id: str
+    total: Figure
+    fresh_input: Figure
+    cache_read: Figure
+    cache_write: Figure
+    output: Figure
+    unpriced: Figure
+
+    def sums_to_total(self) -> bool:
+        """True iff every part reconciles to `total`, exactly, in integer micros."""
+        parts = (
+            to_micros(self.fresh_input.value)
+            + to_micros(self.cache_read.value)
+            + to_micros(self.cache_write.value)
+            + to_micros(self.output.value)
+            + to_micros(self.unpriced.value)
+        )
+        return parts == to_micros(self.total.value)
+
+
+def billed_cost_breakdown(
+    ledger: Ledger, job_id: str, catalog: Catalog | None = None
+) -> BilledCostBreakdown:
+    """Split a job's MEASURED spend into cache-write / cache-read / fresh-input / output.
+
+    Cache traffic dominates real billed cost (arXiv:2607.12161v2 measured ~87% of
+    cost composition), so a single `usd_micros` total hides the thing that
+    actually matters. This decomposes it without adding a new write path or
+    touching `Ledger.record_spend` — everything here is derived from
+    `Ledger.spend_rows` (already-recorded `model`, `tokens_in`, `tokens_out`,
+    `tokens_cached_in`, `usd_micros`) plus `catalog.py`'s per-model pricing.
+
+    `total` is `Ledger.job_spend_micros` verbatim — MEASURED, the number of
+    record; every other figure is checked against it, never the other way round.
+
+    `fresh_input`, `cache_read`, and `output` are MODELLED. Each spend row's own
+    measured `usd_micros` is split across these three using that row's
+    `ModelCard` per-token prices as allocation WEIGHTS (`_allocate_micros`), so
+    the weights decide the SPLIT but never the SIZE — the parts always sum to
+    the row's real billed total, never to a re-estimate of it. This is labelled
+    MODELLED rather than MEASURED because the split assumes the catalog's
+    CURRENT price for that model matches the ratio that actually applied when
+    the call was billed; the total it splits does not depend on that
+    assumption, only the proportions do.
+
+    `cache_write` is UNKNOWN, unconditionally — not "usually zero", not "zero
+    for models with no cache-write price". The `spend` table has never recorded
+    a cache-write token count for any model: `record_spend` takes `tokens_in`
+    (fresh), `tokens_out`, and `tokens_cached_in`, and `tokens_cached_in` is
+    documented at its one producer (`GatewayResponse` in `gateway/client.py`)
+    as the CACHE-READ count only (`prompt_tokens_details.cached_tokens` from an
+    OpenAI-compatible usage payload — there is no cache-creation counterpart in
+    that shape). So there is no recorded data a cache-write dollar figure could
+    ever come from here, independent of whether `ModelCard.cache_write_cost_per_1m`
+    happens to be populated for a given model. Reported as unknown, not zero:
+    zero would claim "no cache writes happened, or they cost nothing", which
+    this data cannot support either way — conflating the two is exactly the
+    dishonesty this function exists to refuse.
+
+    `unpriced` is MEASURED: the exact sum of `usd_micros` from rows whose model
+    has no usable catalog price at all (a catalog miss, or every price is zero
+    despite nonzero recorded spend — e.g. `forge.py`'s unmetered-worker
+    fallback records a flat tier-prior `usd_micros` under a worker id, not a
+    catalog model ref, so it can never be found here). That money is real and
+    already inside `total`; it is kept separate rather than guessed into
+    fresh/cache-read/output, because attributing it to one of those would be
+    exactly the invented number this function exists to refuse. Computing it
+    needs no estimation — it is a direct sum over recorded rows — so it earns
+    MEASURED, not MODELLED.
+
+    `total == fresh_input + cache_read + cache_write + output + unpriced`
+    always, exactly, in integer micros (`BilledCostBreakdown.sums_to_total()`).
+    In the common case — every row's model is priced — `unpriced` is 0 and the
+    four named components alone sum to `total`.
+    """
+    cat = catalog if catalog is not None else default_catalog()
+    total_micros = ledger.job_spend_micros(job_id)
+    rows = ledger.spend_rows(job_id)
+
+    fresh_micros = 0
+    cache_read_micros = 0
+    output_micros = 0
+    unpriced_micros = 0
+
+    for row in rows:
+        row_total = int(row["usd_micros"])
+        if row_total == 0:
+            continue  # nothing to attribute either way
+        card = cat.get(row["model"])
+        weights = (
+            [0.0, 0.0, 0.0]
+            if card is None
+            else [
+                row["tokens_in"] * card.input_cost_per_1m,
+                row["tokens_cached_in"] * card.cache_read_rate,
+                row["tokens_out"] * card.output_cost_per_1m,
+            ]
+        )
+        if card is None or sum(weights) <= 0:
+            unpriced_micros += row_total
+            continue
+        fresh_part, cache_part, out_part = _allocate_micros(row_total, weights)
+        fresh_micros += fresh_part
+        cache_read_micros += cache_part
+        output_micros += out_part
+
+    def _fig(value_micros: int, provenance: Provenance, note: str) -> Figure:
+        return Figure(value=from_micros(value_micros), unit="usd", provenance=provenance, note=note)
+
+    return BilledCostBreakdown(
+        job_id=job_id,
+        total=_fig(
+            total_micros, Provenance.MEASURED, f"ledger.job_spend_micros(job_id={job_id!r})"
+        ),
+        fresh_input=_fig(
+            fresh_micros,
+            Provenance.MODELLED,
+            "ledger.spend_rows: tokens_in per row, allocated by catalog input_cost_per_1m weight",
+        ),
+        cache_read=_fig(
+            cache_read_micros,
+            Provenance.MODELLED,
+            "ledger.spend_rows: tokens_cached_in per row, allocated by catalog cache_read_rate weight",
+        ),
+        cache_write=_fig(
+            0,
+            Provenance.UNKNOWN,
+            "spend schema records no cache-write token count (tokens_in=fresh, "
+            "tokens_cached_in=cache-read only, per GatewayResponse) — not derivable "
+            "from recorded data regardless of catalog pricing",
+        ),
+        output=_fig(
+            output_micros,
+            Provenance.MODELLED,
+            "ledger.spend_rows: tokens_out per row, allocated by catalog output_cost_per_1m weight",
+        ),
+        unpriced=_fig(
+            unpriced_micros,
+            Provenance.MEASURED,
+            "sum of usd_micros for rows whose model has no usable catalog price "
+            "(catalog miss, or every price is zero despite nonzero recorded spend)",
+        ),
     )
 
 
@@ -412,6 +628,12 @@ def render_receipt(proof: SavingsProof) -> str:
     warning block is inserted before the baseline figures — the single most
     important line in the whole receipt, since it is the one that stops a
     reader from mistaking an estimate for a fact.
+
+    The receipt LEADS with `cost_per_accepted_task`, ahead of every other
+    figure: token counts and prompt-size deltas are not a cost proxy (a
+    smaller prompt that traded away correctness is not a saving), so the
+    number a reader sees first is billed dollars per accepted unit of work,
+    not tokens moved.
     """
     lines: list[str] = []
     lines.append("=" * _WIDTH)
@@ -427,6 +649,10 @@ def render_receipt(proof: SavingsProof) -> str:
             indent=0,
         )
     )
+    if proof.cost_per_accepted_task is not None:
+        lines.append(_kv("cost / accepted task:", proof.cost_per_accepted_task.render(), indent=0))
+    else:
+        lines.append(_kv("cost / accepted task:", "n/a (0 accepted)", indent=0))
 
     lines.append(_rule())
     lines.append("ACTUAL")
@@ -544,6 +770,34 @@ def verify_proof(proof: SavingsProof) -> list[str]:
                     "— a regression must never be presented as a saving"
                 )
 
+    # 5. cost_per_accepted_task must be None with zero accepted (never a false
+    #    0.0 or inf), and whenever it and cash_cost are both present it must
+    #    agree with cash_cost/acceptance_passed and never outclaim cash_cost's
+    #    own provenance.
+    if proof.acceptance_passed == 0 and proof.cost_per_accepted_task is not None:
+        complaints.append(
+            "cost_per_accepted_task is set but acceptance_passed is 0 — "
+            "cost per zero accepted tasks is undefined and should be None"
+        )
+    cash_cost = proof.actual.get("cash_cost")
+    if (
+        proof.cost_per_accepted_task is not None
+        and cash_cost is not None
+        and proof.acceptance_passed > 0
+    ):
+        expected = cash_cost.value / proof.acceptance_passed
+        if abs(proof.cost_per_accepted_task.value - expected) > 1e-6:
+            complaints.append(
+                f"cost_per_accepted_task is {proof.cost_per_accepted_task.value} but "
+                f"cash_cost/acceptance_passed implies {expected}"
+            )
+        if _STRENGTH[proof.cost_per_accepted_task.provenance] > _STRENGTH[cash_cost.provenance]:
+            complaints.append(
+                "cost_per_accepted_task claims stronger provenance "
+                f"({proof.cost_per_accepted_task.provenance.value}) than its cash_cost input "
+                f"({cash_cost.provenance.value}) supports"
+            )
+
     return complaints
 
 
@@ -582,13 +836,16 @@ class CounterfactualPlan(BaseModel):
 
 __all__ = [
     "Baseline",
+    "BilledCostBreakdown",
     "CounterfactualPlan",
     "Figure",
     "Outcome",
     "Provenance",
     "STANDARD_METRICS",
     "SavingsProof",
+    "billed_cost_breakdown",
     "build_proof",
+    "cost_per_accepted_task",
     "render_receipt",
     "savings_pct",
     "verify_proof",
