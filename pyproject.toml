@@ -20,7 +20,11 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    # No "License :: OSI Approved :: ..." classifier here on purpose: this
+    # project declares `license = "MIT"`, a PEP 639 license EXPRESSION, and
+    # setuptools rejects a build that carries both ("License classifiers have
+    # been superseded by license expressions"). Adding one broke every CI leg
+    # at `pip install` — before a single test ran.
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",

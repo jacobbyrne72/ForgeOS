@@ -53,6 +53,46 @@ def test_pypi_listing_metadata_is_present(project):
     assert project.get("authors"), "no authors"
 
 
+def test_no_license_classifier_alongside_a_license_expression(project):
+    """PEP 639: a `license = "MIT"` expression and a `License ::` classifier
+    cannot coexist — setuptools refuses to build.
+
+    Written after exactly that broke every CI leg at `pip install`, before a
+    single test ran. Parsing the TOML said nothing was wrong; only a real
+    build does. This test is the cheap standing check that a parse gives you.
+    """
+    if not isinstance(project.get("license"), str):
+        pytest.skip("no PEP 639 license expression in use")
+    offenders = [c for c in project.get("classifiers", []) if c.startswith("License ::")]
+    assert not offenders, (
+        f"license expression {project['license']!r} cannot coexist with {offenders}"
+    )
+
+
+def test_the_package_actually_builds(tmp_path):
+    """The check the TOML parse could not make.
+
+    Metadata that parses can still be unbuildable — a rejected classifier
+    combination, a bad dependency spec, a packages-find that resolves to
+    nothing. This runs the real backend and fails the way CI fails.
+    """
+    import subprocess
+    import sys
+
+    try:
+        import build  # noqa: F401
+    except ImportError:
+        pytest.skip("the `build` package is not installed; CI's pip install covers this path")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "build", "--wheel", "--outdir", str(tmp_path),
+         str(PYPROJECT.parent)],
+        capture_output=True, text=True, timeout=600,
+    )
+    assert result.returncode == 0, f"wheel build failed:\n{result.stdout[-2000:]}\n{result.stderr[-2000:]}"
+    assert list(tmp_path.glob("*.whl")), "build reported success but produced no wheel"
+
+
 def test_classifiers_only_claim_python_versions_ci_actually_proves():
     """A classifier is a promise. CI runs 3.11 and 3.12; claiming 3.13 here
     would be an untested assertion in the one place users read as fact."""
