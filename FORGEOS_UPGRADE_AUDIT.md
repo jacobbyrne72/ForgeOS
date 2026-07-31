@@ -7,10 +7,10 @@ Date: 2026-07-31
 - Target repository: `C:\Users\byrne\Downloads\ForgeOS`
 - Source catalog: `C:\Users\byrne\Downloads\forgeos_github_mega_catalog_2026-07-30`
 - Catalog entries: 713 unique GitHub origins
-- Cloned repositories: 718 repository directories
+- Cloned repositories: 721 repository directories
 - Exact catalog origins cloned: 694
-- Verified replacement origins: 13
-- Free space at audit time: approximately 14.64 GB
+- Verified replacement origins: 14
+- Free space at latest audit time: approximately 14.43 GB
 
 Clone roots:
 
@@ -58,9 +58,8 @@ These catalog URLs were unavailable or stale and were not replaced with unrelate
 - `lunary-ai/lunary`
 - `memary-ai/memary`
 - `NirDiamant/AI_Agents_Book`
-- `OWASP/AI-Exchange`
 - `xlang-ai/awesome-language-agents`
 
-Verified replacements are recorded separately in the replacements clone root, including `allenai/OLMo-Eval` for the stale OLMoE evaluation URL, `qodo-ai/qodo-cover` for the stale Cover-Agent URL, `ast-grep/ast-grep`, `Azure/counterfit`, `ai-dynamo/nixl`, `MotiaDev/motia`, `microsoft/semanticworkbench`, `sourcegraph/sourcegraph-public-snapshot`, `sourcegraph/cody-public-snapshot`, `wandb/wandb`, `Not-Diamond/notdiamond-python`, and `microsoft/AI-Red-Teaming-Playground-Labs`.
+Verified replacements are recorded separately in the replacements clone root, including `allenai/OLMo-Eval` for the stale OLMoE evaluation URL, `qodo-ai/qodo-cover` for the stale Cover-Agent URL, `ast-grep/ast-grep`, `Azure/counterfit`, `ai-dynamo/nixl`, `MotiaDev/motia`, `microsoft/semanticworkbench`, `NirDiamant/agents-towards-production`, `OWASP/www-project-ai-security-and-privacy-guide`, `sourcegraph/sourcegraph-public-snapshot`, `sourcegraph/cody-public-snapshot`, `wandb/wandb`, `Not-Diamond/notdiamond-python`, and `microsoft/AI-Red-Teaming-Playground-Labs`.
 
-Candidate successors cloned for further provenance review: `kingjulio8238/Memary` for `memary-ai/memary`, `NirDiamant/GenAI_Agents` for `NirDiamant/AI_Agents_Book`, and `jamesmurdza/awesome-ai-devtools` for `JetBrains/awesome-ai-devtools`. They are not counted as exact or verified replacements because no redirect or maintainer statement was found.
+Candidate successors cloned for further provenance review: `kingjulio8238/Memary` for `memary-ai/memary`, `NirDiamant/GenAI_Agents` for `NirDiamant/AI_Agents_Book`, `jamesmurdza/awesome-ai-devtools` for `JetBrains/awesome-ai-devtools`, `ysymyth/awesome-language-agents` for `xlang-ai/awesome-language-agents`, and `lunary-ai/lunary-py` for `lunary-ai/lunary`. They are not counted as exact or verified replacements because no redirect or maintainer statement was found.

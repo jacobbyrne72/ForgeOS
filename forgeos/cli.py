@@ -425,6 +425,7 @@ def main() -> int:
         "track": cmd_track,
         "local": cmd_local,
         "retry": cmd_retry,
+        "schedule": cmd_schedule,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -614,6 +615,26 @@ def cmd_retry(args):
     print("  - Waste detection: skips retry on non-recoverable errors")
     print()
     print("Savings report:", retry.savings_report())
+    return 0
+
+
+def cmd_schedule(args):
+    from forgeos.cost_scheduler import CostScheduler
+    s = CostScheduler(batch_size=args.batch_size)
+    # Demo workload
+    for i in range(5): s.add_task("code_gen", {"name": f"feature {i}"})
+    for i in range(3): s.add_task("review", {"name": f"PR #{i}"})
+    for i in range(2): s.add_task("format", {"name": f"format {i}"})
+    plan = s.schedule()
+    print("=== Cost Scheduler ===")
+    print("Total tasks:", plan["total_tasks"])
+    print("Total batches:", plan["total_batches"])
+    print("Total cost: $" + str(plan["total_cost"]))
+    print()
+    for b in plan["batches"]:
+        print("  " + b["task_type"] + " batch " + str(b["batch_index"]) + ": " + str(b["batch_size"]) + " tasks, $" + str(b["cost"]))
+    print()
+    print("Savings vs all-API ($0.03 each): $" + str(round(plan["total_tasks"] * 0.03 - plan["total_cost"], 4)))
     return 0
 
 

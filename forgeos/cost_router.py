@@ -58,11 +58,19 @@ class CostRouter:
         """
         route = ROUTING_RULES.get(task_type, Route.FULL_MODEL)
 
-        # If breaker is OPEN and task would use full model,
-        # check for cheaper alternatives
-        if self._breaker.is_open() and route == Route.FULL_MODEL:
-            # Downgrade to cheap model if available
-            route = Route.CHEAP_MODEL
+        # If the router detects that full-model calls are failing
+        # (tracked via circuit breaker), downgrade to cheaper alternatives
+        # Check any worker's breaker state for OPEN
+        try:
+            breaker_open = False
+            for worker_id, record in self._breaker._records.items():
+                if record.state.value == "open":
+                    breaker_open = True
+                    break
+            if breaker_open and route == Route.FULL_MODEL:
+                route = Route.CHEAP_MODEL
+        except Exception:
+            pass  # Silently fall through to original route
 
         key = route.value
         self.routes_taken[key] = self.routes_taken.get(key, 0) + 1
