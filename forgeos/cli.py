@@ -68,6 +68,15 @@ def cmd_receipts(args) -> int:
     return _cmd_receipts(args)
 
 
+def cmd_preflight(args) -> int:
+    """Expose the canonical read-only prior-work refusal check."""
+    return _forward_to_main(
+        "preflight", args,
+        ("--state-dir", "--repo", "--all-repos", "--scan-limit", "--skip", "--json"),
+        "task_file",
+    )
+
+
 def _doctor_probe(settings, args) -> int:
     """Actually contact each provider. Free: lists models, never completes."""
     from forgeos.core.probe import probe_all, save_report
@@ -717,6 +726,16 @@ def main(argv: list[str] | None = None) -> int:
     p_receipts = sub.add_parser("receipts", help="Read-only ledger spend and acceptance summary")
     p_receipts.add_argument("--state-dir", default=None)
     p_receipts.add_argument("--json", action="store_true", help="Machine-readable receipt/status output")
+    p_preflight = sub.add_parser(
+        "preflight", help="Read-only prior-work refusal check; never calls a provider"
+    )
+    p_preflight.add_argument("task_file")
+    p_preflight.add_argument("--state-dir", default=None)
+    p_preflight.add_argument("--repo", default=".")
+    p_preflight.add_argument("--all-repos", action="store_true")
+    p_preflight.add_argument("--scan-limit", type=int, default=500)
+    p_preflight.add_argument("--skip", action="store_true")
+    p_preflight.add_argument("--json", action="store_true")
     # `python -m forgeos` owns team/serve-mcp/memory while `forge` owned the
     # other 43. Two entry points with disjoint command sets is a trap: the
     # README's own Team-mode section says to run team mode, and `forge team`
@@ -859,6 +878,7 @@ def main(argv: list[str] | None = None) -> int:
         "run": cmd_run,
         "resume": cmd_resume,
         "report": cmd_report,
+        "preflight": cmd_preflight,
         "receipts": cmd_receipts,
         "adapt": cmd_adapt,
         "compress": cmd_compress,
