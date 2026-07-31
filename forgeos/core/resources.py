@@ -23,6 +23,8 @@ from enum import Enum
 
 from pydantic import BaseModel
 
+from ..diagnostics import record_degradation
+
 # Leave this much for the OS and the operator's own editor/browser.
 DEFAULT_OS_RESERVE_GIB = 4.0
 # Below this, starting another local worker risks swapping — which is slower than
@@ -104,13 +106,19 @@ def detect_hardware() -> HardwareProfile:
         prof.logical_cores = psutil.cpu_count() or prof.logical_cores
         prof.ram_total_gib = round(psutil.virtual_memory().total / 2**30, 2)
         prof.detected = True
-    except Exception:
-        pass
+    except Exception as exc:
+        record_degradation(
+            "resources", "psutil hardware detection failed", exc,
+            consequence="hardware profile uses defaults -- resource_class and pool sizing may be wrong for this machine",
+        )
 
     try:
         prof.disk_free_gib = round(shutil.disk_usage(os.getcwd()).free / 2**30, 2)
-    except Exception:
-        pass
+    except Exception as exc:
+        record_degradation(
+            "resources", "disk usage probe failed", exc,
+            consequence="disk_free_gib defaults to 0 -- disk-based checks see no free space",
+        )
 
     prof.gpu_name, prof.gpu_vram_gib = _detect_gpu()
     # A GPU only counts if it can actually hold a useful model. Old low-VRAM cards

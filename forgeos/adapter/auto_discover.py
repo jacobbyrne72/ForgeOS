@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .._sqlite import connect
+from ..diagnostics import record_degradation
 
 ADAPTER_DIRS = [
     Path.home() / ".forgeos" / "plugins",
@@ -123,8 +124,11 @@ def _scan_entry_points(results: list, seen: set) -> None:
                 results.append(
                     DiscoveredAdapter(name=ep.name, kind="entry_point", path=ep.value, source="entry_point")
                 )
-    except Exception:
-        pass
+    except Exception as exc:
+        record_degradation(
+            "adapter_discovery", "entry-point scan failed", exc,
+            consequence="fleet may be smaller than configured -- entry_point adapters were not discovered",
+        )
 
 
 def _validate_adapter(a: DiscoveredAdapter) -> bool:

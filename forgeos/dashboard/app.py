@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import sqlite3
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -43,6 +45,7 @@ from ..events import EventLog, EventType
 from ..ledger import Ledger
 from ..leases import LeaseStore
 from ..core.quota import QUOTA_SNAPSHOT_SCHEMA, QuotaSource, QuotaTracker
+from ..diagnostics import record_degradation
 from ..registry import MIN_ATTEMPTS_TO_TRUST, default_registry
 
 HOST = "127.0.0.1"
@@ -673,13 +676,14 @@ def create_app(state_dir: str | Path) -> FastAPI:
     from ..manager_chat import ApprovalError, ManagerSession, draft_blueprint
 
     chat_state: dict[str, Any] = {"session": None}
+    chat_lock = threading.RLock()
 
     @app.post("/api/chat/propose")
     def chat_propose(body: ChatProposal) -> dict[str, Any]:
         objective = body.objective.strip()
         if not objective:
             raise HTTPException(status_code=422, detail="objective is empty")
-        if body.max_usd <= 0 or body.max_usd > 50:
+        if not math.isfinite(body.max_usd) or body.max_usd <= 0 or body.max_usd > 50:
             raise HTTPException(status_code=422, detail="max_usd must be in (0, 50]")
         session = ManagerSession(objective=objective)
         blueprint = draft_blueprint(
@@ -693,7 +697,8 @@ def create_app(state_dir: str | Path) -> FastAPI:
             write_scope=["**"],
         )
         session.propose(blueprint)
-        chat_state["session"] = session
+        with chat_lock:
+            chat_state["session"] = session
         return {
             "rendered": blueprint.render(),
             "digest": blueprint.contract.digest()[:16],
@@ -702,16 +707,22 @@ def create_app(state_dir: str | Path) -> FastAPI:
 
     @app.post("/api/chat/run")
     def chat_run(body: ChatApproval) -> dict[str, Any]:
-        session = chat_state.get("session")
-        if session is None:
-            raise HTTPException(status_code=409, detail="nothing proposed yet")
-        try:
-            session.approve(body.digest)
-        except ApprovalError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        with chat_lock:
+            session = chat_state.get("session")
+            if session is None:
+                raise HTTPException(status_code=409, detail="nothing proposed yet")
+            try:
+                session.approve(body.digest)
+            except ApprovalError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-        objective = session.objective
-        max_usd = session.blueprint.contract.budget.cash_limit
+            objective = session.objective
+            max_usd = session.blueprint.contract.budget.cash_limit
+            # A real approval is a one-shot spend authorization. Keep the
+            # session for free previews, but consume it before starting the
+            # background job so a replay cannot launch a second paid run.
+            if not body.dry_run:
+                chat_state["session"] = None
         if body.dry_run:
             # Free preview through the same compiler the real run uses.
             from ..compiler import compile_mission
@@ -727,16 +738,17 @@ def create_app(state_dir: str | Path) -> FastAPI:
         # so the event loop (and the websocket feed) stays live. The budget cap
         # comes from the APPROVED contract, never from the request body -- a
         # second request cannot widen what was approved.
-        import threading
-
         from ..__main__ import _run_team
 
         def _work() -> None:
             try:
                 _run_team(objective, cwd=str(Path.cwd()), budget_usd=max_usd,
                           state_dir=str(state_dir), dry_run=False)
-            except Exception:
-                pass  # outcome lands in the ledger either way; the feed shows it
+            except Exception as exc:
+                record_degradation(
+                    "dashboard_chat", "background run failed", exc,
+                    consequence="the approved chat job did not complete; inspect the activity feed and diagnostics",
+                )
 
         threading.Thread(target=_work, daemon=True).start()
         return {"ran": True, "dry_run": False, "budget_usd": max_usd,

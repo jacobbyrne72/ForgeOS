@@ -101,3 +101,30 @@ def test_the_budget_that_runs_is_the_one_that_was_approved(client):
                        json={"digest": proposal["digest"], "dry_run": True,
                              "budget_usd": 99.0})  # ignored: not part of the model
     assert resp.status_code == 200
+
+
+def test_nonfinite_budget_is_refused_at_the_door(client):
+    # httpx quite correctly refuses to serialize NaN as JSON; send the raw
+    # payload so the server-side finite-value guard is exercised.
+    resp = client.post("/api/chat/propose",
+                       content=b'{"objective":"x","max_usd":NaN}',
+                       headers={"content-type": "application/json"})
+    assert resp.status_code == 422
+
+
+def test_real_approval_is_one_shot(monkeypatch, client):
+    """A replayed digest must not launch a second paid background job."""
+    import threading
+
+    started = threading.Event()
+
+    def fake_run_team(*args, **kwargs):
+        started.set()
+
+    monkeypatch.setattr("forgeos.__main__._run_team", fake_run_team)
+    proposal = _propose(client)
+    first = client.post("/api/chat/run", json={"digest": proposal["digest"], "dry_run": False})
+    assert first.status_code == 200
+    assert started.wait(2), "the approved job was not dispatched"
+    replay = client.post("/api/chat/run", json={"digest": proposal["digest"], "dry_run": False})
+    assert replay.status_code == 409

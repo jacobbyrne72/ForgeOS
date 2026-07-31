@@ -454,8 +454,13 @@ def cmd_adapt(args):
                 row.get("seconds", 0),
                 True,
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        from forgeos.diagnostics import record_degradation
+
+        record_degradation(
+            "adapter_profiler", "ledger history failed to load", exc,
+            consequence="adapter routing decisions may be worse -- profiler has no track record for this session",
+        )
     decision = profiler.best_adapter(
         required_capabilities=set(args.capabilities.split(",")) if args.capabilities else set(),
         budget_usd_micros=args.budget,

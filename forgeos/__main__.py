@@ -13,7 +13,12 @@ Two questions an operator asks before and after spending anything:
   daemon already on this machine (e.g. `ollama list`), a JSON cache on
   disk. Nothing here calls out to a remote model provider — that
   reachability probe against real, billed endpoints is `tools/live_check.py`'s
-  job, not this one's.
+  job, not this one's. `doctor` also prints a **Degradations** section: subsystem
+  failures caught and swallowed elsewhere in forgeos this process (see
+  `forgeos.diagnostics`) that changed behaviour invisibly -- e.g. a smaller
+  fleet than configured, or pool sizes computed from defaults because
+  hardware detection failed. This is the one place an operator can see that
+  "no error" did not mean "nothing went wrong".
 
 - **`receipts`**: what did it cost? A read-only summary of the ledger
   already on disk — spend by job, spend by worker, cost per accepted task —
@@ -83,6 +88,26 @@ def _print_catalog_staleness(catalog) -> None:
         print("  staleness: unknown (no stamped price data found)")
 
 
+def _print_degradations() -> None:
+    """What silently went wrong elsewhere this process -- see `forgeos.diagnostics`.
+
+    This is the whole point of the module it reads from: without this section,
+    a smaller-than-configured fleet or a hardware profile built from defaults
+    would be invisible to the operator. An empty list is reported as plainly as
+    a non-empty one -- "none recorded" is a claim, not silence.
+    """
+    from forgeos.diagnostics import degradations
+
+    degs = degradations()
+    print("Degradations")
+    if not degs:
+        print("  none recorded this process")
+        return
+    for d in degs:
+        suffix = f" (x{d.count})" if d.count > 1 else ""
+        print(f"  [{d.subsystem}] {d.consequence}{suffix}")
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     from forgeos import Forge
     from forgeos.catalog import default_catalog
@@ -100,6 +125,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         _print_worker_runnability(forge.registry.all())
         print()
         _print_catalog_staleness(default_catalog())
+        print()
+        _print_degradations()
     finally:
         forge.close()
     return 0

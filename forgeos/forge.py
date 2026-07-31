@@ -57,6 +57,7 @@ from .core.quota import QuotaTracker
 from .core.scheduler import Scheduler
 from .core.timing import Phase, SpanStore
 from .core.verify import GateResult, MergeGate, run_security
+from .diagnostics import record_degradation
 from .economy.avoidance import AvoidanceLog, AvoidanceMethod
 from .economy.lowerer import Operation, classify, savings_estimate
 from .economy.preflight import (
@@ -457,13 +458,19 @@ class Forge:
         if self._owns_gateway and self._gateway is not None:
             try:
                 self._gateway.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                record_degradation(
+                    "forge_close", "gateway close failed", exc,
+                    consequence="gateway connections/resources may not have been released cleanly",
+                )
         for store in (self.ledger, self.events, self.leases, self.avoidance, self.spans):
             try:
                 store.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                record_degradation(
+                    "forge_close", f"{store.__class__.__name__} close failed", exc,
+                    consequence="a store did not close cleanly -- on-disk state may not be fully flushed",
+                )
 
     def _persist_quota(self) -> None:
         """Best-effort persistence for telemetry; never replaces ledger truth."""
@@ -755,8 +762,16 @@ class Forge:
                                      state=TaskState.FAILED, blocker=reason),
                         job_id=job.id, budget=spec.budget,
                     )
-            except Exception:
-                pass  # release was best-effort; the outcome below still records the crash
+            except Exception as report_exc:
+                # Release was best-effort; the outcome below still records the
+                # crash. But a report that never landed means this task's path
+                # leases were never released either, and a leaked lease blocks
+                # every later task touching those paths until its TTL expires —
+                # silence here is a wall-clock cost nobody can see the reason for.
+                record_degradation(
+                    "forge.scheduler", "crash report/lease release failed", report_exc,
+                    consequence="path leases may be leaked; later tasks on those paths wait for TTL",
+                )
             return TaskOutcome(task_id=spec.id, subject=spec.subject,
                                accepted=False, reason=reason)
 
