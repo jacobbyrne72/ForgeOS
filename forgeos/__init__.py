@@ -33,6 +33,7 @@ from .adapt import AdapterProfiler, AdapterDecision, AdapterProfile
 from .model_select import ModelSelector, ModelRecommendation
 from .profile import ModelProfiler, ModelProfile
 from .auto_optimize import AutoOptimizer, AutoOptimizeResult
+from .token_budget import TokenBudget, BudgetExceeded
 
 __all__ = [
     "Forge",

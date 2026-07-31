@@ -363,6 +363,9 @@ def main() -> int:
     p_watch = sub.add_parser("watch", help="Continuous cost monitoring")
     p_watch.add_argument("--interval", type=int, default=30)
     p_watch.add_argument("--max-alerts", type=int, default=5)
+    p_budget = sub.add_parser("budget", help="Token budget enforcer")
+    p_budget.add_argument("--max-tokens", type=int, default=4096, dest="max_tokens")
+    p_budget.add_argument("--warn-at", type=float, default=0.8, dest="warn_at")
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -380,6 +383,7 @@ def main() -> int:
         "batch": cmd_batch,
         "bench": cmd_bench,
         "watch": cmd_watch,
+        "budget": cmd_budget,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -404,11 +408,31 @@ def cmd_batch(args):
     print(b.print_report(s))
     return 0
 
-    handler = dispatch.get(args.command)
-    if handler is None:
-        print(f"ERROR: no handler registered for '{args.command}'", file=sys.stderr)
-        return 2
-    return handler(args)
+
+
+def cmd_budget(args):
+    from forgeos.token_budget import TokenBudget, BudgetExceeded
+    print("=== Token Budget Enforcer ===")
+    print("Max tokens:", args.max_tokens)
+    print("Warn at:", args.warn_at)
+    print()
+    # Demo: check a short prompt
+    budget = TokenBudget(max_tokens=args.max_tokens, warn_ratio=args.warn_at)
+    short_prompt = "Write a function that adds two numbers."
+    result = budget.check(short_prompt)
+    print("Short prompt check:", result["action"])
+    print("  Est tokens:", result["estimated_tokens"])
+    print("  Remaining:", result["budget_remaining"])
+    print()
+    # Demo: check a large prompt
+    big_prompt = "x" * (args.max_tokens + 2000)
+    result = budget.check(big_prompt)
+    print("Oversized prompt check:", result["action"])
+    print("  Est tokens:", result["estimated_tokens"])
+    print("  Remaining:", result["budget_remaining"])
+    print()
+    print("Budget prevents overspending on single requests.")
+    return 0
 
 def cmd_optimize(args):
     from forgeos.optimizer import CostOptimizer
