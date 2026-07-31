@@ -1,6 +1,6 @@
 [project]
 name = "forgeos"
-version = "0.5.2"
+version = "0.5.3"
 description = "Cost-governed agent harness: eliminate the request, auto-discover adapters, circuit-break dead workers, cache prompt prefixes, compile NLP objectives, diff-aware security scanning, full CLI."
 requires-python = ">=3.11"
 readme = "README.md"
