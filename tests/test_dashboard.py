@@ -135,6 +135,23 @@ def test_leaderboard_endpoint_is_empty_and_does_not_create_missing_receipt_dir(s
     assert not receipt_dir.exists()
 
 
+def test_leaderboard_endpoint_keeps_valid_rows_when_one_receipt_is_corrupt(state_dir: Path):
+    receipt_dir = state_dir / "receipts"
+    receipt_dir.mkdir(parents=True)
+    _write_leaderboard_receipt(receipt_dir / "valid.json")
+    (receipt_dir / "corrupt.json").write_text(
+        json.dumps({"schema": "not-a-forgebench-receipt"}), encoding="utf-8"
+    )
+    client = TestClient(create_app(state_dir, leaderboard_dir=receipt_dir))
+
+    body = client.get("/api/leaderboard").json()
+
+    assert body["available"] is True
+    assert body["partial"] is True
+    assert len(body["errors"]) == 1
+    assert [entry["label"] for entry in body["entries"]] == ["local/model"]
+
+
 def test_queue_status_endpoint_reports_heartbeat_without_provider_calls(state_dir: Path):
     queue = state_dir / "queue"
     queue.mkdir(parents=True)
@@ -462,6 +479,7 @@ def test_index_html_surfaces_the_measured_leaderboard_panel():
     assert 'api("/api/leaderboard")' in html
     assert "Jump to Leaderboard" in html
     assert "fleet_rollup" in html
+    assert 'const state = data.partial ? "partial" : "unavailable"' in html
     assert "measured live Class-A only" in html
 
 

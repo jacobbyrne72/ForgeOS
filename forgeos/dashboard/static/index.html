@@ -1602,7 +1602,8 @@
     const summary = data.summary || {};
     const errors = data.errors || [];
     if (errors.length) {
-      meta.innerHTML = `<span class="badge badge-failed">unavailable</span> ` +
+      const state = data.partial ? "partial" : "unavailable";
+      meta.innerHTML = `<span class="badge badge-failed">${state}</span> ` +
         `${esc(errors[0])}`;
     } else if (!data.available) {
       meta.innerHTML = `No local receipts yet — write ForgeBench JSON to ` +

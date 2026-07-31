@@ -46,7 +46,7 @@ from ..ledger import Ledger
 from ..leases import LeaseStore
 from ..core.quota import QUOTA_SNAPSHOT_SCHEMA, QuotaSource, QuotaTracker
 from ..diagnostics import record_degradation
-from ..forgebench_table import load_receipt
+from ..forgebench_table import load_receipt, row_for_receipt
 from ..leaderboard import build_leaderboard
 from ..registry import MIN_ATTEMPTS_TO_TRUST, default_registry
 
@@ -552,7 +552,11 @@ def create_app(
         errors = []
         for path in paths:
             try:
-                receipts.append((path, load_receipt(path)))
+                receipt = load_receipt(path)
+                # Validate at the file boundary. One half-written or unrelated
+                # JSON artifact must not erase otherwise useful local rankings.
+                row_for_receipt(path, receipt)
+                receipts.append((path, receipt))
             except ValueError as exc:
                 errors.append(str(exc))
         try:
@@ -562,7 +566,8 @@ def create_app(
             board = build_leaderboard([])
         return {
             **board,
-            "available": bool(paths) and not errors,
+            "available": bool(receipts),
+            "partial": bool(receipts and errors),
             "receipt_dir": str(leaderboard_dir),
             "errors": errors,
         }
