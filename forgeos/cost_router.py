@@ -8,7 +8,7 @@ Routes each task to the cheapest execution path:
 from __future__ import annotations
 
 from enum import Enum
-from .circuit_breaker import CircuitBreaker, BreakerState
+from .circuit_breaker import CircuitBreaker
 
 
 class Route(Enum):

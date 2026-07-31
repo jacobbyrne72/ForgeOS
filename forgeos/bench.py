@@ -35,6 +35,8 @@ class BenchmarkResult:
 
 def bench(objective: str, *, cwd: str = ".", iterations: int = 3) -> list[BenchmarkResult]:
     """Run benchmark across all layers and return results."""
+    if iterations < 1:
+        raise ValueError("iterations must be at least 1")
     from forgeos.compiler import compile_mission
     from forgeos.circuit_breaker import CircuitBreaker
     from forgeos.prompt_cache import PromptCache
@@ -42,12 +44,13 @@ def bench(objective: str, *, cwd: str = ".", iterations: int = 3) -> list[Benchm
     results: list[BenchmarkResult] = []
     for layer in Layer:
         times: list[float] = []
+        saved_tokens = 0
+        saved_usd = 0
         for _ in range(iterations):
             t0 = time.perf_counter()
             if layer.value == "raw":
                 # Baseline: just pass objective to a model (simulated)
-                saved_tokens = 0
-                saved_usd = 0
+                pass
             elif layer.value == "compiler":
                 compile_mission(objective, cwd=cwd)
                 saved_tokens = int(len(objective.split()) * 1.0)

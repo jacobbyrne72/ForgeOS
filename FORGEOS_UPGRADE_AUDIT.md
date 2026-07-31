@@ -41,13 +41,18 @@ Fixed defects found during review:
 - Gitleaks scanned the repository root instead of each requested source path.
 - Security checks could deadlock task execution when all reported paths were absent.
 - Multiple unused exports, imports, locals, and non-strict `zip()` calls violated the project lint policy.
+- Concurrent CLI additions left handlers unreachable, duplicated dispatch keys, and omitted parser arguments; all registered CLI commands now have reachable subparsers.
+- An empty mission could leave the CLI optimization plan uninitialized.
+- A second `cmd_compress` definition shadowed context compression and required an unregistered argument; it is now a separate `output-compress` command.
+- The output-compressor demo contained a malformed newline literal.
 
 Current evidence:
 
 - `ruff check forgeos tests`: passes.
-- Full test suite: 1259 passed, 1 dependency deprecation warning.
+- Full current test suite: 1289 passed, 1 dependency deprecation warning.
 - Dependency audit: `uv pip compile pyproject.toml --all-extras` followed by `pip-audit`; no known vulnerabilities found.
 - No production `eval`, `exec`, or `shell=True` found.
+- Pyright currently reports 85 inferred-type errors, concentrated in dynamic executor/CLI models and third-party library stubs; runtime behavior is covered by the passing suite, but these annotations remain follow-up work.
 
 The stricter supplemental security rules still flag intentional resilience handlers, runtime assertions, controlled SQL placeholder construction, and bounded subprocess argv. These were reviewed and not changed without a demonstrated behavioral defect.
 

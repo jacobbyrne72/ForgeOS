@@ -7,9 +7,8 @@ from __future__ import annotations
 
 import ast
 import io
-import sys
 from contextlib import redirect_stdout, redirect_stderr
-from .cost_router import CostRouter, Route
+from .cost_router import CostRouter
 
 
 SAFE_FUNCTIONS = {

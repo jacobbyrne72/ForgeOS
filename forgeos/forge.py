@@ -579,6 +579,7 @@ class Forge:
             # tier against the scheduler's worker — a (worker, tier) pair no
             # decision ever produced, poisoning every stat keyed on it.
             with self._sched_lock:
+                contended = False
                 asn = self.scheduler.assign(job.id, spec.id,
                                             needs_file_edits=bool(spec.scope.paths),
                                             worker_id=route.worker_id or None)

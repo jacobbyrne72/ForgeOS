@@ -460,10 +460,12 @@ class MemoryStore:
 
     def forget(self, item_id: str) -> bool:
         """Delete one row by id. Returns whether anything was deleted."""
+        deleted = False
         with self._conn:
             r = self._conn.execute("DELETE FROM memory WHERE id=?", (item_id,))
+            deleted = r.rowcount > 0
             self._sync_fts_after_delete()
-        return r.rowcount > 0
+        return deleted
 
     def _sync_fts_after_delete(self) -> None:
         """Keep the FTS mirror from outliving the rows it indexes.
