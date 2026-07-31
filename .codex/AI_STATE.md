@@ -84,9 +84,9 @@
 - `python -m pytest tests/test_effort.py -q` (28 passed)
 
 ## Test status
-- Passing: 28 effort tests; 147 CLI dispatch tests; 4 quota-ingest tests; 80 router/quota tests; 106 focused quota/Forge/dashboard tests; 164 focused benchmark/CLI/aggregator tests; Ruff; compileall; CLI dogfood and no-call benchmark smoke checks.
+- Passing: full checkpointed suite (`forgeos-final-suite-clean`, rc 0, 188.4s); 26 diagnostics/dashboard-chat tests; 28 effort tests; 147 CLI dispatch tests; 4 quota-ingest tests; 80 router/quota tests; 106 focused quota/Forge/dashboard tests; 164 focused benchmark/CLI/aggregator tests; Ruff; compileall; CLI dogfood and no-call benchmark smoke checks.
 - Failing: full non-slow sweep currently has one unrelated concurrent failure in `tests/test_forgebench_packing.py::test_definition_weighting_is_what_makes_that_true` while `forgeos/forgebench.py` is concurrently modified.
-- Not run: final combined suite after concurrent work; the prior non-slow sweep had one unrelated ForgeBench packing failure.
+- Not run: live provider calls or live execution (intentionally gated); the full suite was run without provider calls.
 
 ## Known blockers
 - No blocker for the source upgrade. Full catalog clone coverage remains intentionally unperformed because it is 713 repositories.
@@ -100,9 +100,9 @@
 - The `forge` executable is not installed in this shell (`Get-Command forge` returned unavailable); the source-equivalent `python -m forgeos.cli` path is verified without installing anything.
 - Vendor-neutral quota ingestion and subscription-vs-API arbitration are committed: `QuotaIngestor`, `market_resource` mappings, effective-cost routing, `Forge.ingest_quota`, `forge quota --json`, and `forge quota ingest`.
 - Keep provider calls opt-in; stage only verified owned hunks if touching the concurrently dirty files.
-- Current audit of the control-plane/probe work: `tests/test_automemory.py` passed 13; all 11 hook cases passed across the full run/isolation rerun; all 12 MCP stdio cases passed via checkpointed `sweep.py`; `tests/test_probe.py` passed 16; adapter bridge/factory/routed tests passed 65; the dirty effort-propagation test set passed 31; Ruff and py_compile passed for the new modules. A full-suite runner remains active without a captured summary; do not claim the combined suite green.
+- Current audit of the control-plane/probe work: `tests/test_automemory.py` passed 13; all 11 hook cases passed across the full run/isolation rerun; all 12 MCP stdio cases passed via checkpointed `sweep.py`; `tests/test_probe.py` passed 16; adapter bridge/factory/routed tests passed 65; the dirty effort-propagation test set passed 31; Ruff and py_compile passed for the new modules. The final clean full-suite sweep now passed (rc 0).
 - Gateway affinity/provider-signal work is now committed in `e50bab0`: job-scoped warm-seat pinning, TTL/quota/health release, provider signal parsing, and ForgeBench/GatewayWorker affinity wiring. Focused cache-affinity/provider-signal/gateway tests passed 53; Ruff and py_compile passed.
 - SQLite/lease hardening is committed in `c2e6dde`; its cross-process `BEGIN IMMEDIATE` path and refused-acquire rollback were verified with `python -m pytest tests/test_sqlite_concurrency.py tests/test_leases.py -q --timeout=300` (52 passed), plus Ruff, py_compile, and `git diff --check`.
-- `forgebench_report.json` is also dirty generated output; preserve it and do not stage it with unrelated work. Other agents still own a non-slow full-suite process, so no trustworthy combined-suite result is available yet.
-- Final-suite verification: checkpointed `forgeos-final-suite` collected a transient `gateway_worker.py` decorator race during concurrent edits (rc 2); isolated `tests/test_gateway_worker.py` then passed 35. A clean rerun was started through `sweep.py` but exceeded the 300-second pytest timeout under host contention (rc -1, 478s, no test output). Combined-suite status remains unverified; do not claim green.
+- `forgebench_report.json` remains dirty generated output; preserve it and do not stage it with unrelated work.
+- Final-suite verification history: an earlier run hit a transient `gateway_worker.py` decorator race during concurrent edits and a second attempt hit sweep's default 120-second timeout. The corrected checkpointed run used `sweep.py --timeout 600` and completed with rc 0 in 188.4s; its capture was capped before the final pytest count, but the process exit is authoritative.
 - New concurrent work is dirty in dashboard/chat, diagnostics, auto-discovery, resources, CLI, and Forge integration files; preserve those files and do not stage or revert them without ownership evidence.
