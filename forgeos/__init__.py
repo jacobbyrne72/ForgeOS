@@ -34,6 +34,9 @@ from .model_select import ModelSelector, ModelRecommendation
 from .profile import ModelProfiler, ModelProfile
 from .auto_optimize import AutoOptimizer, AutoOptimizeResult
 from .token_budget import TokenBudget, BudgetExceeded
+from .optimizer import CostOptimizer, OptimizationPlan
+from .batch_optimize import BatchOptimizer
+from .cost_replacer import CostReplacer
 
 __all__ = [
     "Forge",
