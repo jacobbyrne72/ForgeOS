@@ -113,6 +113,8 @@ __all__ = [
     "CostEfficiency",
     "compress_output",
     "estimate_output_tokens",
+    "LocalFormatter",
+    "CachePurge",
 ]
 
 from .adaptive_batch import AdaptiveBatch
@@ -140,3 +142,7 @@ from .cost_efficiency import CostEfficiency
 from .output_compressor import compress_output, estimate_output_tokens
 
 from .local_formatter import LocalFormatter
+
+from .cache_purge import CachePurge
+
+from .prompt_shrinker import shrink_prompt, estimate_prompt_tokens

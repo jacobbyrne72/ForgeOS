@@ -413,6 +413,8 @@ def main() -> int:
     sub.add_parser("efficiency", help="Show token efficiency metrics")
     sub.add_parser("dashboard", help="Show the ForgeOS cost dashboard")
     p_purge = sub.add_parser("purge", help="Purge expensive prompt-cache entries")
+    p_shrink = sub.add_parser("shrink", help="Shrink prompts to save tokens")
+    p_shrink.add_argument("--tokens", type=int, default=2048, dest="max_tokens")
     p_purge.add_argument("--cost-limit", type=float, default=0.01, dest="cost_limit")
     p_format = sub.add_parser("format", help="Show local formatting capability")
     p_format.add_argument("--formatter-tool", default="ruff", dest="formatter_tool")
@@ -452,6 +454,7 @@ def main() -> int:
         "output-compress": cmd_output_compress,
         "format": cmd_format,
         "purge": cmd_purge,
+        "shrink": cmd_shrink,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -749,6 +752,18 @@ def cmd_output_compress(args):
     print("Savings:", str(info["savings_pct"]) + "%")
     print()
     print("Preview:", result[:300])
+    return 0
+
+
+def cmd_shrink(args):
+    from forgeos.prompt_shrinker import shrink_prompt
+    demo = "Explain the concept of recursion in detail.  " * 10
+    result, info = shrink_prompt(demo, target_tokens=args.max_tokens)
+    print("=== Prompt Shrinker ===")
+    print("Original tokens:", info["original_tokens"])
+    print("Shrunk tokens:", info["shrunk_tokens"])
+    print("Tokens saved:", info["tokens_saved"])
+    print("Savings:", str(info["savings_pct"]) + "%")
     return 0
 
 
