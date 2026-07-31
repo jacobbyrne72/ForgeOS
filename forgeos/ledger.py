@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     max_usd_micros INTEGER NOT NULL,
     max_seconds INTEGER NOT NULL,
     max_iterations INTEGER NOT NULL,
+    isolate_worktrees INTEGER NOT NULL DEFAULT 0,
+    base_ref TEXT,
     created_at REAL NOT NULL,
     closed_at REAL
 );
@@ -207,6 +209,14 @@ class Ledger:
             self._conn.execute("ALTER TABLE tasks ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]'")
         except sqlite3.OperationalError:
             pass
+        try:
+            self._conn.execute("ALTER TABLE jobs ADD COLUMN isolate_worktrees INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self._conn.execute("ALTER TABLE jobs ADD COLUMN base_ref TEXT")
+        except sqlite3.OperationalError:
+            pass
         self._conn.commit()
 
     def close(self) -> None:
@@ -219,11 +229,18 @@ class Ledger:
 
     # ---------------- jobs ----------------
 
-    def open_job(self, job: JobSpec) -> str:
+    def open_job(
+        self,
+        job: JobSpec,
+        *,
+        isolate_worktrees: bool = False,
+        base_ref: str | None = None,
+    ) -> str:
         with self._tx() as c:
             c.execute(
                 "INSERT INTO jobs (id, objective, cwd, state, max_usd_micros, max_seconds,"
-                " max_iterations, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                " max_iterations, isolate_worktrees, base_ref, created_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     job.id,
                     job.objective,
@@ -232,6 +249,8 @@ class Ledger:
                     job.budget.max_usd_micros,
                     job.budget.max_seconds,
                     job.budget.max_iterations,
+                    int(isolate_worktrees),
+                    base_ref,
                     job.created_at,
                 ),
             )
@@ -460,17 +479,54 @@ class Ledger:
             )
         return sid
 
-    def job_spend_micros(self, job_id: str) -> int:
-        row = self._conn.execute(
-            "SELECT COALESCE(SUM(usd_micros),0) AS t FROM spend WHERE job_id=?", (job_id,)
-        ).fetchone()
-        return int(row["t"])
+    # `kind='call'` is a provider-billed call with real usage numbers.
+    # `kind='estimate'` is a MODELLED tier prior -- what a flat-rate
+    # subscription seat is *reckoned* to have cost, for a worker that reports
+    # no tokens. Summing the two produces a number that is neither: measured on
+    # a real job, four billed calls totalling $0.0008 sat alongside one $0.06
+    # tier prior, and every total in the product reported "$0.06 spend" as
+    # though a provider had invoiced it. In a system whose entire claim is that
+    # a dollar figure carries its provenance, that is the claim leaking at the
+    # one place people actually read.
+    MEASURED_KIND = "call"
 
-    def task_spend_micros(self, task_id: str) -> int:
-        row = self._conn.execute(
-            "SELECT COALESCE(SUM(usd_micros),0) AS t FROM spend WHERE task_id=?", (task_id,)
-        ).fetchone()
-        return int(row["t"])
+    def job_spend_micros(self, job_id: str, *, measured_only: bool = False) -> int:
+        """Total attributed to a job.
+
+        `measured_only=True` counts provider-billed calls and excludes modelled
+        tier priors -- the figure to use anywhere the word "spend" appears
+        without a qualifier. The default keeps every historical caller's
+        behaviour (measured + modelled) so this change cannot silently move a
+        budget check; callers that mean money say so explicitly.
+        """
+        sql = "SELECT COALESCE(SUM(usd_micros),0) AS t FROM spend WHERE job_id=?"
+        args: list = [job_id]
+        if measured_only:
+            sql += " AND kind=?"
+            args.append(self.MEASURED_KIND)
+        return int(self._conn.execute(sql, args).fetchone()["t"])
+
+    def job_spend_split(self, job_id: str) -> tuple[int, int]:
+        """`(measured_micros, modelled_micros)` for one job.
+
+        Two numbers rather than one, because a receipt that cannot separate
+        them cannot honestly print either.
+        """
+        rows = self._conn.execute(
+            "SELECT kind, COALESCE(SUM(usd_micros),0) AS t FROM spend "
+            "WHERE job_id=? GROUP BY kind", (job_id,)
+        ).fetchall()
+        measured = sum(int(r["t"]) for r in rows if r["kind"] == self.MEASURED_KIND)
+        modelled = sum(int(r["t"]) for r in rows if r["kind"] != self.MEASURED_KIND)
+        return measured, modelled
+
+    def task_spend_micros(self, task_id: str, *, measured_only: bool = False) -> int:
+        sql = "SELECT COALESCE(SUM(usd_micros),0) AS t FROM spend WHERE task_id=?"
+        args: list = [task_id]
+        if measured_only:
+            sql += " AND kind=?"
+            args.append(self.MEASURED_KIND)
+        return int(self._conn.execute(sql, args).fetchone()["t"])
 
     def task_count(self, job_id: str) -> int:
         row = self._conn.execute(

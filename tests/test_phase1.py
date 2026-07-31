@@ -121,6 +121,14 @@ def test_open_job_is_readable_and_active(led, job):
     assert [r["id"] for r in led.active_jobs()] == [job.id]
 
 
+def test_open_job_persists_execution_isolation_contract(led):
+    j = JobSpec(objective="preserve worktree mode", cwd=".")
+    led.open_job(j, isolate_worktrees=True, base_ref="abc123")
+    row = led.job(j.id)
+    assert row["isolate_worktrees"] == 1
+    assert row["base_ref"] == "abc123"
+
+
 def test_close_job_removes_it_from_active(led, job):
     led.close_job(job.id, TaskState.DONE)
     assert led.active_jobs() == []

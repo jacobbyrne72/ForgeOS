@@ -200,6 +200,38 @@ def test_resume_rehydrates_only_nonterminal_work_and_preserves_dependencies(tmp_
     assert EventType.MISSION_RESUMED in resumed_events
 
 
+def test_resume_restores_isolated_worktree_contract(tmp_path, passing_security):
+    """A restart must not silently move an isolated edit into the main checkout."""
+    repo = _git_repo(tmp_path)
+    state = tmp_path / "state"
+    first = Forge(home=state, registry=_fleet(), max_attempts=3)
+    job = JobSpec(objective="resume isolated edit", cwd=str(repo), budget=Budget(max_usd=2.0))
+    task = _task("isolated edit", paths=["src/x/"])
+    task.job_id = job.id
+    base_ref = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+    first.scheduler.submit(job, [task], isolate_worktrees=True, base_ref=base_ref)
+    assert first.scheduler.assign(job.id, task.id) is not None
+    first.close()
+
+    seen_cwds: list[str] = []
+
+    def resumed_executor(spec, worker):  # noqa: ARG001
+        seen_cwds.append(current_task_cwd())
+        return _editing_executor("resumed\n")(spec, worker)
+
+    fresh = Forge(home=state, registry=_fleet(), max_attempts=3)
+    try:
+        result = fresh.resume(
+            job.id, executor=resumed_executor, reviewer=_pass_review,
+        )
+        assert result.all_accepted, result.outcomes
+        assert seen_cwds
+        assert Path(seen_cwds[0]).resolve() != repo.resolve()
+        assert (repo / "shared.txt").read_text(encoding="utf-8") == "resumed\n"
+    finally:
+        fresh.close()
+
+
 def test_a_rejecting_reviewer_blocks_the_merge(forge):
     def reject(spec, worker):  # noqa: ARG001
         return ExecutionResult(state=TaskState.FAILED, evidence="unsafe pattern")

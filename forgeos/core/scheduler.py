@@ -77,8 +77,17 @@ class Scheduler:
 
     # ------------------------------------------------------------- submit
 
-    def submit(self, job, tasks: list[TaskSpec]) -> str:
-        self.ledger.open_job(job)
+    def submit(
+        self,
+        job,
+        tasks: list[TaskSpec],
+        *,
+        isolate_worktrees: bool = False,
+        base_ref: str | None = None,
+    ) -> str:
+        self.ledger.open_job(
+            job, isolate_worktrees=isolate_worktrees, base_ref=base_ref,
+        )
         self.events.append(job.id, EventType.MISSION_CREATED, objective=job.objective)
         for t in tasks:
             self.ledger.add_task(t)

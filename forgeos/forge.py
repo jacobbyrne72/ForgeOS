@@ -611,22 +611,32 @@ class Forge:
         self._operations = operations or {}
         self._trip.clear()
         self._trip_reason = ""
-        repo_root = _detect_git_repo_root(cwd) if isolate_worktrees else None
-        job_base_ref = _resolve_head(repo_root) if repo_root is not None else None
+        resume_row = None
         if resume_mode:
-            row = self.ledger.job(resume_job_id)
-            if row is None:
+            resume_row = self.ledger.job(resume_job_id)
+            if resume_row is None:
                 raise ValueError(f"job {resume_job_id!r} not found")
+            # Resume must honor the original isolation contract. Falling back
+            # to the caller's default would silently move an interrupted edit
+            # from its worktree into the shared checkout.
+            isolate_worktrees = bool(resume_row["isolate_worktrees"])
+        repo_root = _detect_git_repo_root(cwd) if isolate_worktrees else None
+        job_base_ref = (
+            resume_row["base_ref"]
+            if resume_mode and resume_row["base_ref"]
+            else (_resolve_head(repo_root) if repo_root is not None else None)
+        )
+        if resume_mode:
             job = JobSpec(
-                id=row["id"],
-                objective=row["objective"],
-                cwd=row["cwd"],
+                id=resume_row["id"],
+                objective=resume_row["objective"],
+                cwd=resume_row["cwd"],
                 budget=Budget(
-                    max_usd=from_micros(int(row["max_usd_micros"])),
-                    max_seconds=int(row["max_seconds"]),
-                    max_iterations=int(row["max_iterations"]),
+                    max_usd=from_micros(int(resume_row["max_usd_micros"])),
+                    max_seconds=int(resume_row["max_seconds"]),
+                    max_iterations=int(resume_row["max_iterations"]),
                 ),
-                created_at=float(row["created_at"]),
+                created_at=float(resume_row["created_at"]),
             )
             resumed_ids = set(self.scheduler.resume(job.id))
             if not resumed_ids:
@@ -678,7 +688,9 @@ class Forge:
             submitted.append(t)
         tasks = submitted
         if not resume_mode:
-            self.scheduler.submit(job, tasks)
+            self.scheduler.submit(
+                job, tasks, isolate_worktrees=isolate_worktrees, base_ref=job_base_ref,
+            )
 
         halted = ""
         # `TaskSpec.depends_on` is the obvious place to declare a dependency, so it

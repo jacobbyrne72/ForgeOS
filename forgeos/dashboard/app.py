@@ -387,14 +387,25 @@ def create_app(state_dir: str | Path, queue_dir: str | Path | None = None) -> Fa
 
     def _summary() -> dict[str, Any]:
         all_jobs = _all_jobs()
-        spend_micros_total = sum(ledger.job_spend_micros(j["id"]) for j in all_jobs)
-        spend_usd_total = from_micros(spend_micros_total)
+        # Measured and modelled are reported SEPARATELY. A tier prior for a
+        # flat-rate seat (kind='estimate', no tokens) used to be summed into
+        # the same "$ spend" figure as provider-billed calls: measured on a
+        # real job, $0.0008 of billed calls sat under one $0.06 tier prior and
+        # the page read "$0.06 spend". Cost-per-accepted-task is built from the
+        # MEASURED half only -- dividing a modelled number by a real task count
+        # produces a per-task cost nobody was invoiced.
+        splits = [ledger.job_spend_split(j["id"]) for j in all_jobs]
+        measured_micros = sum(m for m, _ in splits)
+        modelled_micros = sum(x for _, x in splits)
+        spend_usd_total = from_micros(measured_micros)
+        modelled_usd_total = from_micros(modelled_micros)
         cache = ledger.cache_stats(None)
         avoided = avoidance_log.totals(None)
         accepted = sum(1 for ev in event_log.replay() if ev.type is EventType.TASK_ACCEPTED)
         cost_per_accepted_task = (spend_usd_total / accepted) if accepted else None
         return {
             "spend_usd": spend_usd_total,
+            "modelled_usd": modelled_usd_total,
             "cap_burn": _quota_view()["cap_burn"],
             "cache_hit_pct": cache["cache_hit_pct"],
             "avoided_tokens": avoided["saved_tokens"],
@@ -778,9 +789,24 @@ def create_app(state_dir: str | Path, queue_dir: str | Path | None = None) -> Fa
         # absolute repo paths; a cross-origin page opening this socket would read
         # them, and no same-origin policy stops it from trying.
         origin = websocket.headers.get("origin")
-        if origin is not None and origin not in ALLOWED_WS_ORIGINS:
-            await websocket.close(code=1008)
-            return
+        # True same-origin, not a hardcoded allowlist: the Origin's host:port
+        # must equal the Host this handshake was addressed to. The old
+        # `ALLOWED_WS_ORIGINS` froze PORT=8899 into the check, so serving the
+        # dashboard on ANY other port rejected its own page's socket and the
+        # feed sat on "reconnecting..." forever. Comparing against the
+        # request's own Host is port-agnostic and still refuses every
+        # cross-site page (their Origin is their site, never this Host) --
+        # including a page served from a DIFFERENT loopback port, which the
+        # fixed list also refused and which must stay refused: another local
+        # server's page reading job objectives is the exact leak the check
+        # exists to block. A native client sends no Origin and is allowed.
+        if origin is not None:
+            from urllib.parse import urlsplit
+
+            host = websocket.headers.get("host", "")
+            if urlsplit(origin).netloc != host:
+                await websocket.close(code=1008)
+                return
         await websocket.accept()
         try:
             while True:
