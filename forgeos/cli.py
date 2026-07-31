@@ -366,6 +366,7 @@ def main() -> int:
     p_budget = sub.add_parser("budget", help="Token budget enforcer")
     p_budget.add_argument("--max-tokens", type=int, default=4096, dest="max_tokens")
     p_budget.add_argument("--warn-at", type=float, default=0.8, dest="warn_at")
+    p_replace = sub.add_parser("replace", help="Replace expensive calls with cheap equivalents")
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -384,6 +385,7 @@ def main() -> int:
         "bench": cmd_bench,
         "watch": cmd_watch,
         "budget": cmd_budget,
+        "replace": cmd_replace,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -512,3 +514,27 @@ def cmd_profile(args):
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def cmd_replace(args):
+    from forgeos.cost_replacer import CostReplacer
+    r = CostReplacer()
+    print("=== Cost Replacer ===")
+    print("Scanning for expensive patterns...")
+    print()
+    demo_texts = [
+        "Use GPT-4 to summarize this text",
+        "Translate this to Spanish",
+        "Extract key entities from this text",
+        "Review this code for errors",
+    ]
+    for t in demo_texts:
+        mod, reps = r.replace(t)
+        if reps:
+            for rep in reps:
+                print(f"  {rep['type']}: ${rep['savings_usd']:.3f} saved, {rep['saves_tokens']} tokens")
+        else:
+            print(f"  no replacement for: {t[:40]}...")
+    print()
+    print("Total savings:", r.report())
+    return 0
