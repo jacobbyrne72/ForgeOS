@@ -18,7 +18,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: pip install -e ".[dev]" ruff
+      # ruff is pinned so CI and a contributor's machine judge the same rules;
+      # the rule *selection* itself is pinned in pyproject [tool.ruff.lint].
+      - run: pip install -e ".[dev]" "ruff==0.15.12"
       # Lint before tests: a style/import error fails in two seconds, and the
       # config in pyproject.toml is the single source of what "clean" means.
       - run: ruff check forgeos/ tests/ tools/
