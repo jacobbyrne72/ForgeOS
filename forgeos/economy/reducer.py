@@ -47,6 +47,11 @@ _FAILED_INLINE_RE = re.compile(r"^(\S+::\S+)\s+(FAILED|ERROR)\b")
 _FRAME_LONG_RE = re.compile(r"^(?P<file>[^\s:]+\.py):(?P<line>\d+): in (?P<func>\S+)\s*$")
 _FRAME_SHORT_RE = re.compile(r"^(?P<file>[^\s:]+\.py):(?P<line>\d+):\s*(?P<rest>.*)$")
 _E_LINE_RE = re.compile(r"^E\s+(.*)$")
+_BARE_SUMMARY_RE = re.compile(
+    r"^(?:\d+\s+(?:passed|failed|errors?|skipped|xfailed|xpassed|warnings?|deselected)"
+    r"(?:,\s*)?)+\s*in\s+[\d.]+s?\b.*$",
+    re.IGNORECASE,
+)
 
 _LIB_MARKERS = ("site-packages", ".venv", "dist-packages")
 
@@ -154,6 +159,16 @@ def _find_result_line(lines: list[str]) -> str:
     for ln in reversed(lines):
         s = ln.strip()
         if _BAR_LINE_RE.match(s) and (" in " in s or "no tests ran" in s.lower()):
+            return s
+    # Fallback: the bare summary line without pytest's ===== ruler. A headless
+    # CLI worker's final message is often exactly "3 passed in 0.52s" — real
+    # pytest output it quoted, minus the decoration — and requiring the ruler
+    # made the merge gate refuse verified work as "nothing was actually
+    # verified" (observed live). The grammar is strict — count clauses then a
+    # timing — so prose that merely mentions "passed" still never parses.
+    for ln in reversed(lines):
+        s = ln.strip()
+        if _BARE_SUMMARY_RE.match(s):
             return s
     return ""
 

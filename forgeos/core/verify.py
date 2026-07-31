@@ -291,6 +291,18 @@ def _only_in(findings: list[Finding], paths: list[str] | None) -> list[Finding]:
 
 def run_security(paths: list[str], *, cwd: str | None = None) -> GateResult:
     """Both scanners combined. Either one failing fails the gate."""
+    if not paths:
+        # An empty diff has no security surface. Falling through here handed
+        # semgrep no path arguments, which scans the ENTIRE cwd — state dirs,
+        # worktrees, unrelated code — and attributed every pre-existing finding
+        # to a task that touched nothing (observed live: 40 findings against a
+        # two-file repo). Misattributed findings are the scanner-shaped version
+        # of billing the wrong worker.
+        return GateResult(
+            gate=Gate.SECURITY,
+            status=GateStatus.SKIPPED,
+            evidence="no touched files — an empty diff has no security surface",
+        )
     scan_paths = paths
     if cwd and paths:
         root = Path(cwd)
