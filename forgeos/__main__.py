@@ -255,6 +255,83 @@ def cmd_preflight(args: argparse.Namespace) -> int:
     return 0 if verdict.allowed else 2
 
 
+def cmd_call_preflight(args: argparse.Namespace) -> int:
+    """Price and gate one prospective model call using only local catalog data."""
+    from forgeos.catalog import default_catalog
+    from forgeos.contracts import to_micros
+    from forgeos.economy.preflight import check, estimate_call
+
+    machine_readable = bool(getattr(args, "json", False))
+
+    def error(code: str, message: str) -> int:
+        if machine_readable:
+            print(json.dumps({
+                "schema": "forgeos.call_preflight.v1",
+                "ok": False,
+                "error": code,
+                "message": message,
+            }, sort_keys=True))
+        else:
+            print(f"Call preflight error: {message}")
+        return 1
+
+    prompt_path = Path(args.prompt_file)
+    try:
+        prompt = prompt_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        return error("invalid_prompt_file", f"cannot read {prompt_path}: {exc}")
+    if args.expected_output_tokens < 0:
+        return error("invalid_output_tokens", "--expected-output-tokens must be non-negative")
+    if args.remaining_usd < 0:
+        return error("invalid_budget", "--remaining-usd must be non-negative")
+    if args.max_context < 0:
+        return error("invalid_context", "--max-context must be non-negative")
+
+    card = default_catalog().get(args.model)
+    if card is None:
+        return error("unknown_model", f"no local price card for {args.model!r}")
+
+    estimate = estimate_call(prompt, args.expected_output_tokens, card)
+    verdict = check(
+        estimate,
+        remaining_micros=to_micros(args.remaining_usd),
+        max_context=args.max_context,
+    )
+    payload = {
+        "schema": "forgeos.call_preflight.v1",
+        "ok": True,
+        "decision": verdict.decision.value,
+        "allowed": verdict.allowed,
+        "reason": verdict.reason,
+        "prompt_path": str(prompt_path),
+        "model_ref": card.ref,
+        "provider": card.provider,
+        "price_provenance": card.provenance_word,
+        "price_stale": card.is_stale(),
+        "estimate": {
+            "tokens_in": estimate.tokens_in,
+            "tokens_out": estimate.tokens_out,
+            "usd_micros": estimate.usd_micros,
+            "estimated_usd": round(estimate.usd_micros / 1e6, 6),
+            "fits_model_context": estimate.fits_context,
+            "exact_token_count": estimate.exact,
+        },
+        "remaining_usd": args.remaining_usd,
+        "max_context": args.max_context,
+    }
+    if machine_readable:
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        print(f"Call preflight: {verdict.decision.value.upper()}")
+        print(f"Model: {card.ref} ({card.provenance_word} price)")
+        print(
+            f"Estimate: {estimate.tokens_in} input / {estimate.tokens_out} output tokens, "
+            f"${estimate.usd_micros / 1e6:.6f}"
+        )
+        print(f"Reason: {verdict.reason}")
+    return 0 if verdict.allowed else 2
+
+
 def cmd_receipts(args: argparse.Namespace) -> int:
     from forgeos.contracts import TaskState
 
@@ -793,6 +870,16 @@ def main(argv: list[str] | None = None) -> int:
     p_preflight.add_argument("--skip", action="store_true", help="Explicitly bypass duplicate refusal")
     p_preflight.add_argument("--json", action="store_true", help="Machine-readable refusal receipt")
 
+    p_call_preflight = sub.add_parser(
+        "call-preflight", help="Price and gate a call from the local catalog; never contacts a provider"
+    )
+    p_call_preflight.add_argument("--prompt-file", required=True, help="UTF-8 prompt text to estimate")
+    p_call_preflight.add_argument("--model", required=True, help="Local catalog model ref, e.g. provider/model")
+    p_call_preflight.add_argument("--expected-output-tokens", type=int, default=0)
+    p_call_preflight.add_argument("--remaining-usd", type=float, required=True)
+    p_call_preflight.add_argument("--max-context", type=int, default=0)
+    p_call_preflight.add_argument("--json", action="store_true", help="Machine-readable refusal receipt")
+
     p_watch = sub.add_parser(
         "watch", help="Unattended job-queue daemon: poll --queue, run each job, write receipts"
     )
@@ -870,6 +957,7 @@ def main(argv: list[str] | None = None) -> int:
     dispatch = {
         "doctor": cmd_doctor,
         "preflight": cmd_preflight,
+        "call-preflight": cmd_call_preflight,
         "receipts": cmd_receipts,
         "watch": cmd_watch,
         "queue-status": cmd_queue_status,

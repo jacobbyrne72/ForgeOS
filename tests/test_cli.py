@@ -338,6 +338,57 @@ def test_preflight_json_refuses_an_exact_prior_contract(tmp_path, capsys):
     assert "already merged" in payload["reason"]
 
 
+# --------------------------------------------------------- call preflight
+
+
+def test_call_preflight_json_estimates_without_contacting_a_provider(tmp_path, monkeypatch, capsys):
+    from forgeos import catalog as catalog_module
+
+    card = ModelCard(
+        model_id="local-model", provider="local", input_cost_per_1m=1.0,
+        output_cost_per_1m=2.0, context=1_000,
+    )
+    monkeypatch.setattr(catalog_module, "default_catalog", lambda: Catalog([card]))
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("Inspect this small prompt.", encoding="utf-8")
+
+    rc = cli.main([
+        "call-preflight", "--prompt-file", str(prompt_file), "--model", "local/local-model",
+        "--expected-output-tokens", "10", "--remaining-usd", "1", "--json",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert payload["schema"] == "forgeos.call_preflight.v1"
+    assert payload["decision"] == "allow"
+    assert payload["estimate"]["tokens_in"] > 0
+    assert payload["estimate"]["estimated_usd"] > 0
+    assert payload["price_provenance"] == "unknown"
+
+
+def test_call_preflight_json_refuses_when_remaining_budget_is_too_small(tmp_path, monkeypatch, capsys):
+    from forgeos import catalog as catalog_module
+
+    card = ModelCard(
+        model_id="expensive", provider="local", input_cost_per_1m=10.0,
+        output_cost_per_1m=20.0, context=1_000,
+    )
+    monkeypatch.setattr(catalog_module, "default_catalog", lambda: Catalog([card]))
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("A prompt that costs something.", encoding="utf-8")
+
+    rc = cli.main([
+        "call-preflight", "--prompt-file", str(prompt_file), "--model", "local/expensive",
+        "--expected-output-tokens", "100", "--remaining-usd", "0.000001", "--json",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 2
+    assert payload["decision"] == "refuse_budget"
+    assert payload["allowed"] is False
+    assert "exceeds remaining budget" in payload["reason"]
+
+
 # ------------------------------------------------------------------------ cli
 
 
@@ -375,7 +426,7 @@ def test_main_dispatch_is_reachable_for_every_registered_subcommand():
         and isinstance(node.value, ast.Dict)
     )
     assert registered == {
-        "doctor", "preflight", "receipts", "watch", "queue-status", "team", "resume",
+        "doctor", "preflight", "call-preflight", "receipts", "watch", "queue-status", "team", "resume",
         "serve-mcp", "memory"
     }
     assert dispatch_keys == registered

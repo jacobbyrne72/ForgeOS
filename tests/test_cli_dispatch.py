@@ -272,6 +272,38 @@ def test_console_preflight_forwards_the_read_only_contract(monkeypatch):
     }
 
 
+def test_console_call_preflight_forwards_the_local_gate(monkeypatch):
+    from forgeos import __main__ as runtime_cli
+
+    captured = {}
+
+    def fake_call_preflight(args):
+        captured.update({
+            "prompt_file": args.prompt_file,
+            "model": args.model,
+            "expected_output_tokens": args.expected_output_tokens,
+            "remaining_usd": args.remaining_usd,
+            "max_context": args.max_context,
+            "json": args.json,
+        })
+        return 0
+
+    monkeypatch.setattr(runtime_cli, "cmd_call_preflight", fake_call_preflight)
+    assert cli.main([
+        "call-preflight", "--prompt-file", "prompt.txt", "--model", "local/model",
+        "--expected-output-tokens", "10", "--remaining-usd", "0.50",
+        "--max-context", "200", "--json",
+    ]) == 0
+    assert captured == {
+        "prompt_file": "prompt.txt",
+        "model": "local/model",
+        "expected_output_tokens": 10,
+        "remaining_usd": 0.5,
+        "max_context": 200,
+        "json": True,
+    }
+
+
 def test_quota_cli_reads_local_snapshot_as_json(tmp_path, capsys):
     from forgeos.core.quota import QuotaTracker
 

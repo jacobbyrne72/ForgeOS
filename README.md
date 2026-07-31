@@ -338,6 +338,7 @@ forge run "Add X" --dry-run # same, through the full runner
 forge forgebench --dry-run  # price the benchmark suite without running it
 forge receipts              # what you have actually spent, from the ledger
 forge preflight task.json --json  # refuse an already-settled contract before routing
+forge call-preflight --prompt-file prompt.txt --model provider/model --remaining-usd 0.05 --json
 ```
 
 `forge preflight` is a local, no-provider check. The JSON file contains the
@@ -345,6 +346,9 @@ task contract (`subject`, `description`, `acceptance`, `scope`, and
 `capabilities`); the command compares its exact fingerprint with settled work
 in the ledger and prints a receipt. Exit `0` means allowed, `2` means a safe
 duplicate refusal, and `1` means the input or ledger could not be read.
+`forge call-preflight` applies the same discipline to a prospective model call:
+it counts the prompt, prices the declared output ceiling from the local catalog,
+and refuses on context or remaining-budget limits before any provider is touched.
 
 **These spend real money.** Separated deliberately: the two `run` forms differ
 by one flag, and a first-timer pasting a mixed block would find that out from

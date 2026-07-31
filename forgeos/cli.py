@@ -77,6 +77,15 @@ def cmd_preflight(args) -> int:
     )
 
 
+def cmd_call_preflight(args) -> int:
+    """Expose the canonical local catalog call gate."""
+    return _forward_to_main(
+        "call-preflight", args,
+        ("--prompt-file", "--model", "--expected-output-tokens", "--remaining-usd",
+         "--max-context", "--json"),
+    )
+
+
 def _doctor_probe(settings, args) -> int:
     """Actually contact each provider. Free: lists models, never completes."""
     from forgeos.core.probe import probe_all, save_report
@@ -736,6 +745,15 @@ def main(argv: list[str] | None = None) -> int:
     p_preflight.add_argument("--scan-limit", type=int, default=500)
     p_preflight.add_argument("--skip", action="store_true")
     p_preflight.add_argument("--json", action="store_true")
+    p_call_preflight = sub.add_parser(
+        "call-preflight", help="Price and gate a call from the local catalog"
+    )
+    p_call_preflight.add_argument("--prompt-file", required=True)
+    p_call_preflight.add_argument("--model", required=True)
+    p_call_preflight.add_argument("--expected-output-tokens", type=int, default=0)
+    p_call_preflight.add_argument("--remaining-usd", type=float, required=True)
+    p_call_preflight.add_argument("--max-context", type=int, default=0)
+    p_call_preflight.add_argument("--json", action="store_true")
     # `python -m forgeos` owns team/serve-mcp/memory while `forge` owned the
     # other 43. Two entry points with disjoint command sets is a trap: the
     # README's own Team-mode section says to run team mode, and `forge team`
@@ -879,6 +897,7 @@ def main(argv: list[str] | None = None) -> int:
         "resume": cmd_resume,
         "report": cmd_report,
         "preflight": cmd_preflight,
+        "call-preflight": cmd_call_preflight,
         "receipts": cmd_receipts,
         "adapt": cmd_adapt,
         "compress": cmd_compress,
