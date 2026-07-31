@@ -17,6 +17,7 @@ from .adapter.auto_discover import DiscoveredAdapter, discover_adapters
 from .bench import BenchmarkResult, Layer, bench, format_benchmark
 from .context_compress import compress_context
 from .watch import watch
+from .adapt import AdapterProfiler, AdapterDecision, AdapterProfile
 __all__ = [
     "Forge", "ForgeResult", "ExecutionResult", "TaskOutcome",
     "compile_mission", "Mission", "CompilerError",
@@ -33,4 +34,5 @@ __all__ = [
     "bench", "BenchmarkResult", "Layer",
     "compress_context",
     "watch",
+    "AdapterProfiler", "AdapterDecision", "AdapterProfile",
 ]
