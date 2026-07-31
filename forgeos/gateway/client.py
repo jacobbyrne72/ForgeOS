@@ -258,6 +258,46 @@ class Transport(Protocol):
     ) -> RawCallResult: ...
 
 
+# Anthropic only caches a block you explicitly mark, and it refuses to cache one
+# shorter than this (1024 tokens for most models; 2048 for the smallest). Marking
+# a shorter prefix is not merely useless — a cache WRITE is billed at ~1.25x
+# normal input, so marking something that will never be read back is a straight
+# surcharge. The floor is the whole point of the guard.
+CACHE_CONTROL_MIN_TOKENS = 1024
+
+# Providers whose API honours `cache_control`. Anthropic-shaped only: sending
+# structured content blocks with this key to an endpoint that does not expect it
+# is at best ignored and at worst a 400, so this is an allowlist, never a guess.
+CACHE_CONTROL_PROVIDERS = frozenset({"anthropic", "openrouter", "gateway"})
+
+
+def _content_blocks(prompt: str, prefix: str, *, mark_cache: bool) -> str | list[dict]:
+    """The `content` field: a plain string, or blocks with a cache breakpoint.
+
+    Returns a bare string whenever the marker cannot help, so every provider that
+    does not do explicit caching sees exactly the payload it saw before — this
+    must not change the wire format for OpenAI, DeepSeek or a local model.
+
+    Splitting on the prefix boundary the caller already computed is the whole
+    trick: `assemble_prompt` builds `prefix + tail`, and the prefix is byte-stable
+    by construction, which is precisely what a cache breakpoint needs.
+    """
+    if not mark_cache or not prefix or not prompt.startswith(prefix):
+        return prompt
+    if count_tokens(prefix, "").tokens < CACHE_CONTROL_MIN_TOKENS:
+        # Too short to be cached; marking it would buy a write surcharge and no
+        # read discount.
+        return prompt
+
+    tail = prompt[len(prefix):]
+    blocks: list[dict] = [
+        {"type": "text", "text": prefix, "cache_control": {"type": "ephemeral"}}
+    ]
+    if tail:
+        blocks.append({"type": "text", "text": tail})
+    return blocks
+
+
 class HttpTransport:
     """An OpenAI-compatible HTTP endpoint. OmniRoute by default — a gateway
     that fans out to many upstream providers and free tiers behind one URL,
@@ -283,6 +323,15 @@ class HttpTransport:
         # `deepseek/deepseek-chat` call could be sent to OpenRouter's endpoint
         # carrying a model id that endpoint has never heard of.
         self.serves: set[str] = serves or set()
+        # Whether this endpoint honours Anthropic-style `cache_control` markers.
+        # Derived from what it serves rather than configured separately, so a new
+        # provider cannot silently get markers it will reject. A fan-out gateway
+        # (empty `serves`) is included because it may route to Anthropic, and the
+        # min-token floor keeps a wrong guess from costing anything.
+        self.supports_cache_control = bool(
+            (self.serves and self.serves <= CACHE_CONTROL_PROVIDERS)
+            or (not self.serves and name in CACHE_CONTROL_PROVIDERS)
+        )
 
     def complete(
         self,
@@ -364,6 +413,9 @@ class LiteLLMTransport:
     # litellm resolves auth and routing per provider itself, so it can answer for
     # anything the catalog names.
     serves: set[str] = set()
+    # litellm owns its own provider-specific payload shaping, so forgeos must not
+    # hand it Anthropic content blocks — it would double-encode them.
+    supports_cache_control = False
 
     def complete(
         self,
@@ -783,12 +835,17 @@ class Gateway:
             transport = by_name[name]
             start = time.monotonic()
             try:
+                # The prefix travels alongside the assembled prompt, not instead
+                # of it: a transport that ignores it sends exactly what it sent
+                # before, and one that supports cache breakpoints knows where the
+                # byte-stable boundary is without re-deriving it.
                 raw = transport.complete(
                     model_id=card.model_id,
                     prompt=prompt,
                     max_output_tokens=request.max_output_tokens,
                     reasoning_effort=request.reasoning_effort,
                     tools_schema=request.tools_schema,
+                    prompt_prefix=request.prompt_prefix,
                 )
             except ModelUnavailableError as e:
                 # NOT a health event. The endpoint answered; this model is simply

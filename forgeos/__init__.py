@@ -31,6 +31,8 @@ from .context_compress import compress_context
 from .watch import watch
 from .adapt import AdapterProfiler, AdapterDecision, AdapterProfile
 from .model_select import ModelSelector, ModelRecommendation
+from .profile import ModelProfiler, ModelProfile
+from .model_select import ModelSelector, ModelRecommendation
 
 __all__ = [
     "Forge",
