@@ -1,0 +1,105 @@
+{
+  "arms": {
+    "baseline": {
+      "accepted": 0,
+      "accepted_each": [
+        false,
+        false
+      ],
+      "answers": [
+        "Let me carefully analyze the code to find which function records spend to the ledger and what prevents the same model call from being charged twice.\n\nFirst, I need to find where spend is recorded in the ledger. Looking through the code, I see that the Ledger class has a method called `record_spend`:\n\nIn `forgeos/ledger.py`:\n```python\n    def record_spend(\n        self,\n        job_id: str,\n        worker_id: str,\n        model: str,\n        usd_micros: int,\n        *,\n        task_id: str | None = None,\n        kind: str = \"call\",\n        tokens_in: int = 0,\n        tokens_out: int = 0,\n        tokens_cached_in: int = 0,\n    ) -> str:\n        \"\"\"Record a model call. Never use a result whose spend was not recorded.\"\"\"\n        sid = new_id(\"spd\")\n        with self._tx() as",
+        "Let me analyze the code to find where spend is recorded to the ledger and what prevents double-charging.\n\nLooking through the code, I need to find where spend is recorded to the ledger and what prevents double-charging.\n\nFirst, let's look for functions that record spend to the ledger.\n\nIn forgeos/gateway/client.py, I see the `_call_and_record` method:\n\n```python\ndef _call_and_record(\n    self,\n    card: ModelCard,\n    prompt: str,\n    request: GatewayRequest,\n    *,\n    job_id: str,\n    task_id: str | None,\n    worker_id: str,\n    remaining_micros: int,\n    estimate,\n    affinity_key: str | None = None,\n    quota: QuotaTracker | None = None,\n) -> GatewayResponse:\n    \"\"\"Steps (3) and (4): make the call, then record before returning.\n\n    Both the transport call AND turning its raw result into a priced"
+      ],
+      "cache_hits": 2,
+      "calls": 2,
+      "name": "baseline",
+      "rounds": [
+        {
+          "cached": 43520,
+          "hit": true,
+          "in": 1351,
+          "out": 200,
+          "sec": 9.389999999999418,
+          "usd": 0
+        },
+        {
+          "cached": 43520,
+          "hit": true,
+          "in": 1351,
+          "out": 200,
+          "sec": 4.625,
+          "usd": 0
+        }
+      ],
+      "seconds": 14.015,
+      "tokens_cached_in": 87040,
+      "tokens_in": 2702,
+      "tokens_out": 400,
+      "usd_micros": 0
+    },
+    "forgeos": {
+      "accepted": 1,
+      "accepted_each": [
+        false,
+        true
+      ],
+      "answers": [
+        "The spend is written to the ledger by **`Ledger.record_sp",
+        "We need to answer: which function records spend to the ledger, and what guard prevents double charge.\n\nFrom code: In gateway_worker.py send() method yields USAGE event with data including \"spend_already_recorded\": True. In forge.py lines (forge.py L1054-1079) there is a function that records spend: likely in the `process_result` or similar; there is code that checks `already_recorded = getattr(result, \"spend_already_recorded\", False)` and if not already_recorded then record spend with ledger.record_spend.\n\nThus the function that records spend to the ledger is `self.ledger.record_spend(...)` called inside the block in forge.py (maybe in `Worker.process_result` or similar). The guard is checking `if not already_recorded:` (i.e., only record if spend_already_recorded is False). Also the USAGE event includes spend_already_record"
+      ],
+      "cache_hits": 0,
+      "calls": 2,
+      "name": "forgeos",
+      "rounds": [
+        {
+          "cached": 0,
+          "hit": false,
+          "in": 1402,
+          "out": 200,
+          "sec": 22.59400000000096,
+          "usd": 0
+        },
+        {
+          "cached": 0,
+          "hit": false,
+          "in": 1402,
+          "out": 200,
+          "sec": 8.0,
+          "usd": 0
+        }
+      ],
+      "seconds": 30.594,
+      "tokens_cached_in": 0,
+      "tokens_in": 2804,
+      "tokens_out": 400,
+      "usd_micros": 0
+    }
+  },
+  "budget_usd_micros": 500000,
+  "comparison": {
+    "correctness_gated_saving": null,
+    "savings_class": "D"
+  },
+  "ledger": {
+    "calls": 4,
+    "spend_usd_micros": 0
+  },
+  "max_output_tokens": 200,
+  "mode": "live",
+  "model_ref": "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+  "prompt": {
+    "baseline_tokens": 49717,
+    "capsule": {
+      "blocks_dropped": 32,
+      "blocks_found": 36,
+      "blocks_sent": 4,
+      "capsule_tokens": 1462,
+      "read_scope": 3
+    },
+    "forgeos_tokens": 1571
+  },
+  "provenance": "measured",
+  "question": "In this codebase, which function records spend to the ledger, and what specifically prevents the same model call being charged twice? Name the function and the guard. Answer in under 80 words.",
+  "repeat": 2,
+  "schema": "forgeos.ab_bench.v1"
+}

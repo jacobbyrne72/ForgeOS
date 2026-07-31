@@ -29,6 +29,28 @@ narrows to 2.7×. Real tasks vary their prompt so most calls land between —
 the honest single number is ~2×, and quoting 19× alone would be picking the
 flattering half of our own measurement.
 
+## Free models become usable — same task, $0 either way
+
+The cost argument disappears on a free model, so this is the pure quality
+lever. Same question, same free OpenRouter model
+(`nvidia/nemotron-3-super-120b-a12b:free`), two rounds each:
+
+| | naive (dump the files) | ForgeOS |
+|---|---|---|
+| prompt | 49,717 tokens | 1,571 tokens (−96.8%) |
+| correct answers | **0/2** | **1/2** |
+| latency | 23.4 s | 15.2 s |
+| billed | $0.00 | $0.00 |
+
+The naive arm drowned: handed five whole files, the free model echoed source
+back and never named the answer, both rounds. The packed capsule let the same
+model answer. Not 2/2 — the second round half-answered, and both raw outputs
+are in the receipt (`artifacts/ab-free.json`) because a benchmark that hides
+its outputs is asking you to take the interesting half on trust.
+
+Reproduce with any free OpenRouter key:
+`python tools/ab_bench.py --live --model "openrouter/<any>:free" --repeat 2`
+
 ## Team mode — N agents, zero interruptions
 
 Several agents can work one project at once without interrupting each
