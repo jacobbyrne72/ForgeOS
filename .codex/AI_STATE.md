@@ -67,9 +67,10 @@
 - `python tools/aggregate_bench.py <temp receipt> --json-out <temp table>` (one dry-run retained, zero eligible savings)
 - `python -m forgeos.cli forgebench-table <temp receipt> --json-out <temp table>` (same zero-claim result)
 - `python -m forgeos.cli receipts --state-dir <missing temp dir>` (read-only failure, directory not created)
+- `rtk proxy python -m pytest tests -q -m "not slow"` (1735 passed, 17 deselected, 1 existing FastAPI/httpx deprecation warning)
 
 ## Test status
-- Passing: 164 focused benchmark/CLI/aggregator tests; 1731-test full suite target (checkpointed sweep rc 0); Ruff; compileall; CLI dogfood and no-call benchmark smoke checks.
+- Passing: 1735 tests in the non-slow full suite; 164 focused benchmark/CLI/aggregator tests; Ruff; compileall; CLI dogfood and no-call benchmark smoke checks.
 - Failing: none observed.
 - Not run: none.
 
