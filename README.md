@@ -391,7 +391,12 @@ print(result.cost_per_accepted)
 
 Dashboard: `python -m forgeos.dashboard.app` → `http://127.0.0.1:8899`
 (localhost only; read-only except the halt flag; display settings are stored in
-your browser and never touch the harness).
+your browser and never touch the harness). The dashboard also exposes
+`GET /api/leaderboard`, which reads `*.json` ForgeBench receipts from
+`.forgeos/receipts` (override with `FORGEOS_LEADERBOARD_DIR`) and returns the
+same `forgeos.leaderboard.v1` schema as `forge leaderboard`; it never calls a
+provider. A missing receipt directory is reported as an empty, unavailable
+board rather than being created.
 
 ## How it fits together
 

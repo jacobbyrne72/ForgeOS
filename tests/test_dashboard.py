@@ -84,6 +84,57 @@ def test_jobs_on_fresh_empty_db_is_an_empty_list(client: TestClient):
     assert res.json() == {"jobs": []}
 
 
+def _write_leaderboard_receipt(path: Path, *, model_ref: str = "local/model") -> None:
+    path.write_text(json.dumps({
+        "schema": "forgeos.forgebench.v1",
+        "mode": "live",
+        "provenance": "measured",
+        "model_ref": model_ref,
+        "suite": {"name": "dashboard-suite", "savings_class": "A", "tasks": ["t"]},
+        "totals": {
+            "baseline": {"accepted_count": 1, "attempted_count": 1, "usd_micros": 500_000},
+            "forgeos": {"accepted_count": 1, "attempted_count": 1, "usd_micros": 125_000},
+        },
+        "comparison_voided": False,
+        "exit_gate_passed": True,
+        "proof": {"mission_id": "dashboard-test", "contract_hash": "contract"},
+    }), encoding="utf-8")
+
+
+def test_leaderboard_endpoint_reads_local_receipts_without_provider_calls(state_dir: Path):
+    receipt_dir = state_dir / "receipts"
+    receipt_dir.mkdir(parents=True)
+    _write_leaderboard_receipt(receipt_dir / "run.json")
+    client = TestClient(create_app(state_dir, leaderboard_dir=receipt_dir))
+
+    res = client.get("/api/leaderboard")
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["schema"] == "forgeos.leaderboard.v1"
+    assert body["available"] is True
+    assert body["errors"] == []
+    assert body["summary"]["eligible_runs"] == 1
+    assert body["entries"][0]["label"] == "local/model"
+    assert body["entries"][0]["cost_per_accepted_usd"] == 0.125
+
+
+def test_leaderboard_endpoint_is_empty_and_does_not_create_missing_receipt_dir(state_dir: Path):
+    receipt_dir = state_dir / "not-yet-created"
+    client = TestClient(create_app(state_dir, leaderboard_dir=receipt_dir))
+
+    res = client.get("/api/leaderboard")
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["schema"] == "forgeos.leaderboard.v1"
+    assert body["available"] is False
+    assert body["entries"] == []
+    assert body["summary"]["total_runs"] == 0
+    assert body["errors"] == []
+    assert not receipt_dir.exists()
+
+
 def test_queue_status_endpoint_reports_heartbeat_without_provider_calls(state_dir: Path):
     queue = state_dir / "queue"
     queue.mkdir(parents=True)

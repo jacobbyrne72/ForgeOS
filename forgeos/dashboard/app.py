@@ -46,6 +46,8 @@ from ..ledger import Ledger
 from ..leases import LeaseStore
 from ..core.quota import QUOTA_SNAPSHOT_SCHEMA, QuotaSource, QuotaTracker
 from ..diagnostics import record_degradation
+from ..forgebench_table import load_receipt
+from ..leaderboard import build_leaderboard
 from ..registry import MIN_ATTEMPTS_TO_TRUST, default_registry
 
 HOST = "127.0.0.1"
@@ -272,7 +274,11 @@ class ChatApproval(BaseModel):
 # ------------------------------------------------------------------- app
 
 
-def create_app(state_dir: str | Path, queue_dir: str | Path | None = None) -> FastAPI:
+def create_app(
+    state_dir: str | Path,
+    queue_dir: str | Path | None = None,
+    leaderboard_dir: str | Path | None = None,
+) -> FastAPI:
     """Build one dashboard instance over the stores rooted at `state_dir`.
 
     A factory rather than a module-level singleton so tests can point each
@@ -285,6 +291,11 @@ def create_app(state_dir: str | Path, queue_dir: str | Path | None = None) -> Fa
         queue_dir
         if queue_dir is not None
         else os.environ.get("FORGEOS_QUEUE_DIR", str(state_dir / "queue"))
+    )
+    leaderboard_dir = Path(
+        leaderboard_dir
+        if leaderboard_dir is not None
+        else os.environ.get("FORGEOS_LEADERBOARD_DIR", str(state_dir / "receipts"))
     )
 
     ledger = Ledger(state_dir / LEDGER_DB)
@@ -528,6 +539,34 @@ def create_app(state_dir: str | Path, queue_dir: str | Path | None = None) -> Fa
         combined.sort(key=lambda e: e["created_at"], reverse=True)
         return {"events": combined[:limit]}
 
+    def _leaderboard_view() -> dict[str, Any]:
+        """Read the configured local ForgeBench receipts, never a provider.
+
+        The dashboard must remain useful before the first benchmark exists, so
+        a missing directory is an honest empty board rather than an exception.
+        A malformed artifact is reported in-band and cannot take down the
+        operator page or make a partial board look complete.
+        """
+        paths = sorted(p for p in leaderboard_dir.glob("*.json") if p.is_file())
+        receipts = []
+        errors = []
+        for path in paths:
+            try:
+                receipts.append((path, load_receipt(path)))
+            except ValueError as exc:
+                errors.append(str(exc))
+        try:
+            board = build_leaderboard(receipts)
+        except ValueError as exc:
+            errors.append(str(exc))
+            board = build_leaderboard([])
+        return {
+            **board,
+            "available": bool(paths) and not errors,
+            "receipt_dir": str(leaderboard_dir),
+            "errors": errors,
+        }
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         try:
@@ -621,6 +660,10 @@ def create_app(state_dir: str | Path, queue_dir: str | Path | None = None) -> Fa
     @app.get("/api/activity")
     def get_activity(limit: int = 60) -> dict[str, Any]:
         return _activity_feed(limit)
+
+    @app.get("/api/leaderboard")
+    def get_leaderboard() -> dict[str, Any]:
+        return _leaderboard_view()
 
     @app.get("/api/workers")
     def get_workers() -> dict[str, Any]:
