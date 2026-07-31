@@ -412,6 +412,10 @@ def main() -> int:
     sub.add_parser("track", help="Show recorded cost savings")
     sub.add_parser("efficiency", help="Show token efficiency metrics")
     sub.add_parser("dashboard", help="Show the ForgeOS cost dashboard")
+    p_purge = sub.add_parser("purge", help="Purge expensive prompt-cache entries")
+    p_purge.add_argument("--cost-limit", type=float, default=0.01, dest="cost_limit")
+    p_format = sub.add_parser("format", help="Show local formatting capability")
+    p_format.add_argument("--formatter-tool", default="ruff", dest="formatter_tool")
     p_audit.add_argument("--dir", default=".", dest="audit_dir")
     args = parser.parse_args()
     if not args.command:
@@ -447,6 +451,7 @@ def main() -> int:
         "dashboard": cmd_dashboard,
         "output-compress": cmd_output_compress,
         "format": cmd_format,
+        "purge": cmd_purge,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -744,6 +749,20 @@ def cmd_output_compress(args):
     print("Savings:", str(info["savings_pct"]) + "%")
     print()
     print("Preview:", result[:300])
+    return 0
+
+
+def cmd_purge(args):
+    from forgeos.cache_purge import CachePurge
+    from forgeos.prompt_cache import PromptCache
+    cache = PromptCache()
+    purger = CachePurge(cache)
+    print("=== Cache Purge ===")
+    print("Status:", purger.stats())
+    print()
+    result = purger.purge_expired()
+    print("Evicted expired:", result["evicted"], "entries")
+    print("Remaining:", result["remaining"])
     return 0
 
 
