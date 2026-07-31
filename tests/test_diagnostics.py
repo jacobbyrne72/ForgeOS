@@ -245,3 +245,14 @@ def test_malformed_mcp_config_is_recorded_not_silent(tmp_path):
     [degradation] = degradations()
     assert degradation.subsystem == "mcp_discovery"
     assert "broken.json" in degradation.consequence
+
+
+def test_corrupt_settings_are_recorded_before_defaults_are_used(tmp_path):
+    from forgeos.settings import Settings
+
+    path = tmp_path / "settings.json"
+    path.write_text("{not-json", encoding="utf-8")
+    assert Settings.load(path).providers
+    [degradation] = degradations()
+    assert degradation.subsystem == "settings"
+    assert "default settings" in degradation.consequence

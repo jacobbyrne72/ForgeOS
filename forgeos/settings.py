@@ -23,6 +23,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from .diagnostics import record_degradation
+
 SETTINGS_PATH = Path(os.path.expanduser("~/.forgeos/settings.json"))
 
 
@@ -195,7 +197,11 @@ class Settings(BaseModel):
             return default_settings()
         try:
             return cls.model_validate_json(p.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            record_degradation(
+                "settings", "settings load failed", exc,
+                consequence="default settings were used; operator configuration was not applied",
+            )
             return default_settings()
 
 
