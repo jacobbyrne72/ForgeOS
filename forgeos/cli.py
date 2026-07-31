@@ -368,8 +368,6 @@ def main() -> int:
     return handler(args)
 
 
-if __name__ == "__main__":
-    sys.exit(main())
 def cmd_models(args):
     from forgeos.model_select import ModelSelector
     s = ModelSelector()
@@ -387,4 +385,7 @@ def cmd_models(args):
         print("No model found within budget")
     return 0
 
+
+if __name__ == "__main__":
+    sys.exit(main())
 
