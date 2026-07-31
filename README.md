@@ -20,7 +20,8 @@ not a saving):
 | cache-warm call | $0.000244 | $0.000091 | **2.7× cheaper** |
 | latency | 9.8–10.4 s | 3.0–4.5 s | **~3× faster** |
 
-Reproduce: `python tools/ab_bench.py --model deepseek/deepseek-chat --repeat 2`
+Reproduce live: `python tools/ab_bench.py --live --model deepseek/deepseek-chat --repeat 2`
+Preview without spending: `python tools/ab_bench.py --model deepseek/deepseek-chat --json-out artifacts/ab-bench.json`
 
 **Read the warm row, not the cold one.** 19× is the first, uncached call on
 one question. Once the provider caches the large naive prompt too, the gap
@@ -222,7 +223,7 @@ There is no measured before/after for the CLI, the mission compiler or the prefi
 cache — those are built and tested, not benchmarked. A number that has not been
 run is not a benchmark, and this section will only ever carry numbers that were.
 
-Reproduce it: `python tools/ab_bench.py --env ~/.hermes/.env --repeat 3`
+Reproduce it live: `python tools/ab_bench.py --live --env ~/.hermes/.env --repeat 3`
 
 **Why the unit matters.** A 2,908-run study of provider-billed agent traffic
 (arXiv 2607.12161) found prompt-cache traffic was ~87% of cost composition, and

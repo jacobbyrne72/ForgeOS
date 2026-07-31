@@ -6,16 +6,18 @@ is what happens *around* the call:
     baseline   dump every candidate file into the prompt, ask, take the answer
     forgeos       rank and pack a bounded capsule, byte-stable prefix, capped output
 
-Run it:
+Run it (the default is a modelled dry-run; provider calls require ``--live``):
 
-    python tools/ab_bench.py --env ~/.hermes/.env
     python tools/ab_bench.py --model openrouter/openrouter/free --repeat 2
+    python tools/ab_bench.py --live --env ~/.hermes/.env --repeat 2 \
+        --json-out artifacts/ab-bench.json
 
-Both arms are priced by `Gateway.complete` and recorded in the same ledger, so
+Live arms are priced by `Gateway.complete` and recorded in the same ledger, so
 the cost comparison is the system measuring itself rather than a claim about
-itself. **Both answers are printed in full.** A cheaper wrong answer is not a
-saving, and a benchmark that hides the outputs is asking you to take the
-interesting half on trust.
+itself. The default dry-run emits a Class-D machine-readable receipt without
+opening a ledger or touching a transport. **Both live answers are printed in
+full.** A cheaper wrong answer is not a saving, and a benchmark that hides the
+outputs is asking you to take the interesting half on trust.
 
 Honest about what this does and does not show:
 
@@ -30,6 +32,7 @@ Honest about what this does and does not show:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -42,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from forgeos.catalog import default_catalog  # noqa: E402
 from forgeos.contracts import Budget, JobSpec  # noqa: E402
 from forgeos.economy.capsule import CapsuleBuilder, RefKind, make_ref  # noqa: E402
-from forgeos.economy.preflight import count_tokens  # noqa: E402
+from forgeos.economy.preflight import count_tokens, estimate_call  # noqa: E402
 from forgeos.economy.savings import Figure, Provenance, cost_per_accepted_task  # noqa: E402
 from forgeos.gateway.client import Gateway, GatewayRequest, default_transports  # noqa: E402
 from forgeos.ledger import open_ledger  # noqa: E402
@@ -67,6 +70,7 @@ CANDIDATES = [
 
 CAPSULE_BUDGET_TOKENS = 1_500
 WINDOW = 14  # lines of context kept around each hit
+FORGEOS_PREFIX = "You are answering a question about a Python codebase.\n"
 
 # Mechanical, keyword-based acceptance check — NOT a semantic judge. It exists so
 # "billed cost per correct answer" has *some* accept/reject signal instead of
@@ -127,6 +131,23 @@ class Arm:
     @property
     def correct(self) -> int:
         return sum(self.accepted)
+
+    def receipt(self) -> dict:
+        """Machine-readable facts from a live arm, including every answer."""
+        return {
+            "name": self.name,
+            "calls": self.calls,
+            "tokens_in": self.tokens_in,
+            "tokens_cached_in": self.tokens_cached,
+            "tokens_out": self.tokens_out,
+            "usd_micros": self.usd_micros,
+            "seconds": round(self.seconds, 6),
+            "cache_hits": self.cache_hits,
+            "accepted": self.correct,
+            "answers": list(self.answers),
+            "accepted_each": list(self.accepted),
+            "rounds": list(self.rounds),
+        }
 
 
 def build_baseline_prompt(root: Path) -> str:
@@ -202,6 +223,74 @@ def build_capsule_prompt(root: Path) -> tuple[str, dict]:
     return packed + f"\n\n{QUESTION}", stats
 
 
+def _dry_arm(name: str, prompt: str, card, repeat: int, max_output: int) -> dict:
+    """Price an arm without constructing a Gateway or touching a transport."""
+    estimate = estimate_call(prompt, max_output, card)
+    return {
+        "name": name,
+        "planned_calls": repeat,
+        "tokens_in": estimate.tokens_in * repeat,
+        "tokens_out": estimate.tokens_out * repeat,
+        "usd_micros": estimate.usd_micros * repeat,
+        "accepted": None,
+        "correctness": "not measured in dry-run",
+        "estimate_exact_tokens": estimate.exact,
+        "fits_context": estimate.fits_context,
+    }
+
+
+def build_dry_receipt(
+    *,
+    model_ref: str,
+    card,
+    baseline_prompt: str,
+    capsule_prompt: str,
+    capsule_stats: dict,
+    repeat: int,
+    max_output: int,
+    budget_usd: float,
+    baseline_tokens: int,
+    forgeos_tokens: int,
+) -> dict:
+    """Build a Class-D receipt: priced and bounded, but correctness-unmeasured."""
+    baseline = _dry_arm("baseline", baseline_prompt, card, repeat, max_output)
+    forgeos = _dry_arm(
+        "forgeos", FORGEOS_PREFIX + capsule_prompt, card, repeat, max_output
+    )
+    total = baseline["usd_micros"] + forgeos["usd_micros"]
+    return {
+        "schema": "forgeos.ab_bench.v1",
+        "mode": "dry-run",
+        "provenance": "modelled",
+        "question": QUESTION,
+        "model_ref": model_ref,
+        "repeat": repeat,
+        "max_output_tokens": max_output,
+        "budget_usd_micros": round(budget_usd * 1_000_000),
+        "prompt": {
+            "baseline_tokens": baseline_tokens,
+            "forgeos_tokens": forgeos_tokens,
+            "capsule": capsule_stats,
+        },
+        "arms": {"baseline": baseline, "forgeos": forgeos},
+        "comparison": {
+            "savings_class": "D",
+            "correctness_gated_saving": None,
+            "estimated_total_usd_micros": total,
+            "budget_fits": total <= round(budget_usd * 1_000_000),
+            "note": "No provider call was made; correctness must be measured with --live.",
+        },
+        "ledger": {"calls": 0, "spend_usd_micros": 0},
+    }
+
+
+def _write_receipt(path: str, receipt: dict) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"receipt    {target}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--env", default="~/.hermes/.env")
@@ -209,7 +298,22 @@ def main() -> int:
     ap.add_argument("--repeat", type=int, default=2, help="run the pair N times (shows cache effect)")
     ap.add_argument("--budget-usd", type=float, default=0.50)
     ap.add_argument("--max-output", type=int, default=200)
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--live", action="store_true", help="make provider calls (opt-in)")
+    mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="price both arms without making provider calls (the default)",
+    )
+    ap.add_argument("--json-out", default="", help="write the machine-readable receipt to this path")
     args = ap.parse_args()
+
+    if args.repeat < 1:
+        ap.error("--repeat must be >= 1")
+    if args.max_output < 1:
+        ap.error("--max-output must be >= 1")
+    if args.budget_usd <= 0:
+        ap.error("--budget-usd must be > 0")
 
     root = Path(__file__).resolve().parent.parent
 
@@ -256,6 +360,31 @@ def main() -> int:
         print(f"  reduction {100 * (1 - h_tok / b_tok):>6.1f}%  "
               "(smaller prompt — not the same as cheaper or more correct)")
 
+    if not args.live:
+        receipt = build_dry_receipt(
+            model_ref=model_ref,
+            card=card,
+            baseline_prompt=baseline_prompt,
+            capsule_prompt=capsule_prompt,
+            capsule_stats=cap_stats,
+            repeat=args.repeat,
+            max_output=args.max_output,
+            budget_usd=args.budget_usd,
+            baseline_tokens=b_tok,
+            forgeos_tokens=h_tok,
+        )
+        print("\nDRY RUN — priced, nothing spent; correctness is not measured")
+        for name in ("baseline", "forgeos"):
+            arm = receipt["arms"][name]
+            print(
+                f"  {name:10} planned={arm['planned_calls']} "
+                f"estimated=${arm['usd_micros'] / 1e6:.6f}"
+            )
+        print("  ledger     calls=0 spend=$0.000000")
+        if args.json_out:
+            _write_receipt(args.json_out, receipt)
+        return 0
+
     ledger = open_ledger(":memory:")
     job_id = ledger.open_job(JobSpec(objective="a/b bench", cwd=str(root),
                                      budget=Budget(max_usd=args.budget_usd)))
@@ -282,7 +411,6 @@ def main() -> int:
     # forgeos keeps a byte-stable prefix so a provider can serve a cache hit on the
     # runs after the first. The baseline has no such discipline, which is the
     # point: caching is not free, it is a property you have to preserve.
-    FORGEOS_PREFIX = "You are answering a question about a Python codebase.\n"
 
     print(f"\nrunning {args.repeat} round(s)...")
     for i in range(args.repeat):
@@ -357,6 +485,42 @@ def main() -> int:
     print(f"cache     baseline {baseline.cache_hits}/{baseline.calls} hits, "
           f"forgeos {forgeos.cache_hits}/{forgeos.calls} hits")
     print(f"ledger    ${ledger.job_spend_micros(job_id) / 1e6:.6f} recorded across both arms")
+
+    if args.json_out:
+        _write_receipt(
+            args.json_out,
+            {
+                "schema": "forgeos.ab_bench.v1",
+                "mode": "live",
+                "provenance": "measured",
+                "question": QUESTION,
+                "model_ref": model_ref,
+                "repeat": args.repeat,
+                "max_output_tokens": args.max_output,
+                "budget_usd_micros": round(args.budget_usd * 1_000_000),
+                "prompt": {
+                    "baseline_tokens": b_tok,
+                    "forgeos_tokens": h_tok,
+                    "capsule": cap_stats,
+                },
+                "arms": {
+                    "baseline": baseline.receipt(),
+                    "forgeos": forgeos.receipt(),
+                },
+                "comparison": {
+                    "savings_class": "A" if baseline.correct and forgeos.correct else "D",
+                    "correctness_gated_saving": (
+                        (1 - forgeos.usd_micros / baseline.usd_micros)
+                        if baseline.correct and forgeos.correct and baseline.usd_micros
+                        else None
+                    ),
+                },
+                "ledger": {
+                    "calls": baseline.calls + forgeos.calls,
+                    "spend_usd_micros": ledger.job_spend_micros(job_id),
+                },
+            },
+        )
 
     print("\n" + "=" * 74)
     print("ANSWERS — judge these yourself; a cheaper wrong answer is not a saving.")

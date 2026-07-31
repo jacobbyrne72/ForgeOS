@@ -15,6 +15,7 @@
 - `Forge.default_executor()` now lazily creates a ledger-owned `Gateway` from the default catalog/settings with persistent `.forgeos/dead_models.db`; `Forge.run(executor=None)` and the CLI reviewer use that shared routed path.
 - `Gateway.resolve_model_refs("auto:free")` resolves usable catalogued free models, filters dead transport/model pairs, and `GatewayWorkerAdapter` falls through deterministically when a free slug is retired.
 - The free-pool resolver now preserves explicitly selected concrete `:free` slugs instead of silently replacing them.
+- `tools/ab_bench.py` is now safe by default: it prices both arms without opening a ledger or touching a transport, emits a Class-D JSON receipt with `--json-out`, and requires explicit `--live` for provider calls.
 - The 713-entry catalog is a manifest, not a set of local source clones; broad cloning is intentionally avoided.
 - Reference clones are isolated at `C:\Users\byrne\Downloads\ForgeOS-upstreams-2026-07-31`.
 - Existing dirty files before this task: `forgeos/forge.py`, `docs/research/verification-economy.md`, `tests/test_merge_retry.py`.
@@ -38,6 +39,7 @@
 - `forgeos/adapters/gateway_worker.py`, `forgeos/forge.py`, `forgeos/__main__.py` — shared default gateway and deterministic free fallback.
 - `tests/test_free_pool.py`, `tests/test_gateway_worker.py`, `tests/test_routed_executor.py` — regression coverage.
 - `README.md`, `docs/ROADMAP.md`, `docs/TEAM.md` — close stale roadmap/team claims.
+- `tools/ab_bench.py`, `tests/test_ab_bench.py` — opt-in live A/B benchmark plus no-call receipt coverage.
 
 ## Commands run
 - `rtk proxy python -m pytest tests -q -m "not slow"`
@@ -53,9 +55,11 @@
 - `python -m forgeos.cli bench "measure a local retry helper" --iterations 1`
 - `python -m forgeos.cli doctor`, `python -m forgeos.cli fleet`, and `python -m forgeos.cli run "summarize the retry policy" --dry-run`
 - local default-gateway catalog resolution smoke check (no provider call)
+- `python tools/ab_bench.py --model openrouter/openrouter/free --repeat 2 --json-out <temp receipt>`
+- checkpointed full suite via `sweep.py` and `pytest --collect-only`: 1729 tests collected, sweep rc 0
 
 ## Test status
-- Passing: 44 focused free-pool/routed-worker tests; 1727 full tests (including slow); Ruff; compileall; CLI dogfood and catalog-resolution smoke check.
+- Passing: 2 benchmark tests; 1729-test full suite (including slow, sweep rc 0); Ruff; compileall; CLI dogfood and no-call benchmark smoke check.
 - Failing: none observed.
 - Not run: none.
 
@@ -63,5 +67,5 @@
 - No blocker for the source upgrade. Full catalog clone coverage remains intentionally unperformed because it is 713 repositories.
 
 ## Next best steps
-- Review and commit the default Gateway/free-pool integration; do not run a real `forge run` without an explicit operator-approved provider/budget call.
-- Next product candidate: make the benchmark compare a naive loop against ForgeOS with machine-readable receipts, without spending by default.
+- Commit the benchmark hardening; do not run `tools/ab_bench.py --live` or a real `forge run` without explicit operator-approved provider/budget calls.
+- Next product candidate: expand the A/B harness from one question to a pinned multi-task suite with correctness gates.
