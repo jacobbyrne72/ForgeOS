@@ -368,6 +368,7 @@ def main() -> int:
     p_budget.add_argument("--warn-at", type=float, default=0.8, dest="warn_at")
     p_replace = sub.add_parser("replace", help="Replace expensive calls with cheap equivalents")
     p_adbatch = sub.add_parser("adaptbatch", help="Auto-select cheapest batch strategy for any workload")
+    p_smart = sub.add_parser("smartbatch", help="ML-inspired batch cost predictor using history")
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -388,6 +389,7 @@ def main() -> int:
         "budget": cmd_budget,
         "replace": cmd_replace,
         "adaptbatch": cmd_adbatch,
+        "smartbatch": cmd_smartbatch,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -439,6 +441,28 @@ def cmd_budget(args):
     return 0
 
 
+
+def cmd_smartbatch(args):
+    from forgeos.smart_batch import SmartBatchPredictor
+    p = SmartBatchPredictor()
+    # Seed with history demo
+    for _ in range(5): p.record("code_gen", 0.018, 200)
+    for _ in range(3): p.record("review", 0.015, 600)
+    # Predict for a mixed workload
+    result = p.predict_batch([
+        {"type": "code_gen"}, {"type": "code_gen"},
+        {"type": "review"}, {"type": "debug"},
+    ])
+    print("=== Smart Batch Predictor ===")
+    print("Total tasks:", result["total_tasks"])
+    print()
+    for pred in result["predictions"]:
+        print("  " + pred["task_type"] + ": " + str(pred["count"]) + "x, $" + str(round(pred["per_task_usd"], 4)) + "/task (" + pred["source"] + ", " + str(pred["history_samples"]) + " history samples)")
+    print()
+    print("Total estimated:", "$" + str(round(result["total_estimated_usd"], 4)))
+    print("Monthly projection:", "$" + str(round(result["monthly_projection"], 2)))
+    print("Yearly projection:", "$" + str(round(result["yearly_projection"], 2)))
+    return 0
 
 def cmd_adbatch(args):
     from forgeos.adaptive_batch import AdaptiveBatch
