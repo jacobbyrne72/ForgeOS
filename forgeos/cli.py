@@ -37,10 +37,20 @@ def cmd_report(args) -> int:
     if job_row is None:
         print(f"ERROR: Job '{args.job_id}' not found")
         return 1
+    total_spend = ledger.job_spend_micros(args.job_id)
+    total_tasks = ledger.task_count(args.job_id)
     print(f"Job: {job_row['objective']}")
     print(f"State: {job_row['state']}")
-    print(f"Budget: ${ledger.job_spend_micros(args.job_id) / 1e6:.4f}")
-    print(f"Tasks: {ledger.task_count(args.job_id)}")
+    print(f"Total cost: ${total_spend / 1e6:.4f}")
+    print(f"Tasks: {total_tasks}")
+    if args.breakdown and total_tasks > 0:
+        print()
+        print("Per-task breakdown:")
+        print("-" * 60)
+        for task in ledger.tasks_for_job(args.job_id):
+            task_spend = ledger.task_spend_micros(task.id)
+            print(f"  [{task.id[:12]}] {task.subject[:50]}")
+            print(f"    cost: ${task_spend / 1e6:.4f}  state: {task.state.value}")
     return 0
 
 def cmd_doctor(args) -> int:
@@ -124,12 +134,18 @@ def main() -> int:
     p_run = sub.add_parser("run", help="Compile and run objective")
     p_run.add_argument("objective")
     p_run.add_argument("--cwd", default=".")
+    # `cmd_run` referenced args.budget behind a hasattr() guard while no parser
+    # ever defined it, so the guard silently swallowed the miss and a
+    # cost-governed harness shipped with no way to cap a run's spend.
+    p_run.add_argument("--budget", type=float, default=None,
+                       help="hard USD ceiling for this run")
     p_resume = sub.add_parser("resume", help="Resume a crashed job")
     p_resume.add_argument("job_id")
     p_resume.add_argument("--state-dir", default=None)
     p_report = sub.add_parser("report", help="Cost breakdown for a job")
     p_report.add_argument("job_id")
     p_report.add_argument("--state-dir", default=None)
+    p_report.add_argument("--breakdown", action="store_true", help="Per-task cost breakdown")
     p_compile = sub.add_parser("compile", help="Dry-run compile")
     p_compile.add_argument("objective")
     p_compile.add_argument("--cwd", default=".")
@@ -153,11 +169,20 @@ def main() -> int:
         parser.print_help()
         return 0
     dispatch = {
-        "run": cmd_run, "resume": cmd_resume, "report": cmd_report,"adapt": cmd_adapt,
+        "run": cmd_run, "resume": cmd_resume, "report": cmd_report, "adapt": cmd_adapt,
         "compress": cmd_compress, "bench": cmd_bench, "watch": cmd_watch,
         "doctor": cmd_doctor, "init": cmd_init, "compile": cmd_compile,
         "cache": cmd_cache, "breaker": cmd_breaker,
     }
+    handler = dispatch.get(args.command)
+    if handler is None:
+        # A registered subcommand with no handler must fail loudly. The whole
+        # bug this line exists to prevent was a command that parsed, did
+        # nothing, and exited 0.
+        print(f"ERROR: no handler registered for '{args.command}'", file=sys.stderr)
+        return 2
+    return handler(args)
+
 
 def cmd_compress(args):
     from forgeos.context_compress import compress_context
@@ -221,7 +246,130 @@ def cmd_watch(args):
         print(json.dumps(a, indent=2))
     return 0
 
+
+def cmd_fleet(args) -> int:
+    """Show every provider, what it costs, and what's cheapest RIGHT NOW.
+
+    The screenshot command. One glance tells you: what do I have, what's
+    alive, and what order should I burn through them to make my
+    subscriptions last longest.
+
+    Deliberately does NOT probe the filesystem (no shutil.which, no
+    subprocess). That's what `forge doctor` is for. Fleet reads config
+    and prints instantly.
+    """
+    from forgeos.settings import Settings, ProviderKind, AuthMode
+
+    settings = Settings.load()
+
+    print("forgeos fleet — your AI capacity, ranked by cost")
+    print("=" * 62)
+
+    # Group by cost tier — the ordering IS the product
+    free, subscription, metered = [], [], []
+    for p in sorted(settings.providers.values(), key=lambda x: x.name):
+        if not p.enabled:
+            continue
+        entry = {"name": p.name, "kind": p.kind.value, "auth": p.auth.value}
+
+        if p.kind == ProviderKind.LOCAL:
+            free.append(entry)
+        elif p.auth == AuthMode.SUBSCRIPTION:
+            subscription.append(entry)
+        else:
+            metered.append(entry)
+
+    def print_group(title, entries, hint):
+        if not entries:
+            return
+        print(f"\n  {title}")
+        print(f"  {hint}")
+        print(f"  {'-' * 56}")
+        for e in entries:
+            cost_label = {"local": "$0 (runs on your hardware)",
+                          "subscription": "$0 marginal (you already paid)",
+                          "api": "pay-per-token",
+                          "gateway": "pay-per-token (multi-provider)"}.get(e['kind'], e['kind'])
+            print(f"  • {e['name']:<14} {cost_label}")
+
+    print_group("FREE / LOCAL — burn these first, they cost nothing",
+                free, "Ollama, local models. Unlimited. No quota. No meter.")
+    print_group("SUBSCRIPTION — you already paid, use every drop",
+                subscription, "Claude, Codex, Copilot. Flat-rate seat. Every task = $0 extra.")
+    print_group("METERED — last resort, every token costs real money",
+                metered, "DeepSeek, OpenRouter. Only when subscriptions are exhausted.")
+
+    # The money shot
+    print(f"\n{'=' * 62}")
+    print("  YOUR ROUTING LADDER (cheapest first)")
+    print(f"  {'-' * 56}")
+    rung = 1
+    for label, group in [("free/local", free), ("subscription", subscription), ("metered", metered)]:
+        if group:
+            names = ", ".join(e['name'] for e in group)
+            print(f"  {rung}. {label:<14} → {names}")
+            rung += 1
+    if rung == 1:
+        print("  (nothing configured — run 'forge init' then add providers)")
+
+    if subscription:
+        names = ", ".join(e['name'] for e in subscription)
+        print(f"\n  → forgeos routes through {names} BEFORE touching metered API.")
+        print(f"    Every task your subscription handles = $0 extra cost.")
+        print(f"    Same subscription. 5x more tasks. That's the product.")
+    print()
+    return 0
+
+
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="forge", description="ForgeOS — cost-governed AI coding")
+    sub = parser.add_subparsers(dest="command")
+    sub.add_parser("doctor", help="What can this machine do right now")
+    sub.add_parser("fleet", help="What you have, what's alive, what's cheapest TODAY")
+    p_init = sub.add_parser("init", help="Scan repo and generate files")
+    p_init.add_argument("--cwd", default=None)
+    p_run = sub.add_parser("run", help="Compile and run objective")
+    p_run.add_argument("objective")
+    p_run.add_argument("--cwd", default=".")
+    p_resume = sub.add_parser("resume", help="Resume a crashed job")
+    p_resume.add_argument("job_id")
+    p_resume.add_argument("--state-dir", default=None)
+    p_report = sub.add_parser("report", help="Cost breakdown for a job")
+    p_report.add_argument("job_id")
+    p_report.add_argument("--state-dir", default=None)
+    p_compile = sub.add_parser("compile", help="Dry-run compile")
+    p_compile.add_argument("objective")
+    p_compile.add_argument("--cwd", default=".")
+    p_cache = sub.add_parser("cache", help="Manage prompt cache")
+    p_cache.add_argument("cache_action", choices=["clear", "stats", "prune"])
+    sub.add_parser("breaker", help="Circuit breaker state")
+    p_compress = sub.add_parser("compress", help="AST-based context compression")
+    p_compress.add_argument("objective")
+    p_compress.add_argument("--files", nargs="*", default=[])
+    p_adapt = sub.add_parser("adapt", help="Adaptive adapter selection")
+    p_adapt.add_argument("--capabilities", default="")
+    p_adapt.add_argument("--budget", type=int, default=None)
+    p_bench = sub.add_parser("bench", help="Reproducible cost benchmark")
+    p_bench.add_argument("objective")
+    p_bench.add_argument("--iterations", type=int, default=3)
+    p_watch = sub.add_parser("watch", help="Continuous cost monitoring")
+    p_watch.add_argument("--interval", type=int, default=30)
+    p_watch.add_argument("--max-alerts", type=int, default=5)
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        return 0
+    dispatch = {
+        "run": cmd_run, "resume": cmd_resume, "report": cmd_report,
+        "adapt": cmd_adapt, "compress": cmd_compress, "bench": cmd_bench,
+        "watch": cmd_watch, "doctor": cmd_doctor, "init": cmd_init,
+        "compile": cmd_compile, "cache": cmd_cache, "breaker": cmd_breaker,
+        "fleet": cmd_fleet,
+    }
     return dispatch[args.command](args)
+
 
 if __name__ == "__main__":
     sys.exit(main())
