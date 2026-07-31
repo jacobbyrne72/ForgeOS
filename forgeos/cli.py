@@ -228,6 +228,8 @@ def cmd_forgebench(args) -> int:
         argv.append("--skip-baseline")
     if args.ledger_path:
         argv += ["--ledger-path", args.ledger_path]
+    if getattr(args, "json_out", ""):
+        argv += ["--json-out", args.json_out]
     return forgebench_main(argv)
 
 
@@ -413,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
     p_forgebench.add_argument("--dry-run", action="store_true", dest="dry_run")
     p_forgebench.add_argument("--skip-baseline", action="store_true", dest="skip_baseline")
     p_forgebench.add_argument("--ledger-path", default=":memory:", dest="ledger_path")
+    p_forgebench.add_argument("--json-out", default="", dest="json_out")
     p_watch = sub.add_parser("watch", help="Continuous cost monitoring")
     p_watch.add_argument("--interval", type=int, default=30)
     p_watch.add_argument("--max-alerts", type=int, default=5)

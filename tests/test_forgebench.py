@@ -338,6 +338,28 @@ def test_dry_run_prices_the_whole_suite_and_makes_zero_calls():
     assert "DRY RUN" in rendered
 
 
+def test_forgebench_json_receipt_preserves_pinned_contract_and_class_d(tmp_path):
+    tasks = list(DEFAULT_SUITE)
+    run = run_suite(
+        tasks, suite_name="json-dry-run", executor=None,
+        savings_class=SavingsClass.A_PAIRED_MEASURED, budget_usd_micros=10_000_000,
+        dry_run=True, root=REPO_ROOT, card=PRICED_CARD,
+    )
+    report = build_report(run, mission_id="m", repo_revision="rev")
+
+    payload = forgebench.report_to_dict(report)
+    path = forgebench.write_json_report(tmp_path / "receipt.json", report)
+
+    assert payload["schema"] == "forgeos.forgebench.v1"
+    assert payload["mode"] == "dry-run"
+    assert payload["provenance"] == "modelled"
+    assert len(payload["suite"]["tasks"]) == len(DEFAULT_SUITE)
+    assert len(payload["comparisons"]) == len(DEFAULT_SUITE)
+    assert all(item["baseline"] is None and item["forgeos"] is None
+               for item in payload["comparisons"])
+    assert path.read_text(encoding="utf-8").startswith("{\n")
+
+
 # --------------------------------------------------------- per-task / aggregate maths
 
 
@@ -488,16 +510,21 @@ def test_build_parser_defaults():
     assert args.skip_baseline is False
     assert args.ledger_path == ":memory:"
     assert args.model == ""
+    assert args.json_out == ""
 
 
 def test_build_parser_parses_flags():
     args = build_parser().parse_args(
-        ["--model", "p/m", "--budget-usd", "1.25", "--dry-run", "--skip-baseline"]
+        [
+            "--model", "p/m", "--budget-usd", "1.25", "--dry-run",
+            "--skip-baseline", "--json-out", "receipt.json",
+        ]
     )
     assert args.model == "p/m"
     assert args.budget_usd == pytest.approx(1.25)
     assert args.dry_run is True
     assert args.skip_baseline is True
+    assert args.json_out == "receipt.json"
 
 
 def test_main_dry_run_end_to_end_with_injected_catalog(capsys):

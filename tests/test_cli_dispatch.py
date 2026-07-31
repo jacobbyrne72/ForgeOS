@@ -171,6 +171,27 @@ def test_run_delegates_to_guarded_team_runner(monkeypatch):
     }
 
 
+def test_forgebench_forwards_json_receipt_path(monkeypatch):
+    from types import SimpleNamespace
+    from forgeos import forgebench
+
+    captured = {}
+
+    def fake_main(argv):
+        captured["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(forgebench, "main", fake_main)
+    args = SimpleNamespace(
+        model="p/m", budget_usd=1.25, dry_run=True, skip_baseline=False,
+        ledger_path=":memory:", json_out="receipt.json",
+    )
+
+    assert cli.cmd_forgebench(args) == 0
+    assert "--json-out" in captured["argv"]
+    assert captured["argv"][captured["argv"].index("--json-out") + 1] == "receipt.json"
+
+
 def test_fleet_is_safe_on_windows_cp1252_console(monkeypatch, capsys):
     """The fleet screenshot must not crash on the default Windows console."""
     from types import SimpleNamespace

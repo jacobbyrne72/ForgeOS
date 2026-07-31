@@ -49,11 +49,11 @@ ForgeOS's differentiators, already built and tested:
    dead slugs, and falls through deterministically to the next free candidate.
    Live provider reachability remains a runtime/doctor fact, never a claim made
    from catalog presence alone.
-5. **The benchmark that sells it** 🚧 — `tools/ab_bench.py` now defaults to a
-   no-call Class-D dry-run, supports explicit `--live` measurement, and writes
-   machine-readable JSON receipts. The broader pinned task-list comparison and
-   public bill table remain the next benchmark milestone; post the table, not
-   adjectives.
+5. **The benchmark that sells it** 🚧 — `forge forgebench` now exposes the
+   pinned six-task correctness-gated suite as a machine-readable JSON receipt;
+   `tools/ab_bench.py` remains the one-question context probe with a safe
+   no-call default. The public live bill table remains the next milestone; post
+   the table, not adjectives.
 
 ## 3. Novel tools worth building (none exist in the wild today)
 

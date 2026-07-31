@@ -75,7 +75,9 @@ cheaper" headline sitting on 3-vs-2 acceptance is not a measurement, and class D
 The second finding is that 3/6 and 2/6 acceptance means most of the suite is
 failing. That is now a measured fact to fix, not an assumption.
 
-Reproduce: `forge forgebench --dry-run` prices the suite without spending.
+Reproduce without spending: `forge forgebench --dry-run --json-out artifacts/forgebench.json`.
+The receipt contains all six pinned task contracts, per-task acceptance slots,
+proof hashes, and the modelled suite estimate; `--live` is not implicit.
 
 ## The layers — built and tested, NOT individually benchmarked
 

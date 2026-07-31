@@ -16,6 +16,7 @@
 - `Gateway.resolve_model_refs("auto:free")` resolves usable catalogued free models, filters dead transport/model pairs, and `GatewayWorkerAdapter` falls through deterministically when a free slug is retired.
 - The free-pool resolver now preserves explicitly selected concrete `:free` slugs instead of silently replacing them.
 - `tools/ab_bench.py` is now safe by default: it prices both arms without opening a ledger or touching a transport, emits a Class-D JSON receipt with `--json-out`, and requires explicit `--live` for provider calls.
+- `forgeos/forgebench.py` already owns the pinned six-task correctness-gated suite; it now serializes dry-run/live reports as `forgeos.forgebench.v1` JSON via `--json-out`, and `forgeos.cli` forwards that flag.
 - The 713-entry catalog is a manifest, not a set of local source clones; broad cloning is intentionally avoided.
 - Reference clones are isolated at `C:\Users\byrne\Downloads\ForgeOS-upstreams-2026-07-31`.
 - Existing dirty files before this task: `forgeos/forge.py`, `docs/research/verification-economy.md`, `tests/test_merge_retry.py`.
@@ -40,6 +41,7 @@
 - `tests/test_free_pool.py`, `tests/test_gateway_worker.py`, `tests/test_routed_executor.py` — regression coverage.
 - `README.md`, `docs/ROADMAP.md`, `docs/TEAM.md` — close stale roadmap/team claims.
 - `tools/ab_bench.py`, `tests/test_ab_bench.py` — opt-in live A/B benchmark plus no-call receipt coverage.
+- `forgeos/forgebench.py`, `forgeos/cli.py`, `tests/test_forgebench.py`, `tests/test_cli_dispatch.py` — pinned-suite JSON receipts and CLI forwarding.
 
 ## Commands run
 - `rtk proxy python -m pytest tests -q -m "not slow"`
@@ -57,9 +59,10 @@
 - local default-gateway catalog resolution smoke check (no provider call)
 - `python tools/ab_bench.py --model openrouter/openrouter/free --repeat 2 --json-out <temp receipt>`
 - checkpointed full suite via `sweep.py` and `pytest --collect-only`: 1729 tests collected, sweep rc 0
+- `python -m forgeos.cli forgebench --dry-run --model openrouter/openrouter/free --budget-usd 50 --json-out <temp receipt>`
 
 ## Test status
-- Passing: 2 benchmark tests; 1729-test full suite (including slow, sweep rc 0); Ruff; compileall; CLI dogfood and no-call benchmark smoke check.
+- Passing: 158 focused ForgeBench/CLI tests; 1731-test full suite target (checkpointed sweep rc 0); Ruff; compileall; CLI dogfood and no-call benchmark smoke checks.
 - Failing: none observed.
 - Not run: none.
 
@@ -68,5 +71,5 @@
 - An unrelated uncommitted change is present in `forgeos/economy/reducer.py`; it was not touched by this benchmark work and must be preserved.
 
 ## Next best steps
-- Commit the benchmark hardening; do not run `tools/ab_bench.py --live` or a real `forge run` without explicit operator-approved provider/budget calls.
-- Next product candidate: expand the A/B harness from one question to a pinned multi-task suite with correctness gates.
+- Commit the pinned-suite JSON receipt wiring; do not run `tools/ab_bench.py --live`, `forge forgebench` live, or a real `forge run` without explicit operator-approved provider/budget calls.
+- Next product candidate: aggregate multiple measured suite receipts into a reproducible public bill table without hiding failed/voided runs.

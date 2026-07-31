@@ -55,7 +55,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Protocol
@@ -910,6 +910,79 @@ def build_report(run: SuiteRunResult, *, mission_id: str, repo_revision: str) ->
     )
 
 
+def _arm_outcome_dict(outcome: TaskArmOutcome | None) -> dict | None:
+    if outcome is None:
+        return None
+    result = outcome.result
+    return {
+        "accepted": outcome.accepted,
+        "result": {
+            "text": result.text,
+            "tokens_in": result.tokens_in,
+            "tokens_out": result.tokens_out,
+            "tokens_cached_in": result.tokens_cached_in,
+            "usd_micros": result.usd_micros,
+            "seconds": result.seconds,
+        },
+    }
+
+
+def report_to_dict(report: ForgeBenchReport) -> dict:
+    """Serialize the pinned-suite result without losing proof metadata.
+
+    The terminal renderer is intentionally human-first. This companion shape is
+    stable enough for CI, dashboards, and later benchmark aggregation while
+    preserving the exact task contract, per-arm acceptance, cost facts, and the
+    `SavingsProof` hashes that make a result auditable.
+    """
+    run = report.run
+    comparisons = []
+    for comparison in report.comparisons:
+        comparisons.append({
+            "task_id": comparison.task_id,
+            "acceptance_matches": comparison.acceptance_matches,
+            "comparison_voided": comparison.comparison_voided,
+            "baseline": _arm_outcome_dict(comparison.baseline),
+            "forgeos": _arm_outcome_dict(comparison.forgeos),
+        })
+
+    return {
+        "schema": "forgeos.forgebench.v1",
+        "mode": "dry-run" if run.dry_run else "live",
+        "provenance": "modelled" if run.dry_run else "measured",
+        "suite": {
+            "name": run.suite_name,
+            "savings_class": run.savings_class.value,
+            "tasks": [task.contract_dict() for task in run.tasks],
+        },
+        "dry_run_estimate_usd_micros": run.dry_run_estimate_usd_micros,
+        "aborted": {
+            "reason": run.aborted_reason,
+            "at_task": run.aborted_at_task,
+        },
+        "totals": {
+            "baseline": asdict(report.baseline_totals),
+            "forgeos": asdict(report.forgeos_totals),
+        },
+        "comparisons": comparisons,
+        "comparison_voided": report.comparison_voided,
+        "exit_gate_passed": report.exit_gate_passed,
+        "proof": report.proof.model_dump(mode="json"),
+        "proof_complaints": list(report.proof_complaints),
+    }
+
+
+def write_json_report(path: str | Path, report: ForgeBenchReport) -> Path:
+    """Write a deterministic, UTF-8 JSON receipt and return its path."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(report_to_dict(report), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return target
+
+
 def render_report(report: ForgeBenchReport) -> str:
     run = report.run
     lines: list[str] = []
@@ -1112,6 +1185,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--skip-baseline", action="store_true", dest="skip_baseline",
                      help="ForgeOS arm only -- Savings Class D, no saving is claimed")
     ap.add_argument("--ledger-path", default=":memory:", dest="ledger_path")
+    ap.add_argument("--json-out", default="", dest="json_out",
+                    help="write the machine-readable suite receipt to this path")
     return ap
 
 
@@ -1158,6 +1233,8 @@ def main(
         )
         report = build_report(run, mission_id="forgebench-dry-run", repo_revision=repo_revision)
         print(render_report(report))
+        if args.json_out:
+            print(f"JSON receipt: {write_json_report(args.json_out, report)}")
         return 0
 
     ledger = open_ledger(args.ledger_path)
@@ -1184,6 +1261,8 @@ def main(
         ledger.close()
 
     print(render_report(report))
+    if args.json_out:
+        print(f"JSON receipt: {write_json_report(args.json_out, report)}")
     if run.aborted_reason:
         return 3
     return 0 if report.exit_gate_passed in (None, True) else 1
@@ -1214,9 +1293,11 @@ __all__ = [
     "keyword_groups",
     "main",
     "pair_by_task",
+    "report_to_dict",
     "render_report",
     "run_suite",
     "totals_for",
+    "write_json_report",
 ]
 
 
