@@ -515,6 +515,68 @@ def cmd_receipts(args: argparse.Namespace) -> int:
         ledger.close()
 
 
+# --------------------------------------------------------------- snapshot
+
+
+def cmd_snapshot(args: argparse.Namespace) -> int:
+    """Export one coherent local dashboard observation as JSON.
+
+    The dashboard route is the single source of truth for this payload; the
+    CLI only gives operators and scripts a file/stdout surface over it.
+    """
+    state_dir = _resolve_state_dir(args.state_dir)
+    schema = "forgeos.dashboard_snapshot.v1"
+    if not state_dir.exists():
+        print(json.dumps({
+            "schema": schema,
+            "ok": False,
+            "error": "state_not_found",
+            "state_dir": str(state_dir),
+        }, indent=2, sort_keys=True))
+        return 1
+
+    try:
+        from fastapi.testclient import TestClient
+        from forgeos.dashboard.app import create_app
+
+        app = create_app(
+            state_dir,
+            queue_dir=args.queue,
+            leaderboard_dir=args.leaderboard_dir,
+        )
+        with TestClient(app) as client:
+            response = client.get(
+                "/api/snapshot",
+                params={"stale_after_seconds": args.stale_after},
+            )
+    except Exception as exc:  # noqa: BLE001 - diagnostics command returns JSON, never a traceback
+        print(json.dumps({
+            "schema": schema,
+            "ok": False,
+            "error": "snapshot_unavailable",
+            "message": str(exc),
+        }, indent=2, sort_keys=True))
+        return 1
+
+    if response.status_code != 200:
+        print(json.dumps({
+            "schema": schema,
+            "ok": False,
+            "error": "snapshot_http_error",
+            "status_code": response.status_code,
+            "message": response.text,
+        }, indent=2, sort_keys=True))
+        return 1
+
+    payload = response.json()
+    if args.output:
+        target = Path(args.output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
 # ---------------------------------------------------------------------- watch
 
 
@@ -851,6 +913,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_receipts.add_argument("--json", action="store_true", help="Machine-readable receipt/status output")
 
+    p_snapshot = sub.add_parser(
+        "snapshot", help="Export one coherent read-only dashboard observation"
+    )
+    p_snapshot.add_argument("--state-dir", help="Where the dashboard state lives")
+    p_snapshot.add_argument("--queue", help="Queue directory to include in the heartbeat view")
+    p_snapshot.add_argument("--leaderboard-dir", help="ForgeBench receipt directory to rank")
+    p_snapshot.add_argument("--stale-after", type=float, default=30.0)
+    p_snapshot.add_argument("--output", help="Also write the snapshot JSON to this path")
+    p_snapshot.add_argument("--json", action="store_true", help="Machine-readable output (default)")
+
     p_preflight = sub.add_parser(
         "preflight", help="Read-only prior-work refusal check; never calls a provider"
     )
@@ -959,6 +1031,7 @@ def main(argv: list[str] | None = None) -> int:
         "preflight": cmd_preflight,
         "call-preflight": cmd_call_preflight,
         "receipts": cmd_receipts,
+        "snapshot": cmd_snapshot,
         "watch": cmd_watch,
         "queue-status": cmd_queue_status,
         "team": cmd_team,

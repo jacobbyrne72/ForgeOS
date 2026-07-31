@@ -201,6 +201,19 @@ def test_receipts_summarizes_spend_by_job_and_cost_per_accepted(seeded_state_dir
     assert "$/accepted=$2.2000" in out
 
 
+def test_snapshot_exports_one_dashboard_observation_as_json(tmp_path, capsys):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    rc = cli.main(["snapshot", "--state-dir", str(state_dir), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert payload["schema"] == "forgeos.dashboard_snapshot.v1"
+    assert payload["summary"]["spend_usd"] == 0
+    assert payload["leaderboard"]["available"] is False
+
+
 def test_receipts_summarizes_spend_by_worker(seeded_state_dir, capsys):
     cli.main(["receipts", "--state-dir", str(seeded_state_dir)])
     out = capsys.readouterr().out
@@ -426,7 +439,7 @@ def test_main_dispatch_is_reachable_for_every_registered_subcommand():
         and isinstance(node.value, ast.Dict)
     )
     assert registered == {
-        "doctor", "preflight", "call-preflight", "receipts", "watch", "queue-status", "team", "resume",
+        "doctor", "preflight", "call-preflight", "receipts", "snapshot", "watch", "queue-status", "team", "resume",
         "serve-mcp", "memory"
     }
     assert dispatch_keys == registered

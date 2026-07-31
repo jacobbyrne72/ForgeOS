@@ -403,6 +403,8 @@ board rather than being created.
 For automation and incident capture, `GET /api/snapshot` returns one
 `forgeos.dashboard_snapshot.v1` payload containing the summary, quota, queue,
 jobs, economy, workers, providers, leaderboard, and activity views.
+The same export is available without a running server:
+`python -m forgeos snapshot --state-dir .forgeos --json --output artifacts/snapshot.json`.
 
 Run a deterministic browser/API smoke without provider calls:
 `python tools/dashboard_smoke.py --port 8894 --screenshot artifacts/dashboard-smoke.png`.

@@ -68,6 +68,14 @@ def cmd_receipts(args) -> int:
     return _cmd_receipts(args)
 
 
+def cmd_snapshot(args) -> int:
+    """Expose the canonical coherent dashboard snapshot on the console script."""
+    return _forward_to_main(
+        "snapshot", args,
+        ("--state-dir", "--queue", "--leaderboard-dir", "--stale-after", "--output", "--json"),
+    )
+
+
 def cmd_preflight(args) -> int:
     """Expose the canonical read-only prior-work refusal check."""
     return _forward_to_main(
@@ -746,6 +754,13 @@ def main(argv: list[str] | None = None) -> int:
     p_receipts = sub.add_parser("receipts", help="Read-only ledger spend and acceptance summary")
     p_receipts.add_argument("--state-dir", default=None)
     p_receipts.add_argument("--json", action="store_true", help="Machine-readable receipt/status output")
+    p_snapshot = sub.add_parser("snapshot", help="Export one coherent read-only dashboard observation")
+    p_snapshot.add_argument("--state-dir", default=None)
+    p_snapshot.add_argument("--queue", default=None)
+    p_snapshot.add_argument("--leaderboard-dir", default=None)
+    p_snapshot.add_argument("--stale-after", type=float, default=30.0)
+    p_snapshot.add_argument("--output", default=None)
+    p_snapshot.add_argument("--json", action="store_true")
     p_preflight = sub.add_parser(
         "preflight", help="Read-only prior-work refusal check; never calls a provider"
     )
@@ -915,6 +930,7 @@ def main(argv: list[str] | None = None) -> int:
         "preflight": cmd_preflight,
         "call-preflight": cmd_call_preflight,
         "receipts": cmd_receipts,
+        "snapshot": cmd_snapshot,
         "adapt": cmd_adapt,
         "compress": cmd_compress,
         "models": cmd_models,
