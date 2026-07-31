@@ -203,3 +203,60 @@ def test_conflicts_lists_matching_lease_with_task_id(store):
     hits = store.conflicts("repo1", "src/router/x.py", LeaseType.READ)
     assert len(hits) == 1
     assert hits[0].task_id == "task_a"
+
+
+# ===================================================== owner liveness reaping
+
+
+def test_acquire_stamps_the_owning_process(tmp_path):
+    import os
+
+    store = LeaseStore(tmp_path / "l.db")
+    lease = store.acquire("t1", "repo", "src/a.py", LeaseType.WRITE, 60)
+    assert lease is not None
+    assert lease.owner_pid == os.getpid()
+
+
+def test_a_dead_owners_lease_is_reaped_instead_of_blocking(tmp_path):
+    """A crash-killed process cannot release its lease; waiting out the TTL is
+    pure wall-clock loss (observed live on the dogfood state dir). A blocker
+    whose recorded owner is provably dead is released at conflict time."""
+    import subprocess
+    import sys
+
+    import psutil
+    import pytest
+
+    p = subprocess.Popen([sys.executable, "-c", "pass"])
+    p.wait()
+    dead_pid = p.pid
+    if psutil.pid_exists(dead_pid):  # pragma: no cover - pid reuse race
+        pytest.skip("pid was recycled immediately; cannot stage a dead owner")
+
+    store = LeaseStore(tmp_path / "l.db")
+    blocker = store.acquire("t-dead", "repo", "src/a.py", LeaseType.WRITE, 3600)
+    assert blocker is not None
+    store._conn.execute("UPDATE path_leases SET owner_pid = ? WHERE id = ?",
+                        (dead_pid, blocker.id))
+
+    lease = store.acquire("t-live", "repo", "src/a.py", LeaseType.WRITE, 60)
+    assert lease is not None, "dead owner's lease must be reaped, not waited out"
+    assert lease.task_id == "t-live"
+
+
+def test_a_live_owners_lease_still_blocks(tmp_path):
+    store = LeaseStore(tmp_path / "l.db")
+    assert store.acquire("t1", "repo", "src/a.py", LeaseType.WRITE, 3600) is not None
+    # Same process is alive by definition — the reap must never fire.
+    assert store.acquire("t2", "repo", "src/a.py", LeaseType.WRITE, 60) is None
+
+
+def test_a_pre_migration_lease_with_no_owner_is_ttl_only(tmp_path):
+    """owner_pid 0 means 'owner unknown': liveness evidence was never
+    recorded, so only the TTL may reap it — never a liveness guess."""
+    store = LeaseStore(tmp_path / "l.db")
+    blocker = store.acquire("t-old", "repo", "src/a.py", LeaseType.WRITE, 3600)
+    assert blocker is not None
+    store._conn.execute("UPDATE path_leases SET owner_pid = 0 WHERE id = ?", (blocker.id,))
+
+    assert store.acquire("t-new", "repo", "src/a.py", LeaseType.WRITE, 60) is None

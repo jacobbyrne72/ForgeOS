@@ -10,8 +10,11 @@ sync with reality.
 from __future__ import annotations
 
 import fnmatch
+import os
 import sqlite3
 import time
+
+import psutil
 from enum import Enum
 from pathlib import Path
 
@@ -89,6 +92,9 @@ class Lease(BaseModel):
     acquired_at: float = Field(default_factory=time.time)
     expires_at: float
     released_at: float | None = None
+    # 0 means "owner unknown" (a pre-migration row): liveness reaping never
+    # applies, only the TTL does. Never guess an owner that wasn't recorded.
+    owner_pid: int = 0
 
     def is_expired(self, at: float | None = None) -> bool:
         at = at if at is not None else time.time()
@@ -110,6 +116,16 @@ class LeaseStore:
         self._conn = _sql_connect(self.path)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(LEASES_SCHEMA)
+        # Upgrade path for a store persisted before owner liveness existed.
+        # A fresh or already-migrated database raises "duplicate column
+        # name", the expected harmless case — same pattern as
+        # `gateway.dead_models`' probe column and the Ledger's `generation`.
+        try:
+            self._conn.execute(
+                "ALTER TABLE path_leases ADD COLUMN owner_pid INTEGER NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError:
+            pass
         self._conn.commit()
 
     def close(self) -> None:
@@ -127,14 +143,16 @@ class LeaseStore:
             acquired_at=r["acquired_at"],
             expires_at=r["expires_at"],
             released_at=r["released_at"],
+            owner_pid=r["owner_pid"] if "owner_pid" in r.keys() else 0,
         )
 
     def _insert(self, lease: Lease) -> None:
         with self._conn:
             self._conn.execute(
                 "INSERT INTO path_leases"
-                " (id, task_id, repo_id, path_pattern, lease_type, acquired_at, expires_at, released_at)"
-                " VALUES (?,?,?,?,?,?,?,?)",
+                " (id, task_id, repo_id, path_pattern, lease_type, acquired_at,"
+                "  expires_at, released_at, owner_pid)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     lease.id,
                     lease.task_id,
@@ -144,6 +162,7 @@ class LeaseStore:
                     lease.acquired_at,
                     lease.expires_at,
                     lease.released_at,
+                    lease.owner_pid,
                 ),
             )
 
@@ -227,7 +246,29 @@ class LeaseStore:
 
             blockers = [lease for lease in self.conflicts(repo_id, path_pattern, lease_type)
                         if lease.task_id != task_id]
-            if blockers:
+            # Owner liveness: a blocker whose recording process is provably
+            # dead cannot release its lease and cannot be mid-write either —
+            # waiting out its TTL is pure wall-clock loss (observed live: a
+            # crash-killed run's leases deferred every later job on the same
+            # state dir for the full 600s budget window). Reap it now.
+            # Conservative by construction: owner_pid 0 (pre-migration row)
+            # and the current pid never reap, and a recycled pid reads as
+            # alive — the failure mode is "waits for TTL", never "two live
+            # owners". `psutil` is already a hard dependency.
+            live_blockers = []
+            for lease in blockers:
+                if (
+                    lease.owner_pid
+                    and lease.owner_pid != os.getpid()
+                    and not psutil.pid_exists(lease.owner_pid)
+                ):
+                    self._conn.execute(
+                        "UPDATE path_leases SET released_at = ? WHERE id = ? AND released_at IS NULL",
+                        (time.time(), lease.id),
+                    )
+                    continue
+                live_blockers.append(lease)
+            if live_blockers:
                 return None
 
             at = time.time()
@@ -238,6 +279,7 @@ class LeaseStore:
                 lease_type=lease_type,
                 acquired_at=at,
                 expires_at=at + ttl_seconds,
+                owner_pid=os.getpid(),
             )
             self._insert(lease)
             return lease
