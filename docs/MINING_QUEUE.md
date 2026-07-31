@@ -37,6 +37,54 @@ justified" is done.
 | 15 | `assafelovic/gpt-researcher` | research pipeline; multi-source retrieval | queued |
 | 16 | `decolua/9router` | **already in `vendor/9router`** — confirm it is the same project, then mine it properly rather than re-cloning | queued |
 | 17 | `ruvnet/ruflo` | multi-agent swarm harness, 100+ agent definitions | queued |
+| 18 | `HKUDS/ClawTeam` | | queued |
+| 19 | `aiming-lab/AutoResearchClaw` | | queued |
+| 20 | `MervinPraison/PraisonAI` | | queued |
+| 21 | `Significant-Gravitas/AutoGPT` | | queued |
+| 22 | `f/prompts.chat` | prompt library | queued |
+| 23 | `langflow-ai/langflow` | | queued |
+| 24 | `JuliusBrussee/caveman` | token compression | queued |
+| 25 | `langgenius/dify` | | queued |
+| 26 | `x1xhlol/system-prompts-and-models-of-ai-tools` | prompt archaeology | queued |
+| 27 | `msitarzewski/agency-agents` | | queued |
+| 28 | `Comfy-Org/ComfyUI` | | queued |
+| 29 | `nextlevelbuilder/ui-ux-pro-max-skill` | dashboard design | queued |
+| 30 | `punkpeye/awesome-mcp-servers` | MCP index | queued |
+| 31 | `PaddlePaddle/PaddleOCR` | | queued |
+| 32 | `CursorTouch/Windows-MCP` | | queued |
+| 33 | `infiniflow/ragflow` | | queued |
+| 34 | `unclecode/crawl4ai` | **REQUESTED AS A DEPENDENCY, not just source** | building now |
+| 35 | `D4Vinci/Scrapling` | crawler #2 | building now |
+| 36 | `apify/crawlee` | crawler #3 (Node) | building now |
+| 37 | `iplocate/free-proxy-list` | free proxy source | building now |
+| 38 | `jhao104/proxy_pool` | proxy pool | building now |
+| 39 | `CloakHQ/CloakBrowser` | | queued |
+| 40 | `CloakHQ/CloakBrowser-Manager` | | queued |
+| 41 | `Johell1NS/browser-search` | | queued |
+| 42 | `colbymchenry/codegraph` | **install-and-use, not port** | queued |
+| 43 | `CodeGraphContext/CodeGraphContext` | **install-and-use, not port** | queued |
+
+## Use directly vs port
+
+Not every repo should become ForgeOS source. Three outcomes:
+
+- **DEPENDENCY** — installed and driven through an adapter, optional so a
+  missing install degrades rather than breaks. crawl4ai, Scrapling, crawlee,
+  CodeGraph belong here: they are maintained projects doing a job well, and
+  vendoring a snapshot of them buys a fork to maintain and nothing else.
+- **PORT** — a self-contained mechanism copied in with tests, because it is
+  small, has no runtime we want, or must obey our gates.
+- **SKIP** — with a reason.
+
+## Credentials — hard line
+
+Proxy credentials, API keys and account logins are read from ENVIRONMENT
+VARIABLES the operator sets. They are never copied into this repo, never
+written to config committed here, never logged, and never echoed into a
+receipt. The proxy layer below follows `gateway/keyring.py`: the record type
+structurally cannot hold a secret value, and a test asserts a known secret
+cannot appear in any rendered output.
+
 
 ### Note on #9, openai-oauth
 
