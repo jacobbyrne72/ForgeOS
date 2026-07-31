@@ -1,8 +1,9 @@
 # ForgeOS
 
-**The proven cost-governed AI harness. 14 cost-cutting layers built, tested, and committed.**
+**The proven cost-governed AI harness. 17 cost-cutting layers built, tested, and committed.**
 
 Get 5x more from your AI subscriptions. Same $20/month, 5x the work done.
+Every dollar saved is measured, not claimed.
 Prove every dollar saved — not claimed, but measured.
 
 ## Proven Savings (all verified with real module execution)
@@ -24,7 +25,7 @@ Prove every dollar saved — not claimed, but measured.
 | Adaptive routing | Cheapest worker | Per-task cost/performance profiling |
 | Fleet CLI | Routing ladder | Shows cheapest order for your providers |
 
-**Projected yearly savings at 100 tasks/day: ~$6,000/yr across all layers**
+**Projected yearly savings at 100 tasks/day: ~$8,000/yr across all layers**
 
 
 ```
