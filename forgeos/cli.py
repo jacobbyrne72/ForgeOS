@@ -408,6 +408,7 @@ def main() -> int:
     p_guard = sub.add_parser("guard", help="Check cost guard decisions")
     p_guard.add_argument("--guard-budget", type=float, default=1.0, dest="guard_budget")
     sub.add_parser("track", help="Show recorded cost savings")
+    sub.add_parser("efficiency", help="Show token efficiency metrics")
     p_audit.add_argument("--dir", default=".", dest="audit_dir")
     args = parser.parse_args()
     if not args.command:
@@ -440,6 +441,7 @@ def main() -> int:
         "guard": cmd_guard,
         "forecast": cmd_forecast,
         "efficiency": cmd_efficiency,
+        "dashboard": cmd_dashboard,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -655,12 +657,90 @@ def cmd_schedule(args):
     return 0
 
 
+def cmd_dashboard(args):
+    from forgeos.cost_audit import CostAuditor
+    from forgeos.cost_router import CostRouter
+    from forgeos.cost_scheduler import CostScheduler
+    from forgeos.cost_guard import CostGuard
+    from forgeos.cost_forecast import CostForecast
+    from forgeos.cost_efficiency import CostEfficiency
+    from forgeos.cost_tracker import CostTracker
+    print("=" * 56)
+    print("  FORGEOS COST DASHBOARD")
+    print("=" * 56)
+    print()
+
+    # 1. Tracker summary
+    tracker = CostTracker()
+    total = tracker.total_saved()
+    print("  SAVINGS TRACKER")
+    print("    Total events:", total["total_events"])
+    print("    Total saved: $" + str(total["total_usd"]))
+    print("    Tokens saved:", total["total_tokens"])
+    proj = tracker.monthly_projection()
+    print("    Monthly projection: $" + str(proj["monthly_usd"]))
+    print("    Yearly projection: $" + str(proj["yearly_usd"]))
+    print()
+
+    # 2. By task type
+    by_type = tracker.by_task_type()
+    if by_type:
+        print("  BY TASK TYPE")
+        for bt in by_type:
+            print("    " + bt["task_type"] + ": $" + str(bt["total_usd"]) + " (" + str(bt["count"]) + " events)")
+        print()
+
+    # 3. Cost auditor
+    auditor = CostAuditor()
+    audit = auditor.audit_directory()
+    print("  COST AUDIT")
+    print("    Files scanned:", audit["files_audited"])
+    print("    Issues found:", audit["total_issues"])
+    print("    Potential savings: $" + str(audit["total_potential_savings_usd"]))
+    print()
+
+    # 4. Guard status
+    guard = CostGuard(budget_usd=10.0)
+    print("  BUDGET GUARD")
+    print("    Budget: $" + str(guard.budget_usd))
+    print("    Breaches:", guard.breaches)
+    print()
+
+    # 5. Efficiency
+    eff = CostEfficiency()
+    print("  EFFICIENCY")
+    print("    Track this command for ongoing metrics")
+    print()
+
+    # 6. Router
+    router = CostRouter()
+    print("  ROUTING RULES")
+    rules = {
+        "format": "local",
+        "lint": "local",
+        "summarize": "cheap_model",
+        "code_gen": "full_model",
+        "debug": "full_model",
+        "review": "full_model",
+        "security_scan": "full_model",
+    }
+    for task, route in rules.items():
+        print("    " + task + " -> " + route)
+    print()
+    print("=" * 56)
+    print("  v" + __import__("forgeos").__version__)
+    print("=" * 56)
+    return 0
+
+
 def cmd_efficiency(args):
     from forgeos.cost_efficiency import CostEfficiency
     e = CostEfficiency()
     # Demo records
-    for _ in range(10): e.record_output("code_gen", 0.9, 200)
-    for _ in range(5): e.record_output("review", 0.95, 600)
+    for _ in range(10):
+        e.record_output("code_gen", 0.9, 200)
+    for _ in range(5):
+        e.record_output("review", 0.95, 600)
     r = e.efficiency_report()
     print("=== Cost Efficiency ===")
     print("Overall tokens per dollar:", r["overall_tokens_per_dollar"])
