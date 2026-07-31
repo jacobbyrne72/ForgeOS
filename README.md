@@ -1,6 +1,6 @@
 # ForgeOS
 
-**The proven cost-governed AI harness. 17 cost-cutting layers built, tested, and committed.**
+**The proven cost-governed AI harness. 25 cost-cutting layers built, tested, and committed.**
 
 Get 5x more from your AI subscriptions. Same $20/month, 5x the work done.
 Every dollar saved is measured, not claimed.
