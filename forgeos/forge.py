@@ -63,10 +63,57 @@ from .economy.reducer import reduce_generic, reduce_pytest
 from .events import EventLog, EventType
 from .leases import LeaseStore
 from .ledger import Ledger
-from .registry import CostTier, Registry, default_registry
+from .registry import Adapter, CostTier, Registry, WorkerProfile, default_registry
 from .settings import Settings
 
 DEFAULT_HOME = Path.home() / ".forgeos"
+
+# Vendor/model substrings this fleet has actually used, mapped to the provider
+# family the self-preference literature cares about (Panickssery et al.,
+# NeurIPS 2024, arXiv 2404.13076: LLM evaluators recognize and favor their own
+# generations) — same underlying model vendor, not merely a different worker
+# id. Checked in order, so a more specific hint never loses to a coincidental
+# substring match.
+_FAMILY_HINTS: tuple[tuple[str, str], ...] = (
+    ("claude", "anthropic"),
+    ("anthropic", "anthropic"),
+    ("codex", "openai"),
+    ("gpt", "openai"),
+    ("openai", "openai"),
+    ("gemini", "google"),
+    ("deepseek", "deepseek"),
+    ("qwen", "alibaba"),
+    ("llama", "meta"),
+    ("mistral", "mistralai"),
+)
+
+
+def _family_of(profile: WorkerProfile | None) -> str:
+    """Normalize a worker profile to a provider family for the merge gate's
+    same-family reviewer WARN.
+
+    `vendor` ("which backing CLI actually runs it") is the strongest signal
+    and is checked first. `model` is the fallback: a gateway/free-tier profile
+    routes by model string rather than a fixed CLI vendor, so vendor alone
+    would miss it. An adapter that never leaves this machine (Ollama, a local
+    command) falls back to "local" — a local model reviewing its own local
+    output is the same self-preference risk in miniature, not a different
+    question. Anything left over is "" rather than a guess: an unrecognized
+    profile must never register as matching another unrecognized one, or two
+    unrelated unknown workers would silently trip the WARN on no evidence.
+
+    No `family` field was added to `WorkerProfile` for this — every case above
+    is already derivable from fields the profile already has.
+    """
+    if profile is None:
+        return ""
+    for haystack in (profile.vendor.lower(), profile.model.lower()):
+        for needle, family in _FAMILY_HINTS:
+            if needle in haystack:
+                return family
+    if profile.adapter in (Adapter.OLLAMA, Adapter.LOCAL_COMMAND):
+        return "local"
+    return ""
 
 
 def _looks_like_pytest(output: str) -> bool:
@@ -109,6 +156,7 @@ class TaskOutcome(BaseModel):
     tier: int | None = None
     reason: str = ""
     merge_reasons: list[str] = Field(default_factory=list)
+    merge_warnings: list[str] = Field(default_factory=list)
     usd_micros: int = 0
     attempts: int = 0
 
@@ -489,6 +537,7 @@ class Forge:
         tier_used: int | None = None
         worker_id = ""
         merge_reasons: list[str] = []
+        merge_warnings: list[str] = []
         # Escalation state carried across attempts. Set only on a classified
         # MODEL failure; consumed (and cleared) at the next attempt's routing
         # step so one failure buys at most one rung, never a ratchet.
@@ -784,6 +833,9 @@ class Forge:
                             )
                     review_verdict = "pass" if rev.state is TaskState.DONE else "fail"
 
+            implementer_profile = self.registry.get(worker_id)
+            reviewer_profile = self.registry.get(reviewer_worker) if reviewer_worker else None
+
             verdict = self.merge_gate.evaluate(
                 gates=gates,
                 tests_passed=result.tests.passed if result.tests else 0,
@@ -791,8 +843,21 @@ class Forge:
                 evidence=evidence, commands_run=result.commands_run,
                 reviewer_verdict=review_verdict,
                 reviewer_worker=reviewer_worker, implementer_worker=worker_id,
+                reviewer_family=_family_of(reviewer_profile),
+                implementer_family=_family_of(implementer_profile),
+                # `result.files_touched` is passed as-is — never coerced to `None`
+                # on empty. For the real production path, `BridgedExecutionResult`
+                # (adapters/executor.py) builds this list by folding every
+                # FILE_DIFF event the session actually emitted; an empty list
+                # there means the session provably touched no files, the same
+                # confirmed-clean signal `MergeGate.evaluate`'s `files_touched=[]`
+                # already means (see verify.py) — not "we don't know". Coercing it
+                # to None would throw away real, checked information the bridge
+                # went to the trouble of collecting.
+                files_touched=result.files_touched,
             )
             merge_reasons = verdict.reasons
+            merge_warnings = verdict.warnings
 
             # The merge gate is the only thing that may declare a task accepted.
             # The scheduler emits TASK_COMPLETED when a worker claims success;
@@ -846,14 +911,15 @@ class Forge:
                 task_id=spec.id, subject=spec.subject, accepted=verdict.allowed,
                 worker_id=worker_id, tier=tier_used,
                 reason="merged" if verdict.allowed else "merge gate refused",
-                merge_reasons=merge_reasons, attempts=attempts,
+                merge_reasons=merge_reasons, merge_warnings=merge_warnings, attempts=attempts,
                 usd_micros=self.ledger.task_spend_micros(spec.id),
             )
 
         return TaskOutcome(task_id=spec.id, subject=spec.subject, accepted=False,
                            worker_id=worker_id, tier=tier_used,
                            reason=f"exhausted {self.max_attempts} attempts",
-                           merge_reasons=merge_reasons, attempts=attempts,
+                           merge_reasons=merge_reasons, merge_warnings=merge_warnings,
+                           attempts=attempts,
                            usd_micros=self.ledger.task_spend_micros(spec.id))
 
     def _halted(self, job_id: str) -> bool:

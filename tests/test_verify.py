@@ -17,6 +17,7 @@ from forgeos.core.verify import (
     GateResult,
     GateStatus,
     MergeGate,
+    detect_test_tampering,
     next_gate,
     run_gitleaks,
     run_lint,
@@ -407,3 +408,151 @@ def test_missing_reviewer_identity_is_refused_not_skipped():
 def test_a_genuinely_independent_clean_change_still_merges():
     """The gate must not become unpassable — that would just get it bypassed."""
     assert MergeGate().evaluate(gates=[_ok()], **GREEN).allowed
+
+
+# ------------------------------------------------- test-tampering detection
+# Per SpecBench and the RLVR reward-hacking survey (docs/research/verification-
+# economy.md): an agent under a pass/fail loop can make tests go green by
+# editing the test instead of the code. Both tiers of the heuristic, and the
+# wiring into MergeGate, are covered here.
+
+
+def test_detect_test_tampering_flags_a_named_pair():
+    reasons = detect_test_tampering(["tests/test_verify.py", "forgeos/core/verify.py"])
+    assert len(reasons) == 1
+    assert "test-tampering:" in reasons[0]
+    assert "tests/test_verify.py" in reasons[0] and "forgeos/core/verify.py" in reasons[0]
+
+
+def test_detect_test_tampering_matches_the_suffix_convention_too():
+    reasons = detect_test_tampering(["verify_test.py", "verify.py"])
+    assert len(reasons) == 1
+    assert "test-tampering:" in reasons[0]
+
+
+def test_detect_test_tampering_flags_the_general_case_as_a_warn():
+    """No name match, but a test and an unrelated source moved together."""
+    reasons = detect_test_tampering(["tests/test_verify.py", "forgeos/core/router.py"])
+    assert len(reasons) == 1
+    assert "WARN" in reasons[0]
+
+
+def test_detect_test_tampering_reports_both_tiers_separately():
+    reasons = detect_test_tampering(
+        ["tests/test_verify.py", "forgeos/core/verify.py",  # named pair
+         "tests/test_router.py"]  # no matching source touched -> general case
+    )
+    assert len(reasons) == 2
+    assert any("test-tampering:" in r and "WARN" not in r for r in reasons)
+    assert any("WARN" in r for r in reasons)
+
+
+def test_detect_test_tampering_is_silent_when_only_the_test_changed():
+    assert detect_test_tampering(["tests/test_verify.py"]) == []
+
+
+def test_detect_test_tampering_is_silent_when_only_source_changed():
+    assert detect_test_tampering(["forgeos/core/verify.py"]) == []
+
+
+def test_detect_test_tampering_is_silent_on_an_empty_changeset():
+    assert detect_test_tampering([]) == []
+
+
+def test_detect_test_tampering_ignores_non_python_source():
+    """A test touched alongside a doc or config file is not a tampering signal."""
+    assert detect_test_tampering(["tests/test_verify.py", "README.md"]) == []
+
+
+def test_detect_test_tampering_handles_windows_separators():
+    reasons = detect_test_tampering(["tests\\test_verify.py", "forgeos\\core\\verify.py"])
+    assert len(reasons) == 1
+    assert "test-tampering:" in reasons[0]
+
+
+def test_merge_gate_without_files_touched_is_backward_compatible():
+    """None (the default) is how every pre-existing caller behaves — this must
+    not start blocking forge.py's own call site or any of the 30+ tests above
+    that never mention files_touched at all."""
+    assert MergeGate().evaluate(gates=[_ok()], **GREEN).allowed
+
+
+def test_merge_gate_blocks_a_named_test_source_pair():
+    args = {**GREEN, "files_touched": ["tests/test_verify.py", "forgeos/core/verify.py"]}
+    v = MergeGate().evaluate(gates=[_ok()], **args)
+    assert not v.allowed
+    assert any("test-tampering:" in r for r in v.reasons)
+
+
+def test_merge_gate_blocks_the_general_case_too():
+    args = {**GREEN, "files_touched": ["tests/test_verify.py", "forgeos/core/router.py"]}
+    v = MergeGate().evaluate(gates=[_ok()], **args)
+    assert not v.allowed
+    assert any("WARN" in r for r in v.reasons)
+
+
+def test_tamper_reviewed_unblocks_but_still_surfaces_as_a_warning():
+    """A human acknowledgment is an override, not a silencer — the coincidence
+    is still worth recording even once someone has signed off on it."""
+    args = {
+        **GREEN,
+        "files_touched": ["tests/test_verify.py", "forgeos/core/verify.py"],
+        "tamper_reviewed": True,
+    }
+    v = MergeGate().evaluate(gates=[_ok()], **args)
+    assert v.allowed, v.reasons
+    assert any("test-tampering:" in w for w in v.warnings)
+    assert any("tamper_reviewed=True" in w for w in v.warnings)
+
+
+def test_files_touched_empty_list_is_honoured_not_skipped():
+    """An explicit empty list means the caller checked and found nothing — that
+    is different from not being able to check at all (None), and it must not
+    be treated as a tampering signal either way."""
+    args = {**GREEN, "files_touched": []}
+    assert MergeGate().evaluate(gates=[_ok()], **args).allowed
+
+
+def test_files_touched_with_no_tampering_still_merges():
+    args = {**GREEN, "files_touched": ["forgeos/core/verify.py", "forgeos/core/router.py"]}
+    assert MergeGate().evaluate(gates=[_ok()], **args).allowed
+
+
+# --------------------------------------------- reviewer provider-family WARN
+# Panickssery et al. (NeurIPS 2024, arXiv 2404.13076): LLM evaluators recognize
+# and favor their own generations. A different worker id from the same model
+# family is weaker evidence of independence than it looks.
+
+
+def test_same_reviewer_family_warns_but_does_not_block():
+    args = {**GREEN, "reviewer_family": "anthropic", "implementer_family": "anthropic"}
+    v = MergeGate().evaluate(gates=[_ok()], **args)
+    assert v.allowed, v.reasons
+    assert any("anthropic" in w and "self-preference" in w for w in v.warnings)
+
+
+def test_different_reviewer_family_has_no_warning():
+    args = {**GREEN, "reviewer_family": "anthropic", "implementer_family": "openai"}
+    v = MergeGate().evaluate(gates=[_ok()], **args)
+    assert v.allowed
+    assert v.warnings == []
+
+
+def test_reviewer_family_omitted_by_default_has_no_warning():
+    """Backward compatible: no existing caller passes these, and their absence
+    must not be treated as a match."""
+    v = MergeGate().evaluate(gates=[_ok()], **GREEN)
+    assert v.warnings == []
+
+
+def test_reviewer_family_warning_is_independent_of_the_worker_id_block():
+    """Same-family review is a WARN even when worker-id independence already
+    passed cleanly — the two checks answer different questions."""
+    args = {
+        **GREEN,
+        "reviewer_worker": "reviewer.a", "implementer_worker": "coder.b",
+        "reviewer_family": "anthropic", "implementer_family": "anthropic",
+    }
+    v = MergeGate().evaluate(gates=[_ok()], **args)
+    assert v.allowed
+    assert v.warnings != []

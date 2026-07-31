@@ -6,7 +6,7 @@ similarly window-capped. So the currency to conserve is *quota headroom*, and th
 most valuable thing this module does is know when a window reopens so parked work
 resumes the moment it can rather than idling or paying API rates in the meantime.
 
-Two deliberate design positions:
+Three deliberate design positions:
 
 1. **Reset times are read, never guessed.** They come from what the provider itself
    reports (its `/usage` panel, or the reset time in its rate-limit message). When
@@ -19,6 +19,16 @@ Two deliberate design positions:
    could burn it on a trivial 3am task. `auto_consume_banked` exists for operators
    who want that, gated by a value threshold — but the default is to surface the
    option and let a human decide.
+
+3. **Rotation branches on the typed signal, not on "it failed."** Three independent
+   shipped tools (Claudexor, teamclaude, claude-swap) converged on the same rule:
+   a confirmed vendor exhaustion is the only signal that justifies looking for a
+   different seat (`should_rotate`); an ordinary rate limit just pauses that exact
+   seat for its `retry_after` window, because the seat itself is fine; a network
+   error touches nothing, because it says nothing about quota at all — recording it
+   would make a flaky connection look like a dead seat. Quota is tracked per
+   (provider, model) so an exhausted Fable window on one account doesn't block
+   Opus/Sonnet on that same account.
 """
 
 from __future__ import annotations
@@ -49,8 +59,29 @@ class QuotaSource(str, Enum):
     ESTIMATED = "estimated"  # inferred — must never be presented as a fact
 
 
+class ExhaustionSignal(str, Enum):
+    """What a worker call actually told us. The rotation rule branches on this,
+    not on a bare success/failure, because conflating them is the exact bug that
+    burns a seat rotation on a problem rotating won't fix."""
+
+    OK = "ok"
+    VENDOR_EXHAUSTED = "vendor_exhausted"  # quota gone until reset — rotate
+    RATE_LIMITED = "rate_limited"          # ordinary 429 — pause this seat, don't rotate
+    NETWORK_ERROR = "network_error"        # transient — neither rotate nor pause
+
+
+def should_rotate(signal: ExhaustionSignal) -> bool:
+    """Whether this signal alone justifies looking for a different seat.
+
+    Only a confirmed vendor exhaustion does. A rate limit self-heals on the same
+    seat it hit; a network error says nothing about the seat's quota at all.
+    """
+    return signal is ExhaustionSignal.VENDOR_EXHAUSTED
+
+
 class QuotaState(BaseModel):
     provider: str
+    model: str = ""  # "" = provider-wide, the key every call site used before
     window: QuotaWindow = QuotaWindow.UNKNOWN
     pct_remaining: float | None = None
     resets_at: float | None = None
@@ -103,6 +134,20 @@ class BankedResetOffer(BaseModel):
     seconds_until_natural_reset: float | None
     command: str
     recommendation: str
+
+
+class SeatChoice(BaseModel):
+    """What `QuotaTracker.select_seat` decided for one model across candidate seats.
+
+    `ready=False` with `seat=None` is the honest "nothing is usable right now"
+    answer — it never names a winner it can't back up. `wait_seconds` is filled in
+    only when a real reset time is known for at least one blocked candidate.
+    """
+
+    model: str
+    seat: str | None = None
+    ready: bool = False
+    wait_seconds: float | None = None
 
 
 # Parsed from what the provider actually printed. NAMED groups on purpose — the
@@ -184,14 +229,24 @@ class QuotaTracker:
         self._probe_attempts: dict[str, int] = {}
         self.banked_consumed: list[tuple[str, float]] = []
 
+    @staticmethod
+    def _key(provider: str, model: str) -> str:
+        # model="" collapses to the bare provider string — exactly the key every
+        # call site used before per-model tracking existed, so nothing that never
+        # passes `model` can observe a difference.
+        return provider if not model else f"{provider}::{model}"
+
     # ------------------------------------------------------------- observe
 
-    def record_report(self, provider: str, text: str, *, at: float | None = None) -> QuotaState:
+    def record_report(
+        self, provider: str, text: str, *, model: str = "", at: float | None = None
+    ) -> QuotaState:
         """Ingest a provider's own usage output — the authoritative path."""
         at = at or now()
         facts = parse_usage_report(text, at=at)
         state = QuotaState(
             provider=provider,
+            model=model,
             observed_at=at,
             # Reported only if the text actually carried a reset time or a percentage.
             source=(
@@ -202,15 +257,17 @@ class QuotaTracker:
             detail=text.strip()[:300],
             **{k: v for k, v in facts.items() if k in QuotaState.model_fields},
         )
-        self._states[provider] = state
+        key = self._key(provider, model)
+        self._states[key] = state
         if not state.exhausted:
-            self._probe_attempts.pop(provider, None)
+            self._probe_attempts.pop(key, None)
         return state
 
     def record_exhaustion(
         self,
         provider: str,
         *,
+        model: str = "",
         resets_at: float | None = None,
         window: QuotaWindow = QuotaWindow.UNKNOWN,
         banked_resets: int = 0,
@@ -219,6 +276,7 @@ class QuotaTracker:
     ) -> QuotaState:
         state = QuotaState(
             provider=provider,
+            model=model,
             window=window,
             exhausted=True,
             resets_at=resets_at,
@@ -228,14 +286,93 @@ class QuotaTracker:
             observed_at=at or now(),
             detail=detail,
         )
-        self._states[provider] = state
+        self._states[self._key(provider, model)] = state
         return state
 
-    def state(self, provider: str) -> QuotaState | None:
-        return self._states.get(provider)
+    def record_rate_limit(
+        self,
+        provider: str,
+        retry_after: float,
+        *,
+        model: str = "",
+        at: float | None = None,
+        detail: str = "",
+    ) -> QuotaState:
+        """An ordinary 429: pause this exact (provider, model) seat for
+        `retry_after` seconds. This is never a rotation signal — the seat itself
+        is fine, it just needs to wait out its own window — so `should_rotate`
+        returns False for `RATE_LIMITED` even though this makes `available()`
+        False just like a vendor exhaustion would.
+        """
+        at = at or now()
+        state = QuotaState(
+            provider=provider,
+            model=model,
+            exhausted=True,
+            resets_at=at + retry_after,
+            pct_remaining=0.0,
+            source=QuotaSource.REPORTED,
+            observed_at=at,
+            detail=detail or f"rate limited; retry after {retry_after:.0f}s",
+        )
+        self._states[self._key(provider, model)] = state
+        return state
 
-    def available(self, provider: str, at: float | None = None) -> bool:
-        st = self._states.get(provider)
+    def record_ok(self, provider: str, *, model: str = "", at: float | None = None) -> QuotaState:
+        """A call succeeded: clear whatever exhaustion or pause this (provider,
+        model) seat was carrying. Does not fabricate a headroom figure — absence
+        of a usage report still means we don't know pct_remaining, only that the
+        seat answered.
+        """
+        at = at or now()
+        state = QuotaState(provider=provider, model=model, observed_at=at)
+        key = self._key(provider, model)
+        self._states[key] = state
+        self._probe_attempts.pop(key, None)
+        return state
+
+    def record_signal(
+        self,
+        provider: str,
+        signal: ExhaustionSignal,
+        *,
+        model: str = "",
+        resets_at: float | None = None,
+        retry_after: float | None = None,
+        window: QuotaWindow = QuotaWindow.UNKNOWN,
+        banked_resets: int = 0,
+        at: float | None = None,
+        detail: str = "",
+    ) -> QuotaState | None:
+        """Apply one typed call outcome to (provider, model) — the single entry
+        point the three-way rotation rule lives behind (see the module docstring).
+        """
+        at = at or now()
+        if signal is ExhaustionSignal.NETWORK_ERROR:
+            # Says nothing about quota. Recording it would make a flaky
+            # connection look like a dead seat, so this is a deliberate no-op.
+            return self.state(provider, model=model)
+        if signal is ExhaustionSignal.RATE_LIMITED:
+            if retry_after is None:
+                raise ValueError("RATE_LIMITED requires retry_after")
+            return self.record_rate_limit(provider, retry_after, model=model, at=at, detail=detail)
+        if signal is ExhaustionSignal.VENDOR_EXHAUSTED:
+            return self.record_exhaustion(
+                provider,
+                model=model,
+                resets_at=resets_at,
+                window=window,
+                banked_resets=banked_resets,
+                at=at,
+                detail=detail,
+            )
+        return self.record_ok(provider, model=model, at=at)
+
+    def state(self, provider: str, *, model: str = "") -> QuotaState | None:
+        return self._states.get(self._key(provider, model))
+
+    def available(self, provider: str, at: float | None = None, *, model: str = "") -> bool:
+        st = self._states.get(self._key(provider, model))
         return True if st is None else st.available(at)
 
     def available_providers(self, candidates: list[str], at: float | None = None) -> list[str]:
@@ -243,7 +380,7 @@ class QuotaTracker:
 
     # --------------------------------------------------------------- probe
 
-    def next_probe_at(self, provider: str, at: float | None = None) -> float | None:
+    def next_probe_at(self, provider: str, at: float | None = None, *, model: str = "") -> float | None:
         """When to next check a closed window.
 
         Clusters just after a reported reset rather than polling throughout. Each
@@ -251,7 +388,8 @@ class QuotaTracker:
         "constantly" spends the resource it is trying to protect.
         """
         at = at or now()
-        st = self._states.get(provider)
+        key = self._key(provider, model)
+        st = self._states.get(key)
         if st is None or not st.exhausted:
             return None
 
@@ -260,13 +398,50 @@ class QuotaTracker:
                 return at  # due now
             return st.resets_at + CONFIRM_AFTER_RESET_SECONDS
 
-        n = self._probe_attempts.get(provider, 0)
+        n = self._probe_attempts.get(key, 0)
         delay = PROBE_BACKOFF_SECONDS[min(n, len(PROBE_BACKOFF_SECONDS) - 1)]
         return at + delay
 
-    def record_probe(self, provider: str) -> int:
-        self._probe_attempts[provider] = self._probe_attempts.get(provider, 0) + 1
-        return self._probe_attempts[provider]
+    def record_probe(self, provider: str, *, model: str = "") -> int:
+        key = self._key(provider, model)
+        self._probe_attempts[key] = self._probe_attempts.get(key, 0) + 1
+        return self._probe_attempts[key]
+
+    # ------------------------------------------------------------ rotation
+
+    def select_seat(self, model: str, candidates: list[str], *, at: float | None = None) -> SeatChoice:
+        """Choose which seat should take the next call for `model`.
+
+        An available seat always wins outright. Among several, prefer the one
+        whose current window closes soonest — spending a seat that is about to
+        reset anyway preserves the other seats' remaining headroom for later.
+        If every candidate is currently blocked (vendor-exhausted or
+        rate-limited — `select_seat` doesn't need to know which), this does not
+        invent a winner: it reports that nothing is ready and, only when a real
+        reset time is known for at least one candidate, how long the actual
+        wait is.
+        """
+        at = at or now()
+        if not candidates:
+            return SeatChoice(model=model)
+
+        states = {c: self._states.get(self._key(c, model)) for c in candidates}
+        available = [c for c in candidates if states[c] is None or states[c].available(at)]
+
+        if available:
+            def soonest_reset(c: str) -> tuple[bool, float]:
+                st = states[c]
+                r = st.resets_at if st else None
+                return (r is None, r if r is not None else float("inf"))
+
+            return SeatChoice(model=model, seat=min(available, key=soonest_reset), ready=True)
+
+        waits = [
+            st.seconds_until_reset(at)
+            for st in states.values()
+            if st is not None and st.seconds_until_reset(at) is not None
+        ]
+        return SeatChoice(model=model, wait_seconds=min(waits) if waits else None)
 
     # ---------------------------------------------------------------- park
 
@@ -370,10 +545,13 @@ __all__ = [
     "BankedResetOffer",
     "CONFIRM_AFTER_RESET_SECONDS",
     "PROBE_BACKOFF_SECONDS",
+    "ExhaustionSignal",
     "ParkedJob",
     "QuotaSource",
     "QuotaState",
     "QuotaTracker",
     "QuotaWindow",
+    "SeatChoice",
     "parse_usage_report",
+    "should_rotate",
 ]

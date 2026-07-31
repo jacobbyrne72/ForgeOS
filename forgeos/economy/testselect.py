@@ -13,8 +13,8 @@ passing on the merits until the bug ships.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from enum import IntEnum
+from collections.abc import Iterable, Mapping
+from enum import Enum, IntEnum
 
 from pydantic import BaseModel, Field
 
@@ -222,4 +222,74 @@ def next_level(current: Level, passed: bool) -> Level | None:
     return Level(current + 1)
 
 
-__all__ = ["Level", "Selection", "TestGraph", "next_level"]
+# --------------------------------------------------------------- flake check
+
+
+class FlakeVerdict(str, Enum):
+    """How confidently a failing test can be attributed to the current diff.
+
+    Only LIKELY_FLAKY is a safe reason to skip an escalation, and it requires
+    positive evidence: a coverage record for this specific test showing zero
+    overlap with the changed lines. RELEVANT and UNKNOWN both default to
+    "treat it as real" — missing evidence must never read as evidence of
+    flakiness, or a genuine regression could ride a coverage gap straight past
+    the governor (the same "unavailable is not a pass" rule that makes an
+    unmapped change escalate in `TestGraph.select` rather than pass by
+    default).
+    """
+
+    RELEVANT = "relevant"
+    LIKELY_FLAKY = "likely_flaky"
+    UNKNOWN = "unknown"
+
+
+def classify_failure_relevance(
+    failed_test: str,
+    covered_lines_by_file: Mapping[str, set[int]] | None,
+    changed_lines_by_file: Mapping[str, set[int]],
+) -> FlakeVerdict:
+    """DeFlaker's core idea in one function: did this failing test execute any changed line?
+
+    `covered_lines_by_file` must be per-test coverage — the lines THIS test
+    ran, not the whole suite's aggregate coverage. Aggregate coverage would
+    make nearly every failure look RELEVANT regardless of what the failing
+    test itself touched, which defeats the point of the check. Wired to a
+    real run, this would come from coverage.py's dynamic contexts (run with
+    `--context=test-function`, then `CoverageData.lines(file, contexts=...)`
+    per failing test's context); `changed_lines_by_file` would come from
+    parsing a unified diff into added/modified line numbers per file (this
+    repo already does that shape of parsing for security scanning — see
+    `forgeos/security_diff.py`'s `DiffResult.lines_added`).
+
+    `covered_lines_by_file=None` (no coverage recorded for this test)
+    verdicts UNKNOWN, never LIKELY_FLAKY — an absent measurement is not the
+    positive "ran none of the changed code" evidence a skip-escalation
+    decision requires. `failed_test` itself is not read by the verdict logic
+    (the check is a pure line-intersection test); it is part of the signature
+    so a governor calling this once per currently-failing test id has a
+    matching identity to log or key its own per-test verdict map by, without
+    a second lookup back to the test that produced it.
+
+    Both mappings are keyed by file path; only slash direction is normalized
+    (matching `TestGraph`'s own `_norm`), so callers must supply both under
+    the same base (repo-relative paths recommended) or genuinely overlapping
+    lines will silently look disjoint.
+    """
+    if covered_lines_by_file is None:
+        return FlakeVerdict.UNKNOWN
+
+    changed = {_norm(f): lines for f, lines in changed_lines_by_file.items()}
+    for f, lines in covered_lines_by_file.items():
+        if set(lines) & changed.get(_norm(f), set()):
+            return FlakeVerdict.RELEVANT
+    return FlakeVerdict.LIKELY_FLAKY
+
+
+__all__ = [
+    "FlakeVerdict",
+    "Level",
+    "Selection",
+    "TestGraph",
+    "classify_failure_relevance",
+    "next_level",
+]

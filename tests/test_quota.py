@@ -12,11 +12,13 @@ import pytest
 from forgeos.core.quota import (
     CONFIRM_AFTER_RESET_SECONDS,
     PROBE_BACKOFF_SECONDS,
+    ExhaustionSignal,
     QuotaSource,
     QuotaState,
     QuotaTracker,
     QuotaWindow,
     parse_usage_report,
+    should_rotate,
 )
 
 T0 = 1_800_000_000.0
@@ -295,3 +297,123 @@ def test_quota_state_reports_time_remaining():
     assert st.seconds_until_reset(at=T0) == pytest.approx(90)
     assert st.seconds_until_reset(at=T0 + 200) == 0.0
     assert QuotaState(provider="x").seconds_until_reset(at=T0) is None
+
+
+# --------------------------------------------------------------- rotation rule
+
+
+def test_should_rotate_only_on_vendor_exhausted():
+    assert should_rotate(ExhaustionSignal.VENDOR_EXHAUSTED) is True
+    assert should_rotate(ExhaustionSignal.RATE_LIMITED) is False
+    assert should_rotate(ExhaustionSignal.NETWORK_ERROR) is False
+    assert should_rotate(ExhaustionSignal.OK) is False
+
+
+def test_record_signal_vendor_exhausted_blocks_until_its_reset():
+    q = QuotaTracker()
+    q.record_signal("codex", ExhaustionSignal.VENDOR_EXHAUSTED, resets_at=T0 + HOUR, at=T0)
+    assert q.available("codex", at=T0) is False
+    assert q.available("codex", at=T0 + HOUR) is True
+
+
+def test_record_signal_rate_limited_pauses_using_retry_after():
+    q = QuotaTracker()
+    q.record_signal("codex", ExhaustionSignal.RATE_LIMITED, retry_after=120, at=T0)
+    assert q.available("codex", at=T0) is False
+    assert q.available("codex", at=T0 + 119) is False
+    assert q.available("codex", at=T0 + 120) is True
+
+
+def test_record_signal_rate_limited_requires_retry_after():
+    q = QuotaTracker()
+    with pytest.raises(ValueError):
+        q.record_signal("codex", ExhaustionSignal.RATE_LIMITED, at=T0)
+
+
+def test_record_signal_network_error_leaves_a_healthy_seat_untouched():
+    """The seat is fine; the network isn't. Recording this must not make a
+    healthy seat look exhausted."""
+    q = QuotaTracker()
+    q.record_signal("codex", ExhaustionSignal.NETWORK_ERROR, at=T0)
+    assert q.available("codex", at=T0) is True
+    assert q.state("codex") is None
+
+
+def test_record_signal_network_error_does_not_clear_an_existing_exhaustion():
+    q = QuotaTracker()
+    q.record_exhaustion("codex", resets_at=T0 + HOUR, at=T0)
+    q.record_signal("codex", ExhaustionSignal.NETWORK_ERROR, at=T0 + 10)
+    assert q.available("codex", at=T0 + 10) is False
+
+
+def test_record_signal_ok_clears_a_prior_exhaustion():
+    q = QuotaTracker()
+    q.record_exhaustion("codex", resets_at=T0 + HOUR, at=T0)
+    q.record_signal("codex", ExhaustionSignal.OK, at=T0 + 10)
+    assert q.available("codex", at=T0 + 10) is True
+
+
+# ------------------------------------------------------- per (provider, model)
+
+
+def test_quota_is_tracked_per_model_not_just_per_provider():
+    """An exhausted Fable quota on an account must not block Opus/Sonnet on
+    that same account."""
+    q = QuotaTracker()
+    q.record_exhaustion("claude", model="fable", resets_at=T0 + HOUR, at=T0)
+    assert q.available("claude", at=T0, model="fable") is False
+    assert q.available("claude", at=T0, model="opus") is True
+
+
+def test_omitting_model_matches_the_legacy_no_model_key():
+    """Backward compatibility: calls that never pass `model` land on the same
+    key as before per-model tracking existed."""
+    q = QuotaTracker()
+    q.record_exhaustion("codex", resets_at=T0 + HOUR, at=T0)
+    assert q.available("codex", at=T0, model="") is False
+    assert q.state("codex").provider == q.state("codex", model="").provider
+
+
+# ------------------------------------------------------------------ select_seat
+
+
+def test_select_seat_picks_the_only_available_candidate():
+    q = QuotaTracker()
+    q.record_exhaustion("codex", model="gpt5", resets_at=T0 + HOUR, at=T0)
+    choice = q.select_seat("gpt5", ["codex", "claude"], at=T0)
+    assert choice.ready is True
+    assert choice.seat == "claude"
+
+
+def test_select_seat_prefers_the_seat_whose_window_resets_soonest():
+    """Spend the seat closest to its own reset first; save the others' headroom."""
+    q = QuotaTracker()
+    q.record_report("seat_a", "Weekly: 50% remaining, resets in 1h", at=T0)
+    q.record_report("seat_b", "Weekly: 50% remaining, resets in 5h", at=T0)
+    choice = q.select_seat("sonnet", ["seat_a", "seat_b"], at=T0)
+    assert choice.ready is True
+    assert choice.seat == "seat_a"
+
+
+def test_select_seat_reports_the_honest_wait_when_all_candidates_are_blocked():
+    q = QuotaTracker()
+    q.record_exhaustion("codex", model="gpt5", resets_at=T0 + HOUR, at=T0)
+    q.record_exhaustion("claude", model="gpt5", resets_at=T0 + 2 * HOUR, at=T0)
+    choice = q.select_seat("gpt5", ["codex", "claude"], at=T0)
+    assert choice.ready is False
+    assert choice.seat is None
+    assert choice.wait_seconds == pytest.approx(HOUR)
+
+
+def test_select_seat_does_not_guess_a_wait_when_no_reset_is_known():
+    q = QuotaTracker()
+    q.record_exhaustion("codex", model="gpt5", at=T0)  # no resets_at reported
+    choice = q.select_seat("gpt5", ["codex"], at=T0)
+    assert choice.ready is False
+    assert choice.wait_seconds is None
+
+
+def test_select_seat_with_no_candidates_is_not_ready():
+    choice = QuotaTracker().select_seat("gpt5", [], at=T0)
+    assert choice.ready is False
+    assert choice.seat is None

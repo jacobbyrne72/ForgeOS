@@ -23,15 +23,20 @@ mechanically instead of by review.
 from __future__ import annotations
 
 import hashlib
+import re
+from dataclasses import dataclass
 
+import tiktoken
 from pydantic import BaseModel, field_validator
 
 from forgeos.settings import Role
 
-# No tokenizer dependency here on purpose -- this module has no business
-# calling out to a provider just to size a string. ~4 chars/token is the
-# standard rough approximation for English text: good enough to size a
-# prefix for a sanity check, not to bill it.
+# ~4 chars/token is the standard rough approximation for English text --
+# good enough to size a prefix for the terse-prefix sanity check below, not
+# to bill it or to gate a hard per-provider cutoff. The cache floor further
+# down needs an exact count instead, which is what the tiktoken encoding is
+# for -- it reads a local encoding table, it never calls out to a live
+# provider.
 _CHARS_PER_TOKEN = 4
 
 
@@ -107,6 +112,130 @@ def build_prompt(prefix: StablePrefix, tail: str) -> Prompt:
     )
 
 
+# --------------------------------------------------- provider cache mechanics
+
+
+@dataclass(frozen=True)
+class ProviderCacheRules:
+    """One provider's real cache mechanics, as data.
+
+    Every field comes from a provider's own docs (see
+    docs/research/cost-reduction.md), not from guessing at what "should"
+    work. Branch on these fields, never on a `provider == "anthropic"`
+    string check scattered through call sites -- a rule that changes (a
+    raised floor, a new TTL tier) should mean editing one row here, not
+    hunting every place a provider name was compared.
+    """
+
+    provider: str
+    max_cache_breakpoints: int | None  # None: caching is automatic, no explicit-marker limit applies
+    min_cacheable_tokens: int
+    default_ttl_seconds: int
+    extended_ttl_seconds: int | None  # None: no opt-in longer TTL exists
+    requires_byte_identical_prefix: bool
+
+
+PROVIDER_CACHE_RULES: dict[str, ProviderCacheRules] = {
+    "anthropic": ProviderCacheRules(
+        provider="anthropic",
+        max_cache_breakpoints=4,
+        min_cacheable_tokens=1024,
+        default_ttl_seconds=300,
+        extended_ttl_seconds=3600,
+        requires_byte_identical_prefix=True,
+    ),
+    "openai": ProviderCacheRules(
+        provider="openai",
+        max_cache_breakpoints=None,
+        min_cacheable_tokens=1024,
+        default_ttl_seconds=300,
+        extended_ttl_seconds=None,
+        requires_byte_identical_prefix=True,
+    ),
+}
+
+# Reference encoding for the cache-floor check only -- not a billing count.
+# Neither provider's real tokeniser is what matters here: Anthropic's isn't
+# exposed through tiktoken at all, and OpenAI's varies by model. cl100k_base
+# is a stable, local encoding close enough to gate a hard threshold like "at
+# least 1024 tokens" without depending on a live provider call.
+_CACHE_FLOOR_ENCODING = tiktoken.get_encoding("cl100k_base")
+
+# 4+ consecutive digits reads as a year, an epoch value, or a generated id --
+# the same heuristic the role-prefix test suite already checks by hand.
+# Anything that varies between processes or calls belongs in the tail, never
+# the prefix; this is the mechanical check for the most common way that rule
+# gets broken by accident.
+_TIMESTAMP_LIKE_RE = re.compile(r"\d{4,}")
+
+
+def meets_cache_floor(text: str, provider: str) -> bool:
+    """Whether `text` is long enough to ever be served from `provider`'s cache.
+
+    Below the floor, cache mechanics don't degrade gracefully -- they don't
+    apply at all. OpenAI's automatic caching simply never activates under
+    1024 tokens; Anthropic refuses to write a cache entry that short. A
+    byte-identical prefix under the floor still never earns a cache hit.
+
+    Raises KeyError for a provider with no entry in `PROVIDER_CACHE_RULES`:
+    this is a check made deliberately before relying on caching, so
+    silently assuming a floor for an unmodeled provider would be worse than
+    refusing to answer.
+    """
+    rules = PROVIDER_CACHE_RULES[provider]
+    tokens = len(_CACHE_FLOOR_ENCODING.encode(text, disallowed_special=()))
+    return tokens >= rules.min_cacheable_tokens
+
+
+def validate_prefix(prefix: StablePrefix, provider: str, *, breakpoints: int = 1) -> list[str]:
+    """Actionable findings for marking `prefix` as a cache breakpoint on `provider`.
+
+    Empty list means it is safe to mark as assembled. Every finding is a
+    plain sentence naming the problem and why it matters -- this is meant to
+    be read by whoever is about to wire a cache_control marker, not parsed
+    by a machine.
+
+    `breakpoints` is how many cache breakpoints the caller intends to mark
+    across the full assembled prompt. Today's `build_prompt` always produces
+    exactly one -- the prefix/tail boundary -- but Anthropic allows marking
+    several independent blocks in one request (e.g. a system block and a
+    tool-definitions block), so this stays a parameter instead of a
+    hardcoded 1.
+    """
+    findings: list[str] = []
+
+    rules = PROVIDER_CACHE_RULES.get(provider)
+    if rules is None:
+        findings.append(
+            f"no cache rules modeled for provider {provider!r} -- add it to "
+            "PROVIDER_CACHE_RULES before relying on this check"
+        )
+    else:
+        if rules.max_cache_breakpoints is not None and breakpoints > rules.max_cache_breakpoints:
+            findings.append(
+                f"{breakpoints} cache breakpoints requested but {provider} allows at most "
+                f"{rules.max_cache_breakpoints}; the excess will be ignored or rejected, not "
+                "silently combined into one"
+            )
+        if not meets_cache_floor(prefix.text, provider):
+            findings.append(
+                f"prefix is below {provider}'s {rules.min_cacheable_tokens}-token cache "
+                "floor -- it will never be served from cache, and marking it as a "
+                "breakpoint anyway pays a write surcharge for a discount that can never land"
+            )
+
+    match = _TIMESTAMP_LIKE_RE.search(prefix.text)
+    if match:
+        findings.append(
+            f"prefix contains a non-deterministic-looking segment {match.group()!r} at "
+            f"offset {match.start()} (4+ consecutive digits reads as a timestamp, epoch "
+            "value, or generated id) -- a prefix that varies between calls destroys the "
+            "cache it exists to earn"
+        )
+
+    return findings
+
+
 class PrefixRegistry:
     """Registered `(role, version)` -> `StablePrefix`, with drift detection.
 
@@ -139,8 +268,12 @@ class PrefixRegistry:
 
 
 __all__ = [
+    "PROVIDER_CACHE_RULES",
     "PrefixRegistry",
+    "ProviderCacheRules",
     "Prompt",
     "StablePrefix",
     "build_prompt",
+    "meets_cache_floor",
+    "validate_prefix",
 ]

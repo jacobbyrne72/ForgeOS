@@ -332,3 +332,118 @@ def test_a_task_with_no_declared_operation_runs_normally(forge):
     result = forge.run("ship", [_task()], executor=lambda s, w: _green(),
                        reviewer=_pass_review, operations={})
     assert result.accepted == 1
+
+
+# =================================== test-tampering gate, wired end to end
+# forge.py now passes the real ExecutionResult.files_touched into the merge
+# gate, so an agent that "fixes" a failing test by editing the test itself
+# (rather than the code) is caught here, not just at the verify.py unit level.
+
+
+def test_a_diff_that_edits_a_test_alongside_its_source_is_blocked(forge):
+    result = forge.run(
+        "ship", [_task()],
+        executor=lambda s, w: _green(files_touched=["tests/test_retry.py", "src/retry.py"]),
+        reviewer=_pass_review,
+    )
+    assert result.accepted == 0
+    assert any("test-tampering:" in r for r in result.outcomes[0].merge_reasons)
+
+
+def test_an_ordinary_source_only_diff_is_unaffected_by_the_tamper_gate(forge):
+    """The default fixture already touches only `src/retry.py` — this pins that
+    the new wiring does not regress the happy path it runs on every test above."""
+    result = forge.run("ship", [_task()], executor=lambda s, w: _green(),
+                       reviewer=_pass_review)
+    assert result.accepted == 1
+    assert result.outcomes[0].merge_reasons == []
+
+
+# ============================== reviewer provider-family WARN, wired end to end
+# forge._family_of normalizes a WorkerProfile's vendor/model/adapter to a
+# provider family — no new registry field, since every case is already
+# derivable from fields WorkerProfile already has.
+
+
+def _same_vendor_fleet() -> Registry:
+    """Both workers report the same `vendor` ("claude") — `_family_of` should
+    normalize both to the same "anthropic" family, giving the merge gate's
+    self-preference WARN something real to fire on."""
+    return Registry([
+        WorkerProfile(worker_id="free.local", adapter=Adapter.OLLAMA, tier=CostTier.FREE,
+                      vendor="claude",
+                      capabilities={"edit", "python", "mechanical"}, can_edit_files=True,
+                      prior_win_rate=0.85),
+        WorkerProfile(worker_id="premium.cloud", adapter=Adapter.CLI_TEAM,
+                      tier=CostTier.PREMIUM, vendor="claude",
+                      capabilities={"edit", "python", "mechanical", "architecture"},
+                      can_edit_files=True, prior_win_rate=0.95),
+    ])
+
+
+def test_same_provider_family_reviewer_warns_without_blocking(tmp_path):
+    f = Forge(home=tmp_path / "forgeos", registry=_same_vendor_fleet(), max_attempts=3)
+    try:
+        result = f.run("ship", [_task()], executor=lambda s, w: _green(),
+                       reviewer=_pass_review)
+    finally:
+        f.close()
+    assert result.accepted == 1, result.outcomes
+    warnings = result.outcomes[0].merge_warnings
+    assert any("self-preference" in w for w in warnings)
+    assert any("anthropic" in w for w in warnings), "vendor 'claude' must normalize to 'anthropic'"
+
+
+def test_default_fleet_has_no_vendor_set_so_no_family_warning(forge):
+    """The existing `_fleet()` fixture never declares `vendor` or a recognizable
+    `model` — pins that the new wiring stays silent when neither profile gives
+    `_family_of` anything to go on, rather than two unknowns matching each other."""
+    result = forge.run("ship", [_task()], executor=lambda s, w: _green(),
+                       reviewer=_pass_review)
+    assert result.accepted == 1
+    assert result.outcomes[0].merge_warnings == []
+
+
+def test_family_derives_from_model_when_vendor_is_unset(tmp_path):
+    """No `vendor` on either profile, but both `model` strings name the same
+    vendor — `_family_of`'s model fallback exists exactly for gateway/free-tier
+    profiles that route by model string rather than a fixed CLI vendor."""
+    fleet = Registry([
+        WorkerProfile(worker_id="a", adapter=Adapter.GATEWAY, tier=CostTier.FREE,
+                      model="deepseek-v3", capabilities={"edit", "python", "mechanical"},
+                      can_edit_files=True, prior_win_rate=0.85),
+        WorkerProfile(worker_id="b", adapter=Adapter.GATEWAY, tier=CostTier.PREMIUM,
+                      model="deepseek-r1", capabilities={"edit", "python", "mechanical"},
+                      can_edit_files=True, prior_win_rate=0.95),
+    ])
+    f = Forge(home=tmp_path / "forgeos", registry=fleet, max_attempts=3)
+    try:
+        result = f.run("ship", [_task()], executor=lambda s, w: _green(),
+                       reviewer=_pass_review)
+    finally:
+        f.close()
+    assert result.accepted == 1
+    assert any("deepseek" in w for w in result.outcomes[0].merge_warnings)
+
+
+def test_two_local_adapter_workers_share_the_local_family(tmp_path):
+    """Neither profile sets `vendor` or a recognizable `model`, but both use the
+    Ollama adapter — `_family_of` falls back to "local" so a local model
+    reviewing its own local output is still caught, not silently waved through
+    for lack of a vendor string."""
+    fleet = Registry([
+        WorkerProfile(worker_id="a", adapter=Adapter.OLLAMA, tier=CostTier.FREE,
+                      capabilities={"edit", "python", "mechanical"}, can_edit_files=True,
+                      prior_win_rate=0.85),
+        WorkerProfile(worker_id="b", adapter=Adapter.OLLAMA, tier=CostTier.PREMIUM,
+                      capabilities={"edit", "python", "mechanical", "architecture"},
+                      can_edit_files=True, prior_win_rate=0.95),
+    ])
+    f = Forge(home=tmp_path / "forgeos", registry=fleet, max_attempts=3)
+    try:
+        result = f.run("ship", [_task()], executor=lambda s, w: _green(),
+                       reviewer=_pass_review)
+    finally:
+        f.close()
+    assert result.accepted == 1
+    assert any("local" in w for w in result.outcomes[0].merge_warnings)

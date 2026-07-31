@@ -9,8 +9,23 @@ from __future__ import annotations
 import pytest
 
 from forgeos.economy.avoidance import AvoidanceLog, AvoidanceMethod
-from forgeos.economy.reducer import Failure, ReducedOutput, reduce_generic, reduce_pytest
-from forgeos.economy.testselect import Level, Selection, TestGraph, next_level
+from forgeos.economy.reducer import (
+    Failure,
+    ReducedOutput,
+    ToolResult,
+    Turn,
+    clear_tool_results,
+    reduce_generic,
+    reduce_pytest,
+)
+from forgeos.economy.testselect import (
+    FlakeVerdict,
+    Level,
+    Selection,
+    TestGraph,
+    classify_failure_relevance,
+    next_level,
+)
 
 # ------------------------------------------------------------- pytest fixture
 
@@ -228,6 +243,88 @@ def test_record_to_writes_deterministic_avoidance_row(avd):
     assert row.task_id == "task1"
 
 
+# ------------------------------------------------------------ clear_tool_results
+
+
+def _turn(content: str = "", *, results: tuple[tuple[str, str], ...] = ()) -> Turn:
+    """A turn with `results` as (tool_name, content) pairs, content lengths a
+    multiple of 4 so the chars/4 estimator used throughout (no model name is
+    ever passed to `count_tokens` here) gives exact, predictable token counts.
+    """
+    return Turn(content=content, tool_results=[ToolResult(tool_name=n, content=c) for n, c in results])
+
+
+def test_clear_tool_results_is_a_noop_below_trigger():
+    turns = [_turn(results=[("bash", "x" * 40)]) for _ in range(3)]
+    new_turns, saved = clear_tool_results(
+        turns, trigger_tokens=100_000, keep_last_n=1, clear_at_least_tokens=10
+    )
+    assert new_turns is turns  # untouched, not even a copy
+    assert saved == 0
+    assert all(not r.cleared for t in turns for r in t.tool_results)
+
+
+def test_clear_tool_results_clears_oldest_turns_first_and_stops_at_the_floor():
+    turns = [_turn(results=[("bash", "x" * 4000)]) for _ in range(5)]  # 1000 tokens each
+    new_turns, saved = clear_tool_results(
+        turns, trigger_tokens=100, keep_last_n=1, clear_at_least_tokens=1500
+    )
+    cleared = [t.tool_results[0].cleared for t in new_turns]
+    assert cleared == [True, True, False, False, False]  # stopped once the floor was met
+    assert saved >= 1500
+
+
+def test_clear_tool_results_never_touches_the_last_keep_last_n_turns():
+    turns = [_turn(results=[("bash", "x" * 4000)]) for _ in range(3)]
+    new_turns, saved = clear_tool_results(
+        turns, trigger_tokens=100, keep_last_n=3, clear_at_least_tokens=1_000_000
+    )
+    assert all(not t.tool_results[0].cleared for t in new_turns)  # every turn is protected
+    assert saved == 0
+
+
+def test_clear_tool_results_never_clears_excluded_tools():
+    turns = [_turn(results=[("secrets_reader", "x" * 4000)]) for _ in range(3)]
+    new_turns, saved = clear_tool_results(
+        turns,
+        trigger_tokens=100,
+        keep_last_n=0,
+        clear_at_least_tokens=1_000_000,
+        exclude_tools=("secrets_reader",),
+    )
+    assert all(not t.tool_results[0].cleared for t in new_turns)
+    assert saved == 0
+
+
+def test_clear_tool_results_never_touches_ordinary_turn_content():
+    turns = [_turn(content="the model's own words", results=[("bash", "x" * 4000)]) for _ in range(2)]
+    new_turns, _ = clear_tool_results(turns, trigger_tokens=100, keep_last_n=0, clear_at_least_tokens=1_000_000)
+    assert all(t.content == "the model's own words" for t in new_turns)
+
+
+def test_clear_tool_results_placeholder_names_the_tool():
+    turns = [_turn(results=[("bash", "x" * 4000)])]
+    new_turns, _ = clear_tool_results(turns, trigger_tokens=100, keep_last_n=0, clear_at_least_tokens=1_000_000)
+    assert "bash" in new_turns[0].tool_results[0].content
+    assert "cleared" in new_turns[0].tool_results[0].content.lower()
+
+
+def test_clear_tool_results_does_not_mutate_the_input():
+    turns = [_turn(results=[("bash", "x" * 4000)]) for _ in range(2)]
+    clear_tool_results(turns, trigger_tokens=100, keep_last_n=0, clear_at_least_tokens=1_000_000)
+    assert all(not t.tool_results[0].cleared for t in turns)
+
+
+def test_clear_tool_results_is_idempotent_once_the_floor_is_already_met():
+    turns = [_turn(results=[("bash", "x" * 4000)]) for _ in range(2)]
+    once, saved_once = clear_tool_results(turns, trigger_tokens=100, keep_last_n=0, clear_at_least_tokens=1500)
+    twice, saved_twice = clear_tool_results(once, trigger_tokens=100, keep_last_n=0, clear_at_least_tokens=1500)
+    assert [r.content for t in twice for r in t.tool_results] == [
+        r.content for t in once for r in t.tool_results
+    ]
+    assert saved_twice == 0  # already-cleared results are never re-cleared or re-counted
+
+
 # ============================================================== test selection
 
 
@@ -373,3 +470,67 @@ def test_select_defaults_level_from_level_for_when_omitted():
     sel = g.select(["poetry.lock"])
     assert sel.level == Level.FULL
     assert sel.run_all
+
+
+# --------------------------------------------------------------- flake check
+
+
+def test_classify_failure_relevance_is_likely_flaky_when_coverage_misses_every_changed_line():
+    verdict = classify_failure_relevance(
+        "tests/test_a.py::test_a",
+        covered_lines_by_file={"forgeos/x.py": {1, 2, 3}, "forgeos/y.py": {10, 11, 12}},
+        changed_lines_by_file={"forgeos/x.py": {10, 11, 12}},
+    )
+    assert verdict is FlakeVerdict.LIKELY_FLAKY
+
+
+def test_classify_failure_relevance_is_relevant_when_coverage_hits_a_changed_line():
+    verdict = classify_failure_relevance(
+        "tests/test_a.py::test_a",
+        covered_lines_by_file={"forgeos/x.py": {9, 10, 50}},
+        changed_lines_by_file={"forgeos/x.py": {10, 11, 12}},
+    )
+    assert verdict is FlakeVerdict.RELEVANT
+
+
+def test_classify_failure_relevance_is_unknown_not_flaky_when_coverage_is_missing():
+    # Missing evidence must never be read as evidence of flakiness (AGENTS.md rule 8).
+    verdict = classify_failure_relevance(
+        "tests/test_a.py::test_a",
+        covered_lines_by_file=None,
+        changed_lines_by_file={"forgeos/x.py": {10, 11, 12}},
+    )
+    assert verdict is FlakeVerdict.UNKNOWN
+
+
+def test_classify_failure_relevance_normalizes_path_separators():
+    verdict = classify_failure_relevance(
+        "tests/test_a.py::test_a",
+        covered_lines_by_file={"forgeos\\x.py": {10}},
+        changed_lines_by_file={"forgeos/x.py": {10}},
+    )
+    assert verdict is FlakeVerdict.RELEVANT
+
+
+def test_classify_failure_relevance_ignores_untouched_files():
+    verdict = classify_failure_relevance(
+        "tests/test_a.py::test_a",
+        covered_lines_by_file={"forgeos/unrelated.py": {10}},
+        changed_lines_by_file={"forgeos/x.py": {10}},
+    )
+    assert verdict is FlakeVerdict.LIKELY_FLAKY
+
+
+def test_classify_failure_relevance_runs_independently_per_test():
+    changed = {"forgeos/x.py": {10}}
+    coverage_by_test = {
+        "t1": {"forgeos/x.py": {10}},  # hits the change
+        "t2": {"forgeos/x.py": {99}},  # misses it
+        "t3": None,  # no coverage recorded
+    }
+    verdicts = {t: classify_failure_relevance(t, coverage_by_test[t], changed) for t in coverage_by_test}
+    assert verdicts == {
+        "t1": FlakeVerdict.RELEVANT,
+        "t2": FlakeVerdict.LIKELY_FLAKY,
+        "t3": FlakeVerdict.UNKNOWN,
+    }

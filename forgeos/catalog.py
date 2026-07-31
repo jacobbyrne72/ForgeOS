@@ -13,15 +13,28 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-# Where a models.dev-shaped catalog might already exist. All optional: forgeos works
-# with an empty catalog, it just cannot price a call it has never heard of. Set
-# FORGEOS_MODEL_CATALOG to point at your own copy.
+# Where a models.dev- or litellm-shaped catalog might already exist. All optional:
+# forgeos works with an empty catalog, it just cannot price a call it has never
+# heard of. Set FORGEOS_MODEL_CATALOG to point at your own copy.
 CATALOG_ENV = "FORGEOS_MODEL_CATALOG"
+
+# Canonical upstream URL per supported price-table format. Single source of
+# truth: `tools/refresh_catalog.py` fetches from these, and every `ModelCard`
+# parsed from that shape is stamped with the matching one as `source_url`, so
+# "where did this price come from" can never drift from "where would refresh
+# actually fetch it from."
+MODELS_DEV_URL = "https://models.dev/api.json"
+LITELLM_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+
+# `source` values that count as an automated, current fetch rather than a
+# hand-entered guess. See `ModelCard.provenance_word`.
+_MEASURED_SOURCES = frozenset({"models_dev", "litellm"})
 
 DEFAULT_CATALOG_PATHS = tuple(
     Path(os.path.expanduser(p))
@@ -31,6 +44,12 @@ DEFAULT_CATALOG_PATHS = tuple(
         # Populated by Hermes on machines that run it; harmless absent elsewhere.
         "~/.hermes/models_dev_cache.json",
         "~/.hermes/provider_models_cache.json",
+        # BerriAI/litellm's community-canonical, CI-synced pricing table. Last
+        # on purpose: `discover()` merges every path in order and a later
+        # entry overwrites an earlier one on a matching ref, so this is the
+        # one that wins when it and an older models.dev cache both know a
+        # model. See tools/refresh_catalog.py.
+        "~/.forgeos/litellm_prices.json",
     )
 )
 
@@ -58,6 +77,13 @@ class ModelCard(BaseModel):
     modalities_in: list[str] = Field(default_factory=list)
     modalities_out: list[str] = Field(default_factory=list)
     knowledge: str = ""
+    # Provenance: where this price came from and how old it is. "" / 0.0 means
+    # unstamped -- a hand-built card (tests, model_ranker.py) or a cache file
+    # that did not go through Catalog.from_file/discover. An unstamped price
+    # must read as unknown freshness, never as fresh; see `is_stale`.
+    source: str = ""            # "litellm" | "models_dev" | "" (unstamped)
+    source_url: str = ""        # the exact upstream URL `source` was fetched from
+    fetched_at: float = 0.0
 
     @property
     def ref(self) -> str:
@@ -101,8 +127,46 @@ class ModelCard(BaseModel):
         """Whether the payload fits. A model that cannot hold the context is not a candidate."""
         return self.context == 0 or tokens_in <= self.context
 
+    @property
+    def age_days(self) -> float | None:
+        """Days since this price was fetched, or None if provenance is unknown."""
+        if not self.fetched_at:
+            return None
+        return max(0.0, (time.time() - self.fetched_at) / 86400)
 
-def _parse_models_dev(raw: dict) -> list[ModelCard]:
+    def is_stale(self, max_age_days: float = 30.0) -> bool:
+        """True if this price is older than `max_age_days`.
+
+        An unstamped card (age unknown) also counts as stale -- a price this
+        module cannot date must never be treated as fresh just because no one
+        checked.
+        """
+        age = self.age_days
+        return age is None or age > max_age_days
+
+    @property
+    def provenance_word(self) -> str:
+        """"measured", "modelled", or "unknown" -- the same three-way honesty
+        distinction `forgeos.economy.savings.Provenance` uses for a figure's
+        evidence strength (that module imports FROM this one, so importing
+        its enum back here would be circular; this mirrors the vocabulary
+        without the import).
+
+        A card is only MEASURED when it came from a known live source AND
+        carries a fetch timestamp -- `source` set without `fetched_at` (or
+        vice versa) is an inconsistent half-stamp, not a measurement. Any
+        other named `source` (e.g. a future hand-entered fallback price) is
+        MODELLED: someone typed a number in, nothing was fetched. No
+        `source` at all is UNKNOWN.
+        """
+        if self.source in _MEASURED_SOURCES and self.fetched_at:
+            return "measured"
+        if self.source:
+            return "modelled"
+        return "unknown"
+
+
+def _parse_models_dev(raw: dict, *, fetched_at: float = 0.0) -> list[ModelCard]:
     """Parse the models.dev shape: {provider_id: {models: {model_id: {...}}}}."""
     cards: list[ModelCard] = []
     for provider_id, pdata in raw.items():
@@ -137,9 +201,69 @@ def _parse_models_dev(raw: dict) -> list[ModelCard]:
                     modalities_in=list(mod.get("input") or []),
                     modalities_out=list(mod.get("output") or []),
                     knowledge=str(m.get("knowledge") or ""),
+                    source="models_dev",
+                    source_url=MODELS_DEV_URL,
+                    fetched_at=fetched_at,
                 )
             )
     return cards
+
+
+def _parse_litellm(raw: dict, *, fetched_at: float = 0.0) -> list[ModelCard]:
+    """Parse BerriAI/litellm's `model_prices_and_context_window.json` shape:
+    a flat `{model_name: {...}}` map, one `litellm_provider` field per entry,
+    rather than models.dev's per-provider nesting.
+
+    litellm quotes cost PER TOKEN, not per 1M like models.dev -- every cost
+    field here is scaled by 1e6 on the way into a ModelCard so the two
+    formats compare on the same unit everywhere else in the codebase (see
+    `ModelCard.cost_micros`).
+    """
+    cards: list[ModelCard] = []
+    for model_id, m in raw.items():
+        if not isinstance(m, dict):
+            continue
+        provider = m.get("litellm_provider")
+        if not provider:
+            continue  # e.g. the "sample_spec" schema-documentation entry, not a real model
+        cards.append(
+            ModelCard(
+                model_id=model_id,
+                provider=str(provider),
+                name=model_id,
+                input_cost_per_1m=float(m.get("input_cost_per_token") or 0.0) * 1_000_000,
+                output_cost_per_1m=float(m.get("output_cost_per_token") or 0.0) * 1_000_000,
+                cache_read_cost_per_1m=float(m.get("cache_read_input_token_cost") or 0.0) * 1_000_000,
+                cache_write_cost_per_1m=float(m.get("cache_creation_input_token_cost") or 0.0) * 1_000_000,
+                context=int(m.get("max_input_tokens") or m.get("max_tokens") or 0),
+                max_output=int(m.get("max_output_tokens") or 0),
+                reasoning=bool(m.get("supports_reasoning")),
+                tool_call=bool(m.get("supports_function_calling")),
+                attachment=bool(m.get("supports_vision") or m.get("supports_pdf_input")),
+                source="litellm",
+                source_url=LITELLM_URL,
+                fetched_at=fetched_at,
+            )
+        )
+    return cards
+
+
+def _looks_like_models_dev(raw: dict) -> bool:
+    """models.dev nests models under a per-provider "models" key; litellm is a
+    flat `{model_name: {...}}` map with no such nesting. Any provider-shaped
+    entry is enough to tell the two apart.
+    """
+    return any(isinstance(v, dict) and isinstance(v.get("models"), dict) for v in raw.values())
+
+
+def _parse_catalog_json(raw: dict, *, fetched_at: float = 0.0) -> list[ModelCard]:
+    """Dispatch to the right parser by shape, so `from_file`/`discover` work on
+    either a models.dev cache or a litellm `model_prices_and_context_window.json`
+    without the caller having to say which.
+    """
+    if _looks_like_models_dev(raw):
+        return _parse_models_dev(raw, fetched_at=fetched_at)
+    return _parse_litellm(raw, fetched_at=fetched_at)
 
 
 class Catalog:
@@ -152,21 +276,31 @@ class Catalog:
 
     @classmethod
     def from_file(cls, path: str | Path) -> Catalog:
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
-        return cls(_parse_models_dev(raw))
+        """Load and parse one cache file, stamping every card with its mtime.
+
+        The file's own mtime IS the staleness stamp -- `tools/refresh_catalog.py`
+        installs via an atomic rename, so mtime is "when this price table was
+        fetched," not "when the file happened to be touched." No separate
+        sidecar or metadata format needed to answer `card.age_days`.
+        """
+        path = Path(path)
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return cls(_parse_catalog_json(raw, fetched_at=path.stat().st_mtime))
 
     @classmethod
     def discover(cls, extra_paths: tuple[Path, ...] = ()) -> Catalog:
         """Load from whichever known cache exists. Empty catalog if none do.
 
         An empty catalog must never be a crash — forgeos has to work on a machine
-        that has not run Hermes.
+        that has not run Hermes. Later paths win on a matching ref (see
+        `DEFAULT_CATALOG_PATHS`), each card keeping its own file's provenance.
         """
         cards: list[ModelCard] = []
         for p in (*extra_paths, *DEFAULT_CATALOG_PATHS):
             try:
                 if p.exists():
-                    cards.extend(_parse_models_dev(json.loads(p.read_text(encoding="utf-8"))))
+                    raw = json.loads(p.read_text(encoding="utf-8"))
+                    cards.extend(_parse_catalog_json(raw, fetched_at=p.stat().st_mtime))
             except (json.JSONDecodeError, OSError):
                 continue  # a corrupt cache must not take the harness down
         return cls(cards)
@@ -187,6 +321,13 @@ class Catalog:
 
     def free(self) -> list[ModelCard]:
         return [c for c in self._cards.values() if c.is_free]
+
+    def stale(self, max_age_days: float = 30.0) -> list[ModelCard]:
+        """Cards whose price provenance is older than `max_age_days`, or
+        unstamped -- the check a caller (e.g. the ledger) makes before pricing
+        a call against a number that might not be real anymore.
+        """
+        return [c for c in self._cards.values() if c.is_stale(max_age_days)]
 
     def find(
         self,
@@ -234,13 +375,22 @@ def default_catalog() -> Catalog:
     return Catalog.discover()
 
 
-__all__ = ["Catalog", "ModelCard", "default_catalog", "DEFAULT_CATALOG_PATHS"]
+__all__ = [
+    "Catalog",
+    "ModelCard",
+    "default_catalog",
+    "DEFAULT_CATALOG_PATHS",
+    "LITELLM_URL",
+    "MODELS_DEV_URL",
+]
 
 
 if __name__ == "__main__":  # pragma: no cover
     cat = default_catalog()
     print(f"{len(cat)} models across {len(cat.providers())} providers")
     print(f"free: {len(cat.free())}")
+    print(f"stale (>30d old or unstamped): {len(cat.stale())}  "
+          "-- run tools/refresh_catalog.py to update")
     print("\ncheapest that can reason + call tools, 8k in / 2k out:")
     for c in cat.cheapest(8_000, 2_000, needs_reasoning=True, needs_tools=True)[:8]:
         print(f"  {c.ref:52} {c.cost_micros(8_000, 2_000):>8} micros  ctx={c.context}")

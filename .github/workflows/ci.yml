@@ -18,7 +18,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: pip install -e ".[dev]"
+      - run: pip install -e ".[dev]" ruff
+      # Lint before tests: a style/import error fails in two seconds, and the
+      # config in pyproject.toml is the single source of what "clean" means.
+      - run: ruff check forgeos/ tests/ tools/
       # The fast path first: a broken unit fails in seconds, not after the
       # slow integration tests have spent their minutes.
       - run: python -m pytest tests -q -m "not slow"

@@ -450,4 +450,101 @@ def reduce_generic(output: str, *, max_lines: int = 40) -> ReducedOutput:
     )
 
 
-__all__ = ["Failure", "ReducedOutput", "reduce_generic", "reduce_pytest"]
+# --------------------------------------------------------- clear_tool_results
+
+
+class ToolResult(BaseModel):
+    """One tool call's result within a `Turn` — the unit `clear_tool_results` may clear.
+
+    `cleared` makes clearing idempotent: a transcript grows turn by turn and
+    this function runs again on every pass, so an already-cleared result must
+    never be re-"cleared" (that would count a placeholder's own tokens as
+    freed a second time) and must never lose its placeholder to a rewrite.
+    """
+
+    tool_name: str
+    content: str
+    cleared: bool = False
+
+
+class Turn(BaseModel):
+    """One turn of a provider-agnostic transcript: content plus zero or more tool results.
+
+    Deliberately minimal — no `role` enum or provider message shape — because
+    `clear_tool_results` only needs to tell "tool result payload" (clearable)
+    apart from "everything else" (never touched).
+    """
+
+    content: str = ""
+    tool_results: list[ToolResult] = Field(default_factory=list)
+
+
+def _turn_tokens(turn: Turn) -> int:
+    total = count_tokens(turn.content).tokens
+    for result in turn.tool_results:
+        total += count_tokens(result.content).tokens
+    return total
+
+
+def clear_tool_results(
+    turns: list[Turn],
+    *,
+    trigger_tokens: int,
+    keep_last_n: int,
+    clear_at_least_tokens: int,
+    exclude_tools: tuple[str, ...] = (),
+) -> tuple[list[Turn], int]:
+    """Provider-agnostic reimplementation of Anthropic's `clear_tool_uses_20250919`.
+
+    Once the transcript's total tokens cross `trigger_tokens`, the oldest
+    eligible tool results are replaced with a short placeholder — oldest
+    turn first, never touching the last `keep_last_n` turns or any tool named
+    in `exclude_tools` — until at least `clear_at_least_tokens` have been
+    freed. Below the trigger this is a no-op (both the input `turns` list and
+    saved-token count of 0 are returned unchanged): clearing a transcript
+    that already fits is pure waste, and a floor-guarded trigger exists
+    specifically to avoid thrashing a prompt cache on tiny, frequent clears.
+
+    Only tool RESULT content is ever replaced. Ordinary turn content,
+    already-cleared results, protected turns, and excluded tools all pass
+    through byte-for-byte — this function's one job is picking what to clear, not
+    rewriting anything it wasn't asked to touch. `turns` itself is never
+    mutated; clearing happens on a deep copy so a caller holding the original
+    is unaffected.
+    """
+    total_tokens = sum(_turn_tokens(t) for t in turns)
+    if total_tokens < trigger_tokens:
+        return turns, 0
+
+    protected_from = max(0, len(turns) - keep_last_n) if keep_last_n > 0 else len(turns)
+    new_turns = [t.model_copy(deep=True) for t in turns]
+    freed = 0
+
+    for i, turn in enumerate(new_turns):
+        if freed >= clear_at_least_tokens:
+            break
+        if i >= protected_from:
+            continue
+        for result in turn.tool_results:
+            if freed >= clear_at_least_tokens:
+                break
+            if result.cleared or result.tool_name in exclude_tools:
+                continue
+            original = count_tokens(result.content).tokens
+            placeholder = f"[tool result cleared to free context: {result.tool_name}, {original} tokens]"
+            result.content = placeholder
+            result.cleared = True
+            freed += max(0, original - count_tokens(placeholder).tokens)
+
+    return new_turns, freed
+
+
+__all__ = [
+    "Failure",
+    "ReducedOutput",
+    "ToolResult",
+    "Turn",
+    "clear_tool_results",
+    "reduce_generic",
+    "reduce_pytest",
+]

@@ -30,7 +30,8 @@ from typing import Callable
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from ..contracts import FailureClass
+from ..contracts import FailureClass, TaskSpec
+from ..leases import patterns_overlap
 
 
 class ManagerDecision(str, Enum):

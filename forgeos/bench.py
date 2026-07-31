@@ -7,6 +7,17 @@ Compares a baseline (raw model call) vs. each optimization layer:
 
 Every result is written to the ledger as a benchmark job,
 so comparisons are reproducible and auditable.
+
+Superseded for the Release 0.1 exit gate by `forgeos.forgebench`
+(`forge forgebench` on the CLI): this module's savings numbers are
+self-admittedly MODELLED (`token_estimate`/`usd_saved_micros` are computed
+from a flat per-word/per-token constant, not from an actually-executed
+paired baseline), so it cannot answer "does ForgeOS really cost less than
+the unwrapped CLI baseline" -- only `forgeos.forgebench` runs a real paired
+A/B and reports a `Provenance`-honest `SavingsProof`. Kept as-is (still
+wired to `forge bench`) rather than removed, since nothing here is
+incorrect for what it honestly claims to be: a quick modelled projection,
+not a measurement.
 """
 
 from __future__ import annotations

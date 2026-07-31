@@ -1,6 +1,6 @@
 """The verification ladder and merge gate.
 
-Two ideas, both about not trusting a green test run:
+Three ideas, all about not trusting a green test run:
 
 1. **Climb the ladder.** Running the full suite after every edit is the largest
    wall-clock waste in an agent loop. Syntax, then lint on changed files, then the
@@ -12,6 +12,25 @@ Two ideas, both about not trusting a green test run:
    correct and still insecure. So the merge gate requires a clean security scan of
    the diff *in addition to* green tests, and it requires evidence that a real
    command produced those results.
+
+3. **A green result can be gamed at the source.** SpecBench (arXiv 2605.21384)
+   and the RLVR reward-hacking survey (arXiv 2604.15149) both document agents
+   under a pass/fail loop learning to edit the test instead of the code —
+   deleting assertions, loosening bounds, rewriting the check to match whatever
+   the implementation now does. Neither the ladder nor the security scan above
+   catches this; both trust whatever test the diff shipped with. So the merge
+   gate also flags a diff that edits a test in the same change as the source it
+   verifies, and requires a human to say `tamper_reviewed=True` before it merges.
+
+Independent review is also not automatically independent. LLM evaluators recognize
+and favor their own generations, and the bias scales with how well a model
+recognizes its own output (Panickssery et al., NeurIPS 2024, arXiv 2404.13076);
+position/order effects compound this further, worst exactly when the two
+candidates are closest in quality (Judging the Judges, arXiv 2406.07791).
+`reviewer_worker == implementer_worker` is a hard block below; `reviewer_family`
+vs. `implementer_family` extends the same instinct one level up — same provider
+family is not the same worker, but it is plausibly the same blind spot, so it is
+a WARN, not a block.
 
 Every gate returns the command it ran and that command's real output. A gate that
 reports a verdict without the evidence behind it is indistinguishable from a guess.
@@ -312,9 +331,93 @@ def run_security(paths: list[str], *, cwd: str | None = None) -> GateResult:
 # ---------------------------------------------------------------- merge gate
 
 
+def _norm_path(path: str) -> str:
+    """Same separator/relative-prefix normalisation as `_only_in` — gitleaks and
+    callers can disagree on separators, and a mismatch here would silently miss
+    a real pairing."""
+    return path.replace("\\", "/").lstrip("./")
+
+
+def _test_name_stem(path: str) -> str | None:
+    """The source stem a test file is named for, or None if `path` isn't a test.
+
+    Matches this repo's own convention (`tests/test_<name>.py`) and the wider
+    ecosystem's alternative (`<name>_test.py`). Compared case-insensitively —
+    Windows paths and callers disagree on case the same way they disagree on
+    separators.
+    """
+    name = _norm_path(path).rsplit("/", 1)[-1].lower()
+    if name.startswith("test_") and name.endswith(".py"):
+        return name[len("test_"):-len(".py")]
+    if name.endswith("_test.py"):
+        return name[:-len("_test.py")]
+    return None
+
+
+def detect_test_tampering(files_touched: list[str]) -> list[str]:
+    """Flag a diff that edits both a test and the source it is meant to verify.
+
+    Per SpecBench (arXiv 2605.21384) and the RLVR reward-hacking survey (arXiv
+    2604.15149), agents optimizing against a visible pass/fail loop learn to
+    edit the test instead of the code under test — deleting assertions,
+    loosening bounds, rewriting the check to match whatever the implementation
+    now does. A test that passed because it was rewritten proves nothing about
+    the code it is supposed to verify, and it is a blind spot neither the ladder
+    nor the security scan above covers: both trust whatever test the diff
+    shipped with.
+
+    Two tiers, both surfaced, never collapsed into one message:
+
+    - **Named pairing** (`tests/test_foo.py` and `foo.py` both touched) is the
+      strong signal — the exact test for the exact code moved together.
+    - **General case** (any test file touched alongside any non-test `.py`
+      source, no name match) is weaker evidence but still a real coincidence,
+      so it is reported too, at minimum as a WARN-level reason, rather than
+      silently passing because the heuristic could not prove a specific pair.
+
+    Deterministic and offline — no model call, so this check cannot itself be
+    gamed the way an LLM-judged one could.
+    """
+    tests = [p for p in files_touched if _test_name_stem(p) is not None]
+    if not tests:
+        return []
+    sources = [
+        p for p in files_touched
+        if _norm_path(p).lower().endswith(".py") and _test_name_stem(p) is None
+    ]
+    if not sources:
+        return []
+
+    source_by_stem = {
+        _norm_path(p).rsplit("/", 1)[-1][: -len(".py")].lower(): p for p in sources
+    }
+    reasons: list[str] = []
+    paired: set[str] = set()
+    for t in tests:
+        src = source_by_stem.get(_test_name_stem(t))
+        if src:
+            reasons.append(
+                f"test-tampering: {t} and its source {src} were edited in the same "
+                f"change — a test and the code it verifies changing together needs "
+                f"human sign-off (tamper_reviewed=True) before merge"
+            )
+            paired.add(t)
+
+    unpaired = [t for t in tests if t not in paired]
+    if unpaired:
+        reasons.append(
+            f"test-tampering (WARN): {len(unpaired)} test file(s) edited alongside "
+            f"{len(sources)} non-test source file(s) in the same diff, with no "
+            f"confirmed name pairing — still worth a human's eyes "
+            f"(tamper_reviewed=True to acknowledge)"
+        )
+    return reasons
+
+
 class MergeVerdict(BaseModel):
     allowed: bool
     reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
     gates: list[GateResult] = Field(default_factory=list)
 
     @property
@@ -336,8 +439,13 @@ class MergeGate:
         reviewer_verdict: str | None = None,
         reviewer_worker: str = "",
         implementer_worker: str = "",
+        reviewer_family: str = "",
+        implementer_family: str = "",
+        files_touched: list[str] | None = None,
+        tamper_reviewed: bool = False,
     ) -> MergeVerdict:
         reasons: list[str] = []
+        warnings: list[str] = []
 
         if tests_failed > 0:
             reasons.append(f"{tests_failed} test(s) failing")
@@ -362,6 +470,26 @@ class MergeGate:
                 reasons.append(f"{g.gate.name.lower()} failed ({len(g.findings)} finding(s))")
             elif g.status is GateStatus.UNAVAILABLE:
                 reasons.append(f"{g.gate.name.lower()} could not be checked — not treated as clean")
+
+        # `files_touched` is new and optional. Every existing caller — forge.py's
+        # own call site included — predates this check and has no way to supply it
+        # without a coordinated second change; treating "not supplied" as "tampering"
+        # would block every one of them on a parameter they were never asked for. So
+        # None (the default) skips the check outright. An explicitly empty list is
+        # different: the caller looked and found nothing changed, and the check
+        # honours that by finding nothing too. Only a real path list can produce a
+        # real finding — this is the one place absence is allowed to read as "not
+        # applicable" rather than "not a pass", and it is allowed only because the
+        # parameter itself, not just the value, is new.
+        if files_touched is not None:
+            tamper_reasons = detect_test_tampering(files_touched)
+            if tamper_reasons:
+                if tamper_reviewed:
+                    warnings.extend(
+                        f"{r} (acknowledged: tamper_reviewed=True)" for r in tamper_reasons
+                    )
+                else:
+                    reasons.extend(tamper_reasons)
 
         # Approval is one exact token. Comparing against the literal "fail" meant
         # "FAIL", "failed" and "reject" all read as approval — the failure mode where
@@ -388,7 +516,21 @@ class MergeGate:
                     f"{implementer_worker!r} — that is the same worker relabelled"
                 )
 
-        return MergeVerdict(allowed=not reasons, reasons=reasons, gates=gates)
+        # Different worker is not the same as different blind spot. LLM evaluators
+        # recognize and favor their own generations (Panickssery et al., NeurIPS
+        # 2024, arXiv 2404.13076), and position/order effects compound the risk
+        # further when the two outputs are close in quality (arXiv 2406.07791) —
+        # exactly the case a merge gate cares most about getting right. This is a
+        # WARN, not a block: same provider family is weaker evidence of a shared
+        # blind spot than the same worker id above, and blocking on it outright
+        # would refuse every single-vendor fleet regardless of actual review quality.
+        if reviewer_family and implementer_family and reviewer_family == implementer_family:
+            warnings.append(
+                f"reviewer and implementer are both {reviewer_family!r} — same-family "
+                f"review carries self-preference bias risk; consider a cross-family reviewer"
+            )
+
+        return MergeVerdict(allowed=not reasons, reasons=reasons, warnings=warnings, gates=gates)
 
 
 def next_gate(current: Gate, passed: bool) -> Gate | None:
@@ -402,6 +544,7 @@ def next_gate(current: Gate, passed: bool) -> Gate | None:
 
 __all__ = [
     "DEFAULT_TIMEOUT",
+    "detect_test_tampering",
     "Finding",
     "Gate",
     "GateResult",

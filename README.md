@@ -1,12 +1,24 @@
 # ForgeOS
 
-**The proven cost-governed AI harness. 25 cost-cutting layers built, tested, and committed.**
+**The cost-governed AI coding harness. Every dollar saved is measured, not claimed.**
 
-Get 5x more from your AI subscriptions. Same $20/month, 5x the work done.
-Every dollar saved is measured, not claimed.
-Prove every dollar saved — not claimed, but measured.
+## Measured live — same question, same model, same ledger
 
-## Proven Savings (all verified with real module execution)
+The only difference between the two arms is what happens *around* the call.
+deepseek-chat, 2026-07-31, both arms billed through the same ledger, **both
+answers correct** (printed in full by the tool — a cheaper wrong answer is
+not a saving):
+
+|  | naive (dump the files) | ForgeOS (capsule + stable prefix) | ratio |
+|---|---|---|---|
+| prompt | 38,403 tokens | 1,582 tokens | **95.9% smaller** |
+| cold call | $0.004990 | $0.000263 | **19.0× cheaper** |
+| cache-warm call | $0.000244 | $0.000091 | **2.7× cheaper** |
+| latency | 9.8–10.4 s | 3.0–4.5 s | **~3× faster** |
+
+Reproduce: `python tools/ab_bench.py --model deepseek/deepseek-chat --repeat 2`
+
+## The layers (verified by module execution; savings vary by workload)
 
 | Layer | Savings | Proof |
 |---|---|---|
@@ -25,7 +37,9 @@ Prove every dollar saved — not claimed, but measured.
 | Adaptive routing | Cheapest worker | Per-task cost/performance profiling |
 | Fleet CLI | Routing ladder | Shows cheapest order for your providers |
 
-**Projected yearly savings at 100 tasks/day: ~$8,000/yr across all layers**
+**Modelled projection (not a measurement): ~$8,000/yr at 100 tasks/day if
+every layer fires at its observed rate. Your ledger is the real number —
+`python -m forgeos receipts` prints it.**
 
 
 ```

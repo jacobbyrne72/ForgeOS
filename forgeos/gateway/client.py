@@ -31,6 +31,7 @@ import json
 import os
 import threading
 import time
+from collections.abc import Callable
 from functools import lru_cache
 from typing import Any, Literal, Protocol
 
@@ -606,6 +607,7 @@ class Gateway:
         dead_models: DeadModelStore | None = None,
         avoidance_log: AvoidanceLog | None = None,
         dedup_wait_timeout: float = 90.0,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self._catalog = catalog
         self._ledger = ledger
@@ -614,6 +616,13 @@ class Gateway:
         self._health = health if health is not None else HealthTracker()
         self._max_context = max_context
         self._dead_models = dead_models if dead_models is not None else DeadModelStore()
+        # Same clock a caller-supplied `dead_models` was built with, injected
+        # for the same reason `DeadModelStore`'s own `clock=` is: half-open
+        # probe timing (`_call_transports` below) has to be testable by
+        # advancing a fake clock, not by sleeping past `retry_after` in a
+        # test. Defaults to real time so production code never has to think
+        # about it.
+        self._clock = clock
         # Optional: when set, a waiter that avoided a real call records it
         # honestly via AvoidanceMethod.DEDUP instead of the saving going
         # unmeasured. None is a fully valid default -- dedup itself works
@@ -833,14 +842,48 @@ class Gateway:
             )
         ordered = self._health.pick_healthy(list(by_name.keys()))
 
-        # A model remembered dead on a given transport (a previous 404 for
-        # this exact model_ref) is skipped without a network call -- that is
-        # what stops a retired free-tier slug from being rediscovered at the
+        # A model remembered dead on a given transport (a previous 404, or a
+        # temporary failure whose backoff hasn't elapsed yet) is skipped
+        # without a network call -- that is what stops a retired free-tier
+        # slug, or a still-cooling-down one, from being rediscovered at the
         # cost of a request on every single run. This is independent of
         # `_health`: a dead model says nothing about the transport's own
         # reachability, so it is filtered here rather than folded into
         # `pick_healthy`.
-        candidates = [name for name in ordered if not self._dead_models.is_dead(name, card.ref)]
+        #
+        # A TEMPORARY entry whose `retry_after` has passed is HALF_OPEN, not
+        # simply alive again: `claim_probe` grants this call the single
+        # trial slot (see `forgeos.gateway.dead_models`'s module docstring
+        # for why `is_dead` alone would let every concurrent caller retry at
+        # once). Losing the claim means treating the pair as still dead for
+        # *this* call -- not an error, just one fewer candidate this time --
+        # so `now` is captured once and reused for every claim/report below,
+        # rather than each check drifting against real wall-clock time.
+        #
+        # At most one HALF_OPEN re-entry per request, even if several
+        # different transports happen to be due for a trial for this same
+        # model_ref: one experimental call per request keeps the blast
+        # radius of "is it back yet" bounded to exactly what the circuit-
+        # breaker pattern intends, instead of one user request quietly
+        # firing a trial at every dead transport on the ladder at once.
+        now = self._clock()
+        candidates: list[str] = []
+        probing: set[str] = set()
+        probe_slot_used = False
+        for name in ordered:
+            entry = self._dead_models.get(name, card.ref)
+            if entry is None:
+                candidates.append(name)  # never dead -- nothing to gate
+                continue
+            if entry.terminal or now < entry.retry_after:
+                continue  # permanently dead, or still cooling down
+            if probe_slot_used:
+                continue  # this request's one re-entry is already spoken for
+            if self._dead_models.claim_probe(name, card.ref, now):
+                candidates.append(name)
+                probing.add(name)
+                probe_slot_used = True
+            # else: another caller already owns this HALF_OPEN trial.
 
         if not candidates and ordered:
             raise ModelUnavailableError(
@@ -852,6 +895,16 @@ class Gateway:
         # fails and the litellm fallback then fails differently, reporting only
         # the final error hides the one that actually explains the problem — the
         # vendor's own 4xx — behind a generic fallback message.
+        #
+        # A probing candidate sits at its normal ladder position, not
+        # promoted -- so if an earlier, non-probing candidate answers first,
+        # this loop returns before ever reaching the probing one, and
+        # `report_probe` is never called for it. That claim is deliberately
+        # left outstanding rather than released here: `PROBE_CLAIM_TIMEOUT_
+        # SECONDS` in `dead_models.py` reclaims an unresolved claim after
+        # 90s regardless of why it was never resolved, so an abandoned probe
+        # from a request that didn't need it behaves exactly like a crashed
+        # prober -- one mechanism, no separate release path required.
         errors: list[str] = []
         last_err: Exception | None = None
         for name in candidates:
@@ -879,21 +932,40 @@ class Gateway:
                 # not on it. Penalising the transport here would drop the whole
                 # provider over one stale slug. Remembered instead, terminally,
                 # so the next call for this exact model_ref does not have to
-                # pay a network round trip to rediscover the same 404.
+                # pay a network round trip to rediscover the same 404. `mark_dead`
+                # already clears any outstanding probe claim, and TERMINAL is a
+                # stronger, more correct outcome than `report_probe`'s ordinary
+                # backoff would give it -- so a probing candidate that lands here
+                # does not also call `report_probe`.
                 self._dead_models.mark_dead(name, card.ref, reason=str(e))
                 errors.append(f"{name}: {e}")
                 last_err = e
                 continue
             except RateLimitError as e:
+                if name in probing:
+                    # `e.retry_after` is the same Retry-After signal already
+                    # feeding `_health.record_rate_limit` below, converted
+                    # from "seconds to wait" to the absolute epoch timestamp
+                    # `report_probe`/`retry_after` expects everywhere else in
+                    # this module -- reusing the provider's own signal beats
+                    # guessing at the generic backoff `report_probe` falls
+                    # back to when no better information is available.
+                    self._dead_models.report_probe(
+                        name, card.ref, False, now, retry_after=now + e.retry_after
+                    )
                 self._health.record_rate_limit(name, retry_after_seconds=e.retry_after)
                 errors.append(f"{name}: rate limited ({e})")
                 last_err = e
                 continue
             except Exception as e:  # any other transport failure — try the next one
+                if name in probing:
+                    self._dead_models.report_probe(name, card.ref, False, now)
                 self._health.record_failure(name, str(e))
                 errors.append(f"{name}: {e.__class__.__name__}: {e}")
                 last_err = e
                 continue
+            if name in probing:
+                self._dead_models.report_probe(name, card.ref, True, now)
             self._health.record_success(name, latency_ms=(time.monotonic() - start) * 1000)
             self._health.record_saturation(name, raw.rate_limit_saturation)
             return raw, name

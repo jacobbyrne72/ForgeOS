@@ -78,7 +78,13 @@ WINDOW = 14  # lines of context kept around each hit
 # Read the full text in the ANSWERS section below; that is still the real check.
 ACCEPT_TERM_GROUPS: tuple[tuple[str, ...], ...] = (
     ("record_spend",),  # must name the function
-    ("inflight", "in-flight", "in flight", "dedup", "coalesce", "coalesced"),  # must name the guard
+    # Must name a real double-billing guard. The codebase has two, and both are
+    # correct answers: the gateway's in-flight dedup of identical concurrent
+    # calls, and the `spend_already_recorded` flag that stops the Forge
+    # re-recording a call the transport already banked (forge.py observed this
+    # exact double-billing live — one DeepSeek task, two identical 145 µ$ rows).
+    ("inflight", "in-flight", "in flight", "dedup", "coalesce", "coalesced",
+     "already_recorded", "already recorded", "already banked"),
 )
 
 

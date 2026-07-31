@@ -5,13 +5,24 @@ worker is "cheapest capable", what the preflight estimate says, whether the
 governor refuses a call. A stale catalogue does not merely report old numbers —
 it routes work to the wrong model and mis-estimates every call, silently.
 
-The bundled copy was seeded from a Hermes cache that was **51 days old**, which
-is several provider price cuts ago. This fetches current pricing from models.dev
-and writes `~/.forgeos/models_dev_cache.json`, the first path
-`forgeos/catalog.py` looks at, so it takes precedence over any older copy.
+Two upstream price tables are supported, chosen with --source (default litellm):
 
-    python tools/refresh_catalog.py --dry-run     # show the diff, write nothing
-    python tools/refresh_catalog.py               # fetch and install
+    litellm      BerriAI/litellm's model_prices_and_context_window.json --
+                 auto-synced by their CI, the de facto community-canonical
+                 pricing table. This is the primary source now: its install
+                 path is checked LAST by forgeos/catalog.py, so it wins over
+                 models.dev on any model ref both know.
+    models_dev   models.dev/api.json, the original bundled source. Still
+                 supported so an existing cache keeps working.
+
+Every installed file's own mtime becomes its staleness stamp: `forgeos/catalog.py`
+reads it back into `ModelCard.fetched_at`, so `card.is_stale()` /
+`Catalog.stale()` can catch a routing decision about to price off a number
+nobody has checked in months.
+
+    python tools/refresh_catalog.py --dry-run              # litellm, show the diff, write nothing
+    python tools/refresh_catalog.py                        # litellm, fetch and install
+    python tools/refresh_catalog.py --source models_dev     # refresh the older source instead
     python tools/refresh_catalog.py --provider openai
 
 Prints a price-change report, because a refresh that silently swaps numbers under
@@ -34,10 +45,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import httpx  # noqa: E402
 
-from forgeos.catalog import DEFAULT_CATALOG_PATHS, Catalog, default_catalog  # noqa: E402
+from forgeos.catalog import (  # noqa: E402
+    DEFAULT_CATALOG_PATHS,
+    LITELLM_URL,
+    MODELS_DEV_URL,
+    Catalog,
+    default_catalog,
+)
 
-SOURCE_URL = "https://models.dev/api.json"
-TARGET = Path(os.path.expanduser("~/.forgeos/models_dev_cache.json"))
+# Each upstream price table's fetch URL and install path. The URL comes from
+# forgeos/catalog.py, not a local copy -- that module stamps the same URL
+# onto every ModelCard's `source_url`, so "what this tool fetches" and "what
+# a parsed card says it was fetched from" can never drift apart. The install
+# path is this tool's own concern: forgeos/catalog.py checks the litellm
+# path LAST among DEFAULT_CATALOG_PATHS, so it is the one that wins on a ref
+# both tables know -- see the module docstring.
+SOURCES: dict[str, dict[str, object]] = {
+    "litellm": {
+        "url": LITELLM_URL,
+        "target": Path(os.path.expanduser("~/.forgeos/litellm_prices.json")),
+    },
+    "models_dev": {
+        "url": MODELS_DEV_URL,
+        "target": Path(os.path.expanduser("~/.forgeos/models_dev_cache.json")),
+    },
+}
+DEFAULT_SOURCE = "litellm"
 
 
 def current_prices() -> dict[str, tuple[float, float, float]]:
@@ -129,12 +162,18 @@ def report(before: dict, after: dict, provider_filter: str, limit: int) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--url", default=SOURCE_URL)
+    ap.add_argument("--source", choices=sorted(SOURCES), default=DEFAULT_SOURCE,
+                     help=f"which upstream price table to refresh (default: {DEFAULT_SOURCE})")
+    ap.add_argument("--url", default=None, help="override the chosen source's URL")
     ap.add_argument("--dry-run", action="store_true", help="show the diff, write nothing")
     ap.add_argument("--provider", default="", help="only report on this provider")
     ap.add_argument("--limit", type=int, default=15)
     ap.add_argument("--timeout", type=float, default=60.0)
     args = ap.parse_args()
+
+    source = SOURCES[args.source]
+    url = args.url or source["url"]
+    target = source["target"]
 
     for p in DEFAULT_CATALOG_PATHS:
         if p.exists():
@@ -142,9 +181,9 @@ def main() -> int:
             print(f"installed: {p}  ({p.stat().st_size / 1e6:.1f}MB, {age:.0f} days old)")
 
     before = current_prices()
-    print(f"\nfetching {args.url} ...")
+    print(f"\nfetching [{args.source}] {url} ...")
     try:
-        payload = fetch(args.url, args.timeout)
+        payload = fetch(url, args.timeout)
     except Exception as exc:
         # Never clobber a working catalogue with a failed fetch. Stale and usable
         # beats fresh and absent.
@@ -175,9 +214,14 @@ def main() -> int:
         print("\n--dry-run: nothing written")
         return 0
 
-    install(payload, TARGET)
-    print(f"\ninstalled -> {TARGET}")
-    print("forgeos/catalog.py reads this path first, so it now takes precedence.")
+    install(payload, target)
+    print(f"\ninstalled -> {target}")
+    if args.source == "litellm":
+        print("forgeos/catalog.py checks this path last, so it wins over models.dev "
+              "on any overlapping model ref.")
+    else:
+        print("forgeos/catalog.py checks this path first among models.dev caches; "
+              "litellm's cache (if installed) still wins on an overlapping ref.")
     return 0
 
 

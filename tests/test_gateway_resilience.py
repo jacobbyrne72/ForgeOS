@@ -34,6 +34,7 @@ from forgeos.gateway.client import (
     GatewayRequest,
     HttpTransport,
     ModelUnavailableError,
+    RateLimitError,
     RawCallResult,
     TransportError,
     rate_limit_saturation,
@@ -435,6 +436,176 @@ def test_a_model_dead_on_one_transport_still_succeeds_via_another(ledger):
     assert resp2.text == "ok"
     assert len(dead.calls) == 1, "openrouter tried once, ever"
     assert len(fanout.calls) == 2, "omniroute tried both times"
+
+
+# ==================================== feature B2: half-open probe wiring
+# (`_call_transports` claiming/resolving a HALF_OPEN trial for a TEMPORARY
+# dead entry whose `retry_after` has passed -- `DeadModelStore.claim_probe`/
+# `report_probe` themselves are covered in test_dead_models_probe.py; these
+# prove Gateway actually calls them at the right moments.)
+
+
+def _gateway_with_clock(transports, ledger, dead_models, t=1_000.0):
+    clock = {"t": t}
+    gw = Gateway(
+        catalog=Catalog([_dead_card()]), ledger=ledger, transports=transports,
+        dead_models=dead_models, clock=lambda: clock["t"],
+    )
+    return gw, clock
+
+
+def test_gateway_skips_a_still_cooling_down_temporary_entry_without_claiming(ledger):
+    """`retry_after` in the future: not HALF_OPEN yet, so no claim attempt at
+    all -- the transport is never touched and no probe slot is spent."""
+    dead_models = DeadModelStore(clock=lambda: 1_000.0)
+    dead_models.mark_dead("openrouter", "openrouter/gone:free", reason="glitch", retry_after=2_000.0)
+    transport = FakeTransport("openrouter", result=RawCallResult(text="hi", tokens_in=1, tokens_out=1))
+    gw, _ = _gateway_with_clock([transport], ledger, dead_models, t=1_000.0)
+    req = GatewayRequest(model_ref="openrouter/gone:free", prompt_tail="hi", max_output_tokens=10)
+
+    with pytest.raises(ModelUnavailableError):
+        gw.complete(req, job_id="j-cooldown", task_id=None, worker_id="w1", remaining_micros=1_000_000)
+
+    assert len(transport.calls) == 0
+    assert dead_models.get("openrouter", "openrouter/gone:free").probe_claimed_at is None
+
+
+def test_gateway_claims_and_clears_a_successful_half_open_probe(ledger):
+    dead_models = DeadModelStore(clock=lambda: 2_000.0)
+    dead_models.mark_dead("openrouter", "openrouter/gone:free", reason="glitch", retry_after=2_000.0)
+    transport = FakeTransport("openrouter", result=RawCallResult(text="back", tokens_in=1, tokens_out=1))
+    gw, _ = _gateway_with_clock([transport], ledger, dead_models, t=2_000.0)
+    req = GatewayRequest(model_ref="openrouter/gone:free", prompt_tail="hi", max_output_tokens=10)
+
+    resp = gw.complete(req, job_id="j-probe-ok", task_id=None, worker_id="w1", remaining_micros=1_000_000)
+
+    assert resp.text == "back"
+    assert len(transport.calls) == 1
+    # The successful trial call resolved the probe: entry gone entirely, not
+    # just "not dead right now".
+    assert dead_models.get("openrouter", "openrouter/gone:free") is None
+
+
+def test_gateway_reopens_after_a_failed_half_open_probe(ledger):
+    dead_models = DeadModelStore(clock=lambda: 2_000.0)
+    dead_models.mark_dead("openrouter", "openrouter/gone:free", reason="glitch", retry_after=2_000.0)
+    transport = FakeTransport("openrouter", error=TransportError("still down"))
+    gw, _ = _gateway_with_clock([transport], ledger, dead_models, t=2_000.0)
+    req = GatewayRequest(model_ref="openrouter/gone:free", prompt_tail="hi", max_output_tokens=10)
+
+    with pytest.raises(TransportError):
+        gw.complete(req, job_id="j-probe-fail", task_id=None, worker_id="w1", remaining_micros=1_000_000)
+
+    entry = dead_models.get("openrouter", "openrouter/gone:free")
+    assert entry is not None
+    assert entry.terminal is False, "a failed probe backs off, it does not promote to terminal"
+    assert entry.retry_after > 2_000.0
+    assert dead_models.is_dead("openrouter", "openrouter/gone:free") is True
+
+
+def test_gateway_reopens_after_a_rate_limited_half_open_probe(ledger):
+    dead_models = DeadModelStore(clock=lambda: 2_000.0)
+    dead_models.mark_dead("openrouter", "openrouter/gone:free", reason="glitch", retry_after=2_000.0)
+    transport = FakeTransport("openrouter", error=RateLimitError("429", retry_after=5.0))
+    gw, _ = _gateway_with_clock([transport], ledger, dead_models, t=2_000.0)
+    req = GatewayRequest(model_ref="openrouter/gone:free", prompt_tail="hi", max_output_tokens=10)
+
+    with pytest.raises(TransportError):
+        gw.complete(req, job_id="j-probe-429", task_id=None, worker_id="w1", remaining_micros=1_000_000)
+
+    entry = dead_models.get("openrouter", "openrouter/gone:free")
+    assert entry is not None and entry.terminal is False
+    # Exact, not just "later than before": the provider's own Retry-After
+    # signal is what set this, not `report_probe`'s generic backoff default.
+    assert entry.retry_after == 2_000.0 + 5.0
+
+
+def test_gateway_a_model_unavailable_probe_result_goes_terminal_not_backoff(ledger):
+    """A 404 during the trial call is a stronger signal than an ordinary
+    probe failure -- it should still promote straight to TERMINAL, the same
+    as it would for a never-dead model, not just reschedule another trial."""
+    dead_models = DeadModelStore(clock=lambda: 2_000.0)
+    dead_models.mark_dead("openrouter", "openrouter/gone:free", reason="glitch", retry_after=2_000.0)
+    transport = FakeTransport("openrouter", error=ModelUnavailableError("openrouter HTTP 404: gone"))
+    gw, _ = _gateway_with_clock([transport], ledger, dead_models, t=2_000.0)
+    req = GatewayRequest(model_ref="openrouter/gone:free", prompt_tail="hi", max_output_tokens=10)
+
+    with pytest.raises(TransportError):
+        gw.complete(req, job_id="j-probe-404", task_id=None, worker_id="w1", remaining_micros=1_000_000)
+
+    entry = dead_models.get("openrouter", "openrouter/gone:free")
+    assert entry is not None
+    assert entry.terminal is True
+    assert entry.probe_claimed_at is None  # mark_dead always clears the claim
+
+
+def test_gateway_only_one_concurrent_caller_gets_the_half_open_trial(ledger):
+    """Two callers racing the same HALF_OPEN window: only the claim-winner
+    ever reaches the transport. The loser gets a clean 'nothing to try'
+    failure instead of also spending a network call on the same trial."""
+    dead_models = DeadModelStore(clock=lambda: 2_000.0)
+    dead_models.mark_dead("openrouter", "openrouter/gone:free", reason="glitch", retry_after=2_000.0)
+    transport = BlockingTransport(
+        "openrouter", result=RawCallResult(text="back", tokens_in=1, tokens_out=1)
+    )
+    gw, _ = _gateway_with_clock([transport], ledger, dead_models, t=2_000.0)
+    req = GatewayRequest(model_ref="openrouter/gone:free", prompt_tail="hi", max_output_tokens=10)
+    results: dict[str, object] = {}
+    errors: dict[str, Exception] = {}
+
+    def call(name, job_id):
+        try:
+            results[name] = gw.complete(
+                req, job_id=job_id, task_id=None, worker_id="w1", remaining_micros=1_000_000
+            )
+        except Exception as e:
+            errors[name] = e
+
+    t_a = threading.Thread(target=call, args=("a", "j-race-a"))
+    t_a.start()
+    assert transport.started.wait(timeout=5), "claim-winner never reached the transport"
+
+    # By now A has already claimed the trial and is blocked inside the
+    # transport call -- B's claim attempt must lose and never call in.
+    call("b", "j-race-b")
+    assert isinstance(errors.get("b"), ModelUnavailableError)
+    assert transport.calls == 1, "the loser must not also touch the transport"
+
+    transport.release.set()
+    t_a.join(timeout=5)
+
+    assert not errors.get("a")
+    assert results["a"].text == "back"
+    assert dead_models.get("openrouter", "openrouter/gone:free") is None
+
+
+def test_gateway_probes_at_most_one_temporary_dead_transport_per_request(ledger):
+    """Two different transports both happen to be due for a HALF_OPEN trial
+    for the same model_ref: only one gets probed this request, not both --
+    one experimental call per request, not a burst across every dead
+    transport on the ladder (see the comment above the candidate-building
+    loop in `_call_transports`)."""
+    dead_models = DeadModelStore(clock=lambda: 2_000.0)
+    dead_models.mark_dead("openrouter", "openrouter/gone:free", reason="glitch", retry_after=2_000.0)
+    dead_models.mark_dead("omniroute", "openrouter/gone:free", reason="glitch", retry_after=2_000.0)
+    openrouter = FakeTransport("openrouter", result=RawCallResult(text="a", tokens_in=1, tokens_out=1))
+    omniroute = FakeTransport("omniroute", result=RawCallResult(text="b", tokens_in=1, tokens_out=1))
+    gw, _ = _gateway_with_clock([openrouter, omniroute], ledger, dead_models, t=2_000.0)
+    req = GatewayRequest(model_ref="openrouter/gone:free", prompt_tail="hi", max_output_tokens=10)
+
+    resp = gw.complete(req, job_id="j-cap", task_id=None, worker_id="w1", remaining_micros=1_000_000)
+
+    assert resp.text in ("a", "b")
+    assert len(openrouter.calls) + len(omniroute.calls) == 1, "only one transport probed this request"
+    remaining = [
+        e for e in (
+            dead_models.get("openrouter", "openrouter/gone:free"),
+            dead_models.get("omniroute", "openrouter/gone:free"),
+        )
+        if e is not None
+    ]
+    assert len(remaining) == 1, "the tried one resolved (cleared); the other was never touched"
+    assert remaining[0].probe_claimed_at is None, "never claimed -- this request's one slot was already spent"
 
 
 # ======================================================= feature C: dedup

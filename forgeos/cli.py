@@ -218,6 +218,21 @@ def cmd_bench(args):
     return 0
 
 
+def cmd_forgebench(args) -> int:
+    from forgeos.forgebench import main as forgebench_main
+
+    argv = ["--budget-usd", str(args.budget_usd)]
+    if args.model:
+        argv += ["--model", args.model]
+    if args.dry_run:
+        argv.append("--dry-run")
+    if args.skip_baseline:
+        argv.append("--skip-baseline")
+    if args.ledger_path:
+        argv += ["--ledger-path", args.ledger_path]
+    return forgebench_main(argv)
+
+
 def cmd_watch(args):
     from forgeos.watch import watch
 
@@ -385,6 +400,15 @@ def main() -> int:
     p_bench = sub.add_parser("bench", help="Reproducible cost benchmark")
     p_bench.add_argument("objective")
     p_bench.add_argument("--iterations", type=int, default=3)
+    p_forgebench = sub.add_parser(
+        "forgebench",
+        help="Release 0.1 exit gate: paired baseline vs ForgeOS on a pinned task suite",
+    )
+    p_forgebench.add_argument("--model", default="")
+    p_forgebench.add_argument("--budget-usd", type=float, default=0.50, dest="budget_usd")
+    p_forgebench.add_argument("--dry-run", action="store_true", dest="dry_run")
+    p_forgebench.add_argument("--skip-baseline", action="store_true", dest="skip_baseline")
+    p_forgebench.add_argument("--ledger-path", default=":memory:", dest="ledger_path")
     p_watch = sub.add_parser("watch", help="Continuous cost monitoring")
     p_watch.add_argument("--interval", type=int, default=30)
     p_watch.add_argument("--max-alerts", type=int, default=5)
@@ -441,6 +465,7 @@ def main() -> int:
         "auto": cmd_auto,
         "batch": cmd_batch,
         "bench": cmd_bench,
+        "forgebench": cmd_forgebench,
         "watch": cmd_watch,
         "budget": cmd_budget,
         "replace": cmd_replace,
@@ -775,7 +800,7 @@ def cmd_project(args):
 
 
 def cmd_truncate(args):
-    from forgeos.response_truncator import truncate_response
+    from forgeos.output_compressor import truncate_response
     demo = "This is a long response that goes on and on and takes up many tokens. " * 100
     result, info = truncate_response(demo, max_tokens=args.max_tokens)
     print("=== Response Truncator ===")
@@ -806,7 +831,7 @@ def cmd_model_rank(args):
 
 
 def cmd_shrink(args):
-    from forgeos.prompt_shrinker import shrink_prompt
+    from forgeos.prompt_optimizer import shrink_prompt
     demo = "Explain the concept of recursion in detail.  " * 10
     result, info = shrink_prompt(demo, target_tokens=args.max_tokens)
     print("=== Prompt Shrinker ===")
@@ -1040,8 +1065,15 @@ def cmd_prompt_cache(args):
 
 
 def cmd_adaptive_batch(args):
-    from forgeos.adaptive_batch_cost import AdaptiveBatchCostOptimizer
-    opt = AdaptiveBatchCostOptimizer()
+    # NOTE: this handler is not registered in main()'s dispatch dict (no
+    # "forge <cmd>" reaches it) — that was true before this consolidation
+    # too; see tests/test_cli_dispatch.py's reachability tests, which only
+    # check registered commands. Left as-is rather than wiring a new CLI
+    # verb, which would be a scope change beyond de-duplication. Only the
+    # now-deleted adaptive_batch_cost.py import is fixed here so this
+    # function is correct if it's ever invoked directly (e.g. from a test).
+    from forgeos.adaptive_batch import AdaptiveBatch
+    opt = AdaptiveBatch()
     for i in range(args.tasks):
         result = opt.recommend_batch_size("code_gen", args.tokens)
         print("Task %d: batch=%d cost=$%.4f savings=$%.4f" % (

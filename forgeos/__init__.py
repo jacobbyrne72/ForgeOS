@@ -130,7 +130,7 @@ from .cost_audit import CostAuditor
 from .cost_router import CostRouter, Route
 from .cost_tracker import CostTracker
 
-from .prompt_optimizer import optimize_prompt, estimate_tokens
+from .prompt_optimizer import optimize_prompt, estimate_tokens, shrink_prompt, estimate_prompt_tokens
 
 from .local_exec import LocalExecutor
 
@@ -144,17 +144,13 @@ from .cost_forecast import CostForecast
 
 from .cost_efficiency import CostEfficiency
 
-from .output_compressor import compress_output, estimate_output_tokens
+from .output_compressor import compress_output, estimate_output_tokens, truncate_response
 
 from .local_formatter import LocalFormatter
 
 from .cache_purge import CachePurge
 
-from .prompt_shrinker import shrink_prompt, estimate_prompt_tokens
-
 from .model_ranker import ModelRanker
-
-from .response_truncator import truncate_response
 
 from .batch_projection import BatchProjection
 
