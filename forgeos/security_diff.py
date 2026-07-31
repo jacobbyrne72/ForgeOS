@@ -240,10 +240,10 @@ def _reconstruct_diff(diff: DiffResult) -> str:
         lines.append(f"--- a/{path}")
         lines.append(f"+++ b/{path}")
         lines.append("@@ -0,0 +0,0 @@")
-        for l in diff.lines_removed:
-            if l.path == path:
-                lines.append(f"-{l.content}")
-        for l in diff.lines_added:
-            if l.path == path:
-                lines.append(f"+{l.content}")
+        for line in diff.lines_removed:
+            if line.path == path:
+                lines.append(f"-{line.content}")
+        for line in diff.lines_added:
+            if line.path == path:
+                lines.append(f"+{line.content}")
     return "\n".join(lines)

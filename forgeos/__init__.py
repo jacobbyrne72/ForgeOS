@@ -73,6 +73,7 @@ __all__ = [
     "bench",
     "BenchmarkResult",
     "Layer",
+    "format_benchmark",
     "compress_context",
     "watch",
     "AdapterProfiler",

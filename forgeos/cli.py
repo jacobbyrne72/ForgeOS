@@ -15,7 +15,7 @@ from forgeos.prompt_cache import PromptCache
 def cmd_run(args) -> int:
     from forgeos import Forge
 
-    forge = Forge()
+    Forge()
     mission = compile_mission(args.objective, cwd=args.cwd or ".")
     print(f"Mission compiled: {len(mission.tasks)} tasks")
     for t in mission.tasks:
@@ -141,72 +141,6 @@ def cmd_cache(args) -> int:
         print("Pruned expired entries.")
     cache.close()
     return 0
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(prog="forge", description="ForgeOS CLI")
-    sub = parser.add_subparsers(dest="command")
-    sub.add_parser("doctor", help="Readiness score")
-    p_init = sub.add_parser("init", help="Scan repo and generate files")
-    p_init.add_argument("--cwd", default=None)
-    p_run = sub.add_parser("run", help="Compile and run objective")
-    p_run.add_argument("objective")
-    p_run.add_argument("--cwd", default=".")
-    # `cmd_run` referenced args.budget behind a hasattr() guard while no parser
-    # ever defined it, so the guard silently swallowed the miss and a
-    # cost-governed harness shipped with no way to cap a run's spend.
-    p_run.add_argument("--budget", type=float, default=None, help="hard USD ceiling for this run")
-    p_resume = sub.add_parser("resume", help="Resume a crashed job")
-    p_resume.add_argument("job_id")
-    p_resume.add_argument("--state-dir", default=None)
-    p_report = sub.add_parser("report", help="Cost breakdown for a job")
-    p_report.add_argument("job_id")
-    p_report.add_argument("--state-dir", default=None)
-    p_report.add_argument("--breakdown", action="store_true", help="Per-task cost breakdown")
-    p_compile = sub.add_parser("compile", help="Dry-run compile")
-    p_compile.add_argument("objective")
-    p_compile.add_argument("--cwd", default=".")
-    p_cache = sub.add_parser("cache", help="Manage prompt cache")
-    p_cache.add_argument("cache_action", choices=["clear", "stats", "prune"])
-    sub.add_parser("breaker", help="Circuit breaker state")
-    p_compress = sub.add_parser("compress", help="AST-based context compression")
-    p_compress.add_argument("objective")
-    p_compress.add_argument("--files", nargs="*", default=[])
-    p_adapt = sub.add_parser("adapt", help="Adaptive adapter selection")
-    p_adapt.add_argument("--capabilities", default="")
-    p_adapt.add_argument("--budget", type=int, default=None)
-    p_bench = sub.add_parser("bench", help="Reproducible cost benchmark")
-    p_bench.add_argument("objective")
-    p_bench.add_argument("--iterations", type=int, default=3)
-    p_watch = sub.add_parser("watch", help="Continuous cost monitoring")
-    p_watch.add_argument("--interval", type=int, default=30)
-    p_watch.add_argument("--max-alerts", type=int, default=5)
-    args = parser.parse_args()
-    if not args.command:
-        parser.print_help()
-        return 0
-    dispatch = {
-        "run": cmd_run,
-        "resume": cmd_resume,
-        "report": cmd_report,
-        "adapt": cmd_adapt,
-        "compress": cmd_compress,
-        "bench": cmd_bench,
-        "watch": cmd_watch,
-        "doctor": cmd_doctor,
-        "init": cmd_init,
-        "compile": cmd_compile,
-        "cache": cmd_cache,
-        "breaker": cmd_breaker,
-    }
-    handler = dispatch.get(args.command)
-    if handler is None:
-        # A registered subcommand with no handler must fail loudly. The whole
-        # bug this line exists to prevent was a command that parsed, did
-        # nothing, and exited 0.
-        print(f"ERROR: no handler registered for '{args.command}'", file=sys.stderr)
-        return 2
-    return handler(args)
 
 
 def cmd_compress(args):

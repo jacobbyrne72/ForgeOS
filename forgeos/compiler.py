@@ -288,7 +288,7 @@ def _walk_ts(node, source, path, lang, symbols, depth=0) -> None:
 def analyze_codebase(cwd: str) -> list[FileAnalysis]:
     analyses: list[FileAnalysis] = []
     try:
-        from tree_sitter import Language, Parser
+        from tree_sitter import Parser
     except ImportError:
         return analyses
     cwd_path = Path(cwd).resolve()

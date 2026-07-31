@@ -1,15 +1,27 @@
 # ForgeOS
 
-**The operating system for cheap, fast, verified AI coding.**
+**Get 5x more from your AI subscriptions. Same $20/month, 5x the work done.**
 
-A cost-governed harness for AI coding agents. A deterministic kernel owns
-scheduling, budgets, file leases and verification; a cheap model wakes only when
-something genuinely ambiguous happens; nothing merges without tests, a security
-scan, evidence, and a review by a *different* worker.
+You're paying for Claude, Codex, Copilot. You're hitting rate limits by noon.
+ForgeOS routes every task through the cheapest capable worker — free local
+models first, your subscriptions second, metered API last — so your flat-rate
+seats handle 5x more before you ever touch pay-per-token.
 
-The optimisation target is **cost per accepted task** — not tokens, not calls.
-A router that halves per-call cost while doubling retries has made things worse,
-and per-call metrics score that as a win.
+```
+$ forge fleet
+  YOUR ROUTING LADDER (cheapest first)
+  1. free/local     → ollama
+  2. subscription   → claude, codex, copilot
+  3. metered        → deepseek, openrouter
+
+  → forgeos routes through claude, codex, copilot BEFORE touching metered API.
+    Every task your subscription handles = $0 extra cost.
+    Same subscription. 5x more tasks. That's the product.
+```
+
+The kernel is deterministic code: scheduling, budgets, file leases, verification.
+A model is called only for genuinely ambiguous work. Nothing merges without
+tests, a security scan, evidence, and review by a *different* worker.
 
 > **Status: v0.2.0 — pre-1.0, not production-hardened.** A `forge` CLI, mission
 > compiler, circuit breakers, prompt prefix caching, diff-aware scanning, adapter
@@ -41,6 +53,37 @@ into a saving it never made — see the note below.
 These multiply. A smaller payload, on a cache hit, on a free-tier model, for a
 call deterministic code decided didn't need making, isn't 89% cheaper — it never
 happened.
+
+## Why your subscription runs out by noon
+
+Your $20/month Claude or Codex plan has a quota window (5-hour rolling, weekly
+cap). Every task you send through the CLI burns that quota — including the
+~4,000-token system prompt the CLI sends on *every single call*, the whole-repo
+context dump, and the retry you didn't need because the answer was a grep away.
+
+ForgeOS attacks all three:
+
+1. **Byte-stable prefixes.** The system prompt is split into a stable prefix
+   (role contract, tool protocol, safety policy) and a volatile tail (the task).
+   The prefix is byte-identical across calls, so the provider serves it from
+   cache at ~90% discount. Your quota lasts 10x longer on the prefix alone.
+   (`forgeos/prompts/prefix.py` — with a CI test that asserts byte identity.)
+
+2. **Compact role prompts.** Claude Code's default prompt is ~4,000 tokens of
+   ceremony. ForgeOS sends a 200-token role prefix that gets the same work done.
+   Every token you don't send is quota you keep. (`forgeos/prompts/roles.py`)
+
+3. **Refuse before calling.** If the answer is a tree-sitter query, a grep, or
+   already in the knowledge vault, the subscription call never happens. The
+   cheapest call is the one never made. (`forgeos/economy/preflight.py`)
+
+4. **Quota-aware routing.** When Claude's window is exhausted, ForgeOS doesn't
+   burn a retry on a rate-limit error. It reads the reset time from the error
+   message, parks the work, and routes through the next rung until the window
+   reopens. (`forgeos/core/quota.py` — wired into `forge.py`'s routing loop.)
+
+The result: your subscription handles the ambiguous middle, free tiers handle
+the routine, and metered API is the last resort. Same $20/month, 5x more tasks.
 
 ## What's new in v0.2.0
 

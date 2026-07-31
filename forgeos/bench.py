@@ -11,7 +11,6 @@ so comparisons are reproducible and auditable.
 
 from __future__ import annotations
 import time
-import hashlib
 from dataclasses import dataclass
 from enum import Enum
 
@@ -41,48 +40,32 @@ def bench(objective: str, *, cwd: str = ".", iterations: int = 3) -> list[Benchm
     from forgeos.prompt_cache import PromptCache
 
     results: list[BenchmarkResult] = []
-    objective_hash = hashlib.sha256(objective.encode()).hexdigest()[:12]
-
     for layer in Layer:
         times: list[float] = []
         for _ in range(iterations):
             t0 = time.perf_counter()
             if layer.value == "raw":
                 # Baseline: just pass objective to a model (simulated)
-                tokens = len(objective.split()) * 1.3  # rough estimate
                 saved_tokens = 0
                 saved_usd = 0
-                tree_ms = 0.0
-                setup_ms = 0.0
             elif layer.value == "compiler":
                 compile_mission(objective, cwd=cwd)
-                tokens = len(objective.split()) * 0.3  # compiler eliminates 70% of model tokens
                 saved_tokens = int(len(objective.split()) * 1.0)
                 saved_usd = int(saved_tokens * 0.000015 * 1_000_000)  # @ $15/M tokens
-                tree_ms = 0.0
-                setup_ms = 0.0
             elif layer.value == "compiler+breaker":
-                cb = CircuitBreaker()
+                CircuitBreaker()
                 compile_mission(objective, cwd=cwd)
-                tokens = len(objective.split()) * 0.3
                 saved_tokens = int(len(objective.split()) * 1.0)
                 saved_usd = int(saved_tokens * 0.000015 * 1_000_000)
-                tree_ms = 0.0
-                setup_ms = 0.0
             else:  # full
-                cb = CircuitBreaker()
+                CircuitBreaker()
                 pc = PromptCache()
                 miss = pc.get("openrouter", "sonnet", objective)
                 if miss is None:
                     pc.put("openrouter", "sonnet", objective, "response", tokens_in=100)
                 compile_mission(objective, cwd=cwd)
-                tokens = (
-                    len(objective.split()) * 0.05
-                )  # 95% saved (compiler + cache + breaker eliminate all calls)
                 saved_tokens = int(len(objective.split()) * 0.95)
                 saved_usd = int(saved_tokens * 0.000015 * 1_000_000)
-                tree_ms = 0.0
-                setup_ms = 0.0
 
             t1 = time.perf_counter()
             times.append((t1 - t0) * 1000)

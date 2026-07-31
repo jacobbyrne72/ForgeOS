@@ -244,41 +244,32 @@ class Scheduler:
     ) -> bool:
         """Refresh an assignment's liveness, iff the caller still holds it.
 
-        The same fence as `report`, for the same reason: a worker reclaimed by
-        `expire_heartbeats` is not killed, so it keeps heartbeating against a
-        task_id whose slot a DIFFERENT attempt now occupies. Unfenced, those
-        ticks refresh the replacement's stamp and a genuinely stuck attempt
-        looks healthy forever -- the one thing heartbeat expiry exists to
-        catch. Returns True when the stamp was refreshed, False when the
-        caller was fenced out or there was no assignment to refresh; an
-        orphan that gets False back has learned its attempt is over.
+        The same fence as `report`, for the same reason: a reclaimed worker is
+        never killed, so it keeps heartbeating against a task_id whose slot a
+        DIFFERENT attempt now occupies. Unfenced, those ticks refresh the
+        replacement's stamp and a genuinely stuck attempt looks healthy
+        indefinitely -- the one thing expiry exists to catch. Returns True
+        when the stamp was refreshed; an orphan handed False has learned its
+        attempt is over.
 
-        Checked against the in-memory assignment rather than the ledger's
-        generation, unlike `report`. It is the cheaper read -- heartbeats are
-        frequent and this keeps them off the database -- and it is the correct
-        one: the value being guarded IS `_active[task_id].last_heartbeat`, so
-        the holder of that entry is precisely who may write to it.
-        `worker_id` is checked too, because two assignments can share a
-        generation (a task assigned twice with no reclaim between) and the
-        counter alone would not tell them apart.
+        Fenced against the in-memory assignment rather than the ledger, unlike
+        `report`: cheaper (heartbeats are frequent, and this keeps them off
+        the database) and correct, since `_active[task_id].last_heartbeat` is
+        itself the value being guarded. `worker_id` is checked too -- two
+        assignments can share a generation if a task is assigned twice with no
+        reclaim between, and the counter alone would not separate them.
 
-        An unstamped call is accepted, deliberately UNLIKE `report`, which
-        fences unstamped calls once a bump has happened. The costs are not
-        symmetric. An unstamped report accepted after a bump writes a wrong
-        result into the ledger permanently, and refusing it costs one retry.
-        An unstamped heartbeat refused after a bump leaves the current,
-        healthy worker no way to prove liveness -- reclaimed, reassigned,
-        refused again, forever -- while accepting it costs only a late
-        reclaim of a stuck worker, the mild condition this fencing improves
-        rather than a corruption. Strictness is right there and wrong here.
+        An unstamped call is accepted, deliberately UNLIKE `report`, because
+        the costs are not symmetric: an unstamped report accepted after a bump
+        corrupts the ledger permanently and refusing it costs one retry, while
+        an unstamped heartbeat refused after a bump leaves the current healthy
+        worker no way to prove liveness -- reclaimed, reassigned, refused,
+        forever -- and accepting it costs only the late reclaim this shortens.
 
-        A fenced heartbeat is not written to the event log. A fenced REPORT is
-        discarded work and worth an operator's attention exactly once; a
-        fenced heartbeat is a zombie ticking on a timer, and logging every one
-        would spend a stream of event rows proportional to how long the
-        orphan survives -- the supervision-cost failure this file exists to
-        avoid. The return value carries the signal to the only party that can
-        act on it.
+        A fenced heartbeat is not logged: a fenced report is discarded work
+        worth an operator's attention once, but a fenced heartbeat is a zombie
+        on a timer, and one event per tick is the supervision cost this file
+        exists to avoid.
         """
         asn = self._active.get(task_id)
         if asn is None:
