@@ -79,7 +79,9 @@ Reproduce without spending: `forge forgebench --dry-run --json-out artifacts/for
 The receipt contains all six pinned task contracts, per-task acceptance slots,
 proof hashes, and the modelled suite estimate; `--live` is not implicit.
 Aggregate receipts without making provider calls:
-`python tools/aggregate_bench.py artifacts/forgebench-*.json --json-out artifacts/forgebench-table.json`.
+`forge forgebench-table artifacts/forgebench-*.json --json-out artifacts/forgebench-table.json`.
+The repository tool `python tools/aggregate_bench.py ...` remains an equivalent
+compatibility entry point.
 The table keeps dry-run, failed, aborted, and voided receipts visible, and only
 computes savings from measured live Class-A runs with matching acceptance.
 
@@ -105,7 +107,8 @@ measurement is the gate above.
 | Path leases | Two workers can never hold the same write path |
 | Merge gate | Tests + security + evidence + a genuinely different reviewer |
 
-Your ledger is the real number — `python -m forgeos receipts` prints it.
+Your ledger is the real number — `forge receipts` (or `python -m forgeos receipts`)
+prints it.
 
 
 ```

@@ -1,15 +1,9 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
 
-
-_MODULE_PATH = Path(__file__).parents[1] / "tools" / "aggregate_bench.py"
-_SPEC = importlib.util.spec_from_file_location("forgeos_aggregate_bench", _MODULE_PATH)
-assert _SPEC and _SPEC.loader
-aggregate_bench = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(aggregate_bench)
+from forgeos import forgebench_table as aggregate_bench
 
 
 def _receipt(

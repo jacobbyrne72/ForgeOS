@@ -192,6 +192,37 @@ def test_forgebench_forwards_json_receipt_path(monkeypatch):
     assert captured["argv"][captured["argv"].index("--json-out") + 1] == "receipt.json"
 
 
+def test_forgebench_table_forwards_receipts_and_json_path(monkeypatch):
+    from types import SimpleNamespace
+    from forgeos import forgebench_table
+
+    captured = {}
+
+    def fake_main(argv):
+        captured["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(forgebench_table, "main", fake_main)
+    args = SimpleNamespace(paths=["one.json", "receipts"], json_out="table.json")
+
+    assert cli.cmd_forgebench_table(args) == 0
+    assert captured["argv"] == ["one.json", "receipts", "--json-out", "table.json"]
+
+
+def test_console_receipts_delegates_to_canonical_read_only_view(monkeypatch):
+    from forgeos import __main__ as runtime_cli
+
+    captured = {}
+
+    def fake_receipts(args):
+        captured["state_dir"] = args.state_dir
+        return 0
+
+    monkeypatch.setattr(runtime_cli, "cmd_receipts", fake_receipts)
+    assert cli.main(["receipts", "--state-dir", "state"]) == 0
+    assert captured == {"state_dir": "state"}
+
+
 def test_fleet_is_safe_on_windows_cp1252_console(monkeypatch, capsys):
     """The fleet screenshot must not crash on the default Windows console."""
     from types import SimpleNamespace

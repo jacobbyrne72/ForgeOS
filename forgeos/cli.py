@@ -70,6 +70,13 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_receipts(args) -> int:
+    """Expose the canonical read-only ledger receipt view on the console script."""
+    from forgeos.__main__ import cmd_receipts as _cmd_receipts
+
+    return _cmd_receipts(args)
+
+
 def cmd_doctor(args) -> int:
     from forgeos.settings import Settings
 
@@ -233,6 +240,15 @@ def cmd_forgebench(args) -> int:
     return forgebench_main(argv)
 
 
+def cmd_forgebench_table(args) -> int:
+    from forgeos.forgebench_table import main as table_main
+
+    argv = list(args.paths)
+    if args.json_out:
+        argv += ["--json-out", args.json_out]
+    return table_main(argv)
+
+
 def cmd_watch(args):
     from forgeos.watch import watch
 
@@ -359,6 +375,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("doctor", help="What can this machine do right now")
     sub.add_parser("fleet", help="What you have, what's alive, what's cheapest TODAY")
+    p_receipts = sub.add_parser("receipts", help="Read-only ledger spend and acceptance summary")
+    p_receipts.add_argument("--state-dir", default=None)
     p_init = sub.add_parser("init", help="Scan repo and generate files")
     p_init.add_argument("--cwd", default=None)
     p_run = sub.add_parser("run", help="Compile and run objective")
@@ -416,6 +434,11 @@ def main(argv: list[str] | None = None) -> int:
     p_forgebench.add_argument("--skip-baseline", action="store_true", dest="skip_baseline")
     p_forgebench.add_argument("--ledger-path", default=":memory:", dest="ledger_path")
     p_forgebench.add_argument("--json-out", default="", dest="json_out")
+    p_forgebench_table = sub.add_parser(
+        "forgebench-table", help="Aggregate ForgeBench JSON receipts without provider calls"
+    )
+    p_forgebench_table.add_argument("paths", nargs="+", help="ForgeBench JSON files or directories")
+    p_forgebench_table.add_argument("--json-out", default="", dest="json_out")
     p_watch = sub.add_parser("watch", help="Continuous cost monitoring")
     p_watch.add_argument("--interval", type=int, default=30)
     p_watch.add_argument("--max-alerts", type=int, default=5)
@@ -464,6 +487,7 @@ def main(argv: list[str] | None = None) -> int:
         "run": cmd_run,
         "resume": cmd_resume,
         "report": cmd_report,
+        "receipts": cmd_receipts,
         "adapt": cmd_adapt,
         "compress": cmd_compress,
         "models": cmd_models,
@@ -473,6 +497,7 @@ def main(argv: list[str] | None = None) -> int:
         "batch": cmd_batch,
         "bench": cmd_bench,
         "forgebench": cmd_forgebench,
+        "forgebench-table": cmd_forgebench_table,
         "watch": cmd_watch,
         "budget": cmd_budget,
         "replace": cmd_replace,

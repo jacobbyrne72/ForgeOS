@@ -18,6 +18,7 @@
 - `tools/ab_bench.py` is now safe by default: it prices both arms without opening a ledger or touching a transport, emits a Class-D JSON receipt with `--json-out`, and requires explicit `--live` for provider calls.
 - `forgeos/forgebench.py` already owns the pinned six-task correctness-gated suite; it now serializes dry-run/live reports as `forgeos.forgebench.v1` JSON via `--json-out`, and `forgeos.cli` forwards that flag.
 - `tools/aggregate_bench.py` now builds a model-free `forgeos.forgebench_table.v1` JSON/Markdown table; it preserves every receipt and gates savings to measured live Class-A runs with matching acceptance.
+- `forgeos.forgebench_table` is now the reusable implementation behind both `forge forgebench-table`/`python -m forgeos.cli forgebench-table` and the repository compatibility script; the installed console also exposes the canonical read-only `forge receipts` view.
 - The 713-entry catalog is a manifest, not a set of local source clones; broad cloning is intentionally avoided.
 - Reference clones are isolated at `C:\Users\byrne\Downloads\ForgeOS-upstreams-2026-07-31`.
 - Earlier concurrent routed/reducer changes were committed separately; this task did not modify their files.
@@ -44,6 +45,7 @@
 - `tools/ab_bench.py`, `tests/test_ab_bench.py` — opt-in live A/B benchmark plus no-call receipt coverage.
 - `forgeos/forgebench.py`, `forgeos/cli.py`, `tests/test_forgebench.py`, `tests/test_cli_dispatch.py` — pinned-suite JSON receipts and CLI forwarding.
 - `tools/aggregate_bench.py`, `tests/test_aggregate_bench.py` — correctness-gated receipt aggregation and public table rendering.
+- `forgeos/forgebench_table.py`, `forgeos/cli.py`, `tests/test_cli_dispatch.py` — package-level aggregation and installed-CLI parity for receipts/table commands.
 
 ## Commands run
 - `rtk proxy python -m pytest tests -q -m "not slow"`
@@ -63,9 +65,11 @@
 - checkpointed full suite via `sweep.py` and `pytest --collect-only`: 1729 tests collected, sweep rc 0
 - `python -m forgeos.cli forgebench --dry-run --model openrouter/openrouter/free --budget-usd 50 --json-out <temp receipt>`
 - `python tools/aggregate_bench.py <temp receipt> --json-out <temp table>` (one dry-run retained, zero eligible savings)
+- `python -m forgeos.cli forgebench-table <temp receipt> --json-out <temp table>` (same zero-claim result)
+- `python -m forgeos.cli receipts --state-dir <missing temp dir>` (read-only failure, directory not created)
 
 ## Test status
-- Passing: 163 focused benchmark/CLI/aggregator tests; 1731-test full suite target (checkpointed sweep rc 0); Ruff; compileall; CLI dogfood and no-call benchmark smoke checks.
+- Passing: 164 focused benchmark/CLI/aggregator tests; 1731-test full suite target (checkpointed sweep rc 0); Ruff; compileall; CLI dogfood and no-call benchmark smoke checks.
 - Failing: none observed.
 - Not run: none.
 
@@ -76,4 +80,5 @@
 
 ## Next best steps
 - Keep provider calls opt-in; do not run `tools/ab_bench.py --live`, `forge forgebench` live, or a real `forge run` without explicit operator-approved provider/budget calls.
+- The `forge` executable is not installed in this shell (`Get-Command forge` returned unavailable); the source-equivalent `python -m forgeos.cli` path is verified without installing anything.
 - Next product candidate: collect explicitly approved measured live receipts and publish a real bill table; never infer live savings from dry-run/modelled data.
