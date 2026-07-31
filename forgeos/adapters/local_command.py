@@ -88,8 +88,19 @@ class LocalCommandAdapter(WorkerAdapter):
             session.process.stdin.write(prompt.encode("utf-8"))
             await session.process.stdin.drain()
             session.process.stdin.close()
+            # The spawned CLI is this worker's one tool, and its stdout is raw
+            # tool output — not model chatter. Emitting it as MESSAGE routed it
+            # into `evidence` and left `raw_output` empty, so a worker whose
+            # output contained a genuine "N passed" pytest summary still hit
+            # the merge gate as "nothing was actually verified": the reducer
+            # only parses test counts from TOOL_UPDATE text. Observed live on
+            # the first headless-Claude dogfood run — correct implementation,
+            # honest refusal, wrong event kind.
+            yield WorkerEvent(kind=EventKind.TOOL_CALL, text=self._command,
+                              tool_kind="execute")
             while line := await session.process.stdout.readline():
-                yield WorkerEvent(kind=EventKind.MESSAGE, text=line.decode("utf-8", errors="replace").rstrip())
+                yield WorkerEvent(kind=EventKind.TOOL_UPDATE, status="running",
+                                  text=line.decode("utf-8", errors="replace").rstrip())
             returncode = await session.process.wait()
             if returncode:
                 yield WorkerEvent(

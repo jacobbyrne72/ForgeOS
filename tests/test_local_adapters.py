@@ -310,3 +310,32 @@ def test_ollama_close_is_idempotent_and_drops_the_session():
 
     with pytest.raises(KeyError):
         run(adapter.usage(session_id))
+
+
+@pytest.mark.slow
+def test_local_command_output_is_tool_evidence_not_chatter(tmp_path):
+    """The spawned CLI's stdout must reach the bridge as TOOL_UPDATE text.
+
+    Emitting it as MESSAGE routed a genuine pytest summary into `evidence`
+    and left `raw_output` empty, so the merge gate refused a worker whose
+    output plainly said "N passed" — observed live on the first headless
+    dogfood run. This pins the event kinds so that regression cannot return
+    silently.
+    """
+    import sys
+
+    from forgeos.adapters.executor import adapter_executor
+    from forgeos.adapters.local_command import LocalCommandAdapter
+    from forgeos.contracts import Budget, Scope, TaskSpec
+
+    adapter = LocalCommandAdapter(
+        sys.executable, ["-c", "print('=== 3 passed in 0.12s ===')"]
+    )
+    spec = TaskSpec(job_id="", subject="pin", description="d",
+                    capabilities=["edit"], scope=Scope(paths=[]),
+                    acceptance=["n/a"], budget=Budget(max_usd=0.1, max_seconds=60))
+    result = adapter_executor(adapter, cwd=str(tmp_path))(spec, "local.pin")
+
+    assert result.tests is not None, "pytest summary in CLI output never reached the reducer"
+    assert result.tests.passed == 3
+    assert result.commands_run, "the spawned command must be recorded as a TOOL_CALL"
