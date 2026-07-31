@@ -170,8 +170,14 @@ def merge_accepted(repo_root: str | Path, branch: str, *, message: str) -> bool:
     On any failure the merge is aborted so the repo is left exactly as it
     was -- a half-applied merge is worse than a rejected one.
     """
+    # The merge commit is authored by the harness, explicitly. Relying on the
+    # operator's global git identity meant a machine without one (every CI
+    # runner) failed the merge with nothing but a False — the harness is the
+    # merger here, so it signs as itself and works everywhere.
     result = subprocess.run(
-        ["git", "merge", "--no-ff", "-m", message, branch],
+        ["git", "-c", "user.name=ForgeOS merge gate",
+         "-c", "user.email=merge-gate@forgeos.invalid",
+         "merge", "--no-ff", "-m", message, branch],
         cwd=str(repo_root), capture_output=True, text=True, timeout=120,
     )
     if result.returncode == 0:

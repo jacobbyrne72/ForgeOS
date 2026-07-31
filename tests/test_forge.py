@@ -519,6 +519,26 @@ def _editing_executor(content: str):
     return _exec
 
 
+@pytest.fixture
+def passing_security(monkeypatch):
+    """Fake the security gate to PASS for the worktree tests.
+
+    These tests write REAL files, so the real gate really scans — and on a
+    machine without gitleaks/semgrep (every CI runner) it correctly refuses
+    with "could not be checked". Scanner presence is core/verify's contract,
+    proven in test_verify.py; what these tests prove is worktree mechanics,
+    so the gate is faked to isolate the claim.
+    """
+    import forgeos.forge as forge_module
+    from forgeos.core.verify import Gate, GateResult, GateStatus
+
+    monkeypatch.setattr(
+        forge_module, "run_security",
+        lambda *a, **k: GateResult(gate=Gate.SECURITY, status=GateStatus.PASS,
+                                   command="faked: worktree tests prove merges, not scanners"),
+    )
+
+
 def test_isolate_worktrees_off_by_default_never_touches_the_worktree_module(forge, monkeypatch):
     """The opt-in flag's whole point: leave every existing caller untouched."""
     import forgeos.forge as forge_module
@@ -533,7 +553,7 @@ def test_isolate_worktrees_off_by_default_never_touches_the_worktree_module(forg
 
 
 @pytest.mark.slow
-def test_isolate_worktrees_two_compatible_concurrent_edits_both_merge(forge, tmp_path):
+def test_isolate_worktrees_two_compatible_concurrent_edits_both_merge(forge, tmp_path, passing_security):
     """Non-overlapping declared scope so the two tasks run in the SAME wave --
     leases never contend -- but their executor actually writes the SAME
     physical file both times, identically. Worktree isolation is what keeps
@@ -555,7 +575,7 @@ def test_isolate_worktrees_two_compatible_concurrent_edits_both_merge(forge, tmp
 
 
 @pytest.mark.slow
-def test_isolate_worktrees_conflicting_pair_second_refused_main_left_clean(forge, tmp_path):
+def test_isolate_worktrees_conflicting_pair_second_refused_main_left_clean(forge, tmp_path, passing_security):
     """Two tasks make genuinely different edits to the same file. Whichever
     lands first wins (thread scheduling decides which); the other must be
     refused with the conflict reason, and main must show no trace of a
@@ -593,7 +613,7 @@ def test_isolate_worktrees_conflicting_pair_second_refused_main_left_clean(forge
 
 
 @pytest.mark.slow
-def test_isolate_worktrees_retry_reuses_the_same_worktree(forge, tmp_path):
+def test_isolate_worktrees_retry_reuses_the_same_worktree(forge, tmp_path, passing_security):
     """Attempt 2 must resume in the SAME worktree attempt 1 got -- that is the
     point of isolation surviving a model-failure retry, not starting over."""
     repo = _git_repo(tmp_path)
