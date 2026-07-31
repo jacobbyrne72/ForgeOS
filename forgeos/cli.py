@@ -423,6 +423,7 @@ def main() -> int:
         "optimize": cmd_optimize,
         "prompt": cmd_prompt_opt,
         "track": cmd_track,
+        "local": cmd_local,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -576,6 +577,27 @@ def cmd_prompt_opt(args):
     reduction_pct = round((1 - stats["optimized_tokens"] / max(1, stats["original_tokens"])) * 100, 1)
     print("Token reduction:", reduction_pct, "%")
     return 0
+
+def cmd_local(args):
+    from forgeos.local_exec import LocalExecutor
+    e = LocalExecutor()
+    code = args.code
+    if not code:
+        code = "x = 2 + 2" + chr(10) + "print(x)"
+    result = e.execute(code)
+    print("=== Local Executor ===")
+    print("Executed locally:", result["executed_locally"])
+    print("Cost: $" + str(result["cost"]))
+    print("Reason:", result["reason"])
+    if result["output"]:
+        print("Output:", result["output"].strip())
+    if result["error"]:
+        print("Error:", result["error"])
+    print()
+    print("Local calls:", e.local_calls)
+    print("API calls:", e.api_calls)
+    return 0
+
 
 def cmd_audit(args):
     from forgeos.cost_audit import CostAuditor

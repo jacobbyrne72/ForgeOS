@@ -7,9 +7,9 @@ Date: 2026-07-31
 - Target repository: `C:\Users\byrne\Downloads\ForgeOS`
 - Source catalog: `C:\Users\byrne\Downloads\forgeos_github_mega_catalog_2026-07-30`
 - Catalog entries: 713 unique GitHub origins
-- Cloned repositories: 712 repository directories
+- Cloned repositories: 714 repository directories
 - Exact catalog origins cloned: 694
-- Verified replacement origins: 10
+- Verified replacement origins: 12
 - Free space at audit time: approximately 14.64 GB
 
 Clone roots:
@@ -54,22 +54,12 @@ The stricter supplemental security rules still flag intentional resilience handl
 
 These catalog URLs were unavailable or stale and were not replaced with unrelated projects:
 
-- `ggerganov/grep-ast`
 - `JetBrains/awesome-ai-devtools`
 - `lunary-ai/lunary`
 - `memary-ai/memary`
-- `microsoft/AI-Red-Team-Playground-Labs`
-- `microsoft/Counterfit`
-- `microsoft/semantic-workbench`
-- `motia-dev/motia`
 - `NirDiamant/AgentsTowardsProduction`
 - `NirDiamant/AI_Agents_Book`
-- `notdiamond/notdiamond-python`
-- `NVIDIA/nixl`
 - `OWASP/AI-Exchange`
-- `sourcegraph/cody`
-- `sourcegraph/sourcegraph`
-- `weights-and-biases/wandb`
 - `xlang-ai/awesome-language-agents`
 
-Verified replacements are recorded separately in the replacements clone root, including `allenai/OLMo-Eval` for the stale OLMoE evaluation URL, `qodo-ai/qodo-cover` for the stale Cover-Agent URL, `ast-grep/ast-grep`, `Azure/counterfit`, `ai-dynamo/nixl`, `sourcegraph/sourcegraph-public-snapshot`, `sourcegraph/cody-public-snapshot`, `wandb/wandb`, `Not-Diamond/notdiamond-python`, and `microsoft/AI-Red-Teaming-Playground-Labs`.
+Verified replacements are recorded separately in the replacements clone root, including `allenai/OLMo-Eval` for the stale OLMoE evaluation URL, `qodo-ai/qodo-cover` for the stale Cover-Agent URL, `ast-grep/ast-grep`, `Azure/counterfit`, `ai-dynamo/nixl`, `MotiaDev/motia`, `microsoft/semanticworkbench`, `sourcegraph/sourcegraph-public-snapshot`, `sourcegraph/cody-public-snapshot`, `wandb/wandb`, `Not-Diamond/notdiamond-python`, and `microsoft/AI-Red-Teaming-Playground-Labs`.
