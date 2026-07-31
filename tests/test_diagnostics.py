@@ -268,3 +268,34 @@ def test_corrupt_watch_halt_flag_is_recorded_before_daemon_continues(tmp_path):
     [degradation] = degradations()
     assert degradation.subsystem == "watch_queue"
     assert "halt may not have been honored" in degradation.consequence
+
+
+def test_knowledge_scout_registry_failure_is_recorded_not_silent():
+    from forgeos.knowledge.scout import Registry, RegistryKind, search
+
+    class BrokenFetcher:
+        def get_json(self, *args, **kwargs):
+            raise TimeoutError("registry timed out")
+
+    registry = Registry(name="test-registry", url="https://example.invalid",
+                        kind=RegistryKind.MCP, topic="test-topic")
+    assert search("x", registries=[registry], fetcher=BrokenFetcher()) == []
+    [degradation] = degradations()
+    assert degradation.subsystem == "knowledge_scout"
+    assert "test-registry" in degradation.what_failed
+    assert "omitted" in degradation.consequence
+
+
+def test_knowledge_scout_malformed_registry_response_is_recorded():
+    from forgeos.knowledge.scout import Registry, RegistryKind, search
+
+    class MalformedFetcher:
+        def get_json(self, *args, **kwargs):
+            return {"unexpected": "shape"}
+
+    registry = Registry(name="test-registry", url="https://example.invalid",
+                        kind=RegistryKind.MCP, topic="test-topic")
+    assert search("x", registries=[registry], fetcher=MalformedFetcher()) == []
+    [degradation] = degradations()
+    assert degradation.subsystem == "knowledge_scout"
+    assert "response malformed" in degradation.what_failed

@@ -43,6 +43,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from .claims import Claim, ClaimStore, ClaimType
+from ..diagnostics import record_degradation
 
 # ---------------------------------------------------------------------------
 # tunables
@@ -454,13 +455,22 @@ def search(
         }
         try:
             data = active_fetcher.get_json(GITHUB_SEARCH_URL, params=params)
-        except Exception:
-            # Down, rate-limited, or timed out — skipped, never fatal.
+        except Exception as exc:
+            # Down, rate-limited, or timed out — skipped, never fatal, but
+            # never invisible to the operator either.
+            record_degradation(
+                "knowledge_scout", f"registry fetch failed: {reg.name}", exc,
+                consequence=f"recommendations from {reg.name} were omitted",
+            )
             continue
 
         items = data.get("items") if isinstance(data, dict) else None
         if not isinstance(items, list):
-            # Malformed / unexpected shape — skipped, never fatal.
+            # Malformed / unexpected shape — skipped, never fatal, but visible.
+            record_degradation(
+                "knowledge_scout", f"registry response malformed: {reg.name}",
+                consequence=f"recommendations from {reg.name} were omitted",
+            )
             continue
 
         for item in items:
@@ -468,8 +478,13 @@ def search(
                 continue
             try:
                 candidate = _candidate_from_github_item(item, registry_name=reg.name, kind=reg.kind)
-            except Exception:
-                # One bad item never kills the rest of the search.
+            except Exception as exc:
+                # One bad item never kills the rest of the search, but its
+                # loss must not be mistaken for a clean registry response.
+                record_degradation(
+                    "knowledge_scout", f"candidate parse failed: {reg.name}", exc,
+                    consequence=f"one recommendation from {reg.name} was omitted",
+                )
                 continue
             existing = found.get(candidate.url)
             if existing is None or candidate.stars > existing.stars:
