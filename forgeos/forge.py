@@ -1183,11 +1183,31 @@ class Forge:
         Returning "" is the honest outcome when the fleet has only one capable
         worker — the merge gate then refuses for lack of review, which is correct.
         Manufacturing a reviewer id would let one model approve its own patch.
+
+        Among capable candidates, one whose provider family (`_family_of`)
+        differs from the implementer's is preferred: the self-preference
+        literature (Panickssery et al., see `_FAMILY_HINTS` above) says a
+        different family reviews better, and a fleet that actually has a
+        cross-family worker should use it instead of leaving the merge gate's
+        same-family WARN to fire on an avoidable choice. This only reorders
+        candidates into two partitions -- cross-family first, then the
+        existing order -- it never invents a new ranking within either one.
+        Same-family review stays the fallback when no cross-family candidate
+        is capable: the WARN already covers that case, and refusing to review
+        at all would be worse than a biased review. An unknown family ("")
+        never counts as cross-family, matching `_family_of`'s contract that
+        two unrecognized profiles must never be treated as differing on
+        evidence neither carries.
         """
         ranked = self.registry.rank(["review"]) or self.registry.rank(spec.capabilities)
-        for cand in ranked:
-            if cand.worker.worker_id != exclude:
-                return cand.worker.worker_id
+        candidates = [cand for cand in ranked if cand.worker.worker_id != exclude]
+        implementer_family = _family_of(self.registry.get(exclude))
+        cross_family = [
+            cand for cand in candidates
+            if (fam := _family_of(cand.worker)) and fam != implementer_family
+        ]
+        for cand in cross_family or candidates:
+            return cand.worker.worker_id
         return ""
 
     def _note_lowering(self, job: JobSpec, spec: TaskSpec) -> None:

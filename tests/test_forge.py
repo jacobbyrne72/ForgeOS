@@ -478,6 +478,66 @@ def test_two_local_adapter_workers_share_the_local_family(tmp_path):
     assert any("local" in w for w in result.outcomes[0].merge_warnings)
 
 
+# ========================================= _pick_reviewer cross-family preference
+# forge._pick_reviewer should prefer a reviewer whose provider family differs
+# from the implementer's, when the fleet actually has a capable one.
+
+
+def test_cross_family_reviewer_preferred_over_same_family(tmp_path):
+    """Implementer routes to the free anthropic worker (cheapest tier clearing
+    the win-rate threshold). Both remaining workers can review, one same
+    family (claude) and one cross family (deepseek) -- the deepseek worker
+    must be picked, and the merge gate must carry no self-preference WARN."""
+    fleet = Registry([
+        WorkerProfile(worker_id="free.local", adapter=Adapter.OLLAMA, tier=CostTier.FREE,
+                      vendor="claude",
+                      capabilities={"edit", "python", "mechanical"}, can_edit_files=True,
+                      prior_win_rate=0.85),
+        WorkerProfile(worker_id="premium.claude", adapter=Adapter.CLI_TEAM,
+                      tier=CostTier.PREMIUM, vendor="claude",
+                      capabilities={"edit", "python", "mechanical", "architecture", "review"},
+                      can_edit_files=True, prior_win_rate=0.95),
+        WorkerProfile(worker_id="standard.deepseek", adapter=Adapter.GATEWAY,
+                      tier=CostTier.STANDARD, model="deepseek-v3",
+                      capabilities={"review", "mechanical"}, prior_win_rate=0.9),
+    ])
+    f = Forge(home=tmp_path / "forgeos", registry=fleet, max_attempts=3)
+    try:
+        result = f.run("ship", [_task()], executor=lambda s, w: _green(),
+                       reviewer=_pass_review)
+    finally:
+        f.close()
+    assert result.accepted == 1, result.outcomes
+    assert not any("self-preference" in w for w in result.outcomes[0].merge_warnings)
+
+
+def test_cross_family_candidate_without_review_capability_falls_back_same_family(tmp_path):
+    """The only cross-family worker in the fleet (deepseek) never declares the
+    "review" capability, so it is dropped before the family preference ever
+    runs -- the same-family worker is still chosen, and its WARN still fires."""
+    fleet = Registry([
+        WorkerProfile(worker_id="free.local", adapter=Adapter.OLLAMA, tier=CostTier.FREE,
+                      vendor="claude",
+                      capabilities={"edit", "python", "mechanical"}, can_edit_files=True,
+                      prior_win_rate=0.85),
+        WorkerProfile(worker_id="premium.claude", adapter=Adapter.CLI_TEAM,
+                      tier=CostTier.PREMIUM, vendor="claude",
+                      capabilities={"edit", "python", "mechanical", "architecture", "review"},
+                      can_edit_files=True, prior_win_rate=0.95),
+        WorkerProfile(worker_id="standard.deepseek", adapter=Adapter.GATEWAY,
+                      tier=CostTier.STANDARD, model="deepseek-v3",
+                      capabilities={"mechanical"}, prior_win_rate=0.9),
+    ])
+    f = Forge(home=tmp_path / "forgeos", registry=fleet, max_attempts=3)
+    try:
+        result = f.run("ship", [_task()], executor=lambda s, w: _green(),
+                       reviewer=_pass_review)
+    finally:
+        f.close()
+    assert result.accepted == 1, result.outcomes
+    assert any("self-preference" in w for w in result.outcomes[0].merge_warnings)
+
+
 # ===================================================== worktree isolation
 # `isolate_worktrees=True` (forgeos/worktrees.py) gives each file-editing task
 # its own git worktree instead of sharing `cwd` directly, so a task the merge

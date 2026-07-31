@@ -99,6 +99,14 @@ def _profile(worker_id="local.fake", *, tier=CostTier.FREE, model="") -> WorkerP
                          can_edit_files=True, prior_win_rate=0.9, model=model)
 
 
+def _spec_with_acceptance(acceptance: list[str]) -> TaskSpec:
+    return TaskSpec(job_id="job_pending", subject="normalise retry parsing",
+                    description="d", capabilities=["edit", "python"],
+                    scope=Scope(paths=["src/retry.py"]),
+                    acceptance=acceptance,
+                    budget=Budget(max_usd=2.0, max_seconds=900))
+
+
 # ======================================================= unavailable is honest
 
 
@@ -247,3 +255,131 @@ def test_an_environment_failure_never_escalates(tmp_path):
 
     assert "cloud.strong" not in ran, ran
     assert result.outcomes[0].accepted is False
+
+
+# ================================================ acceptance-derived --allowedTools
+
+
+def test_acceptance_tools_derives_a_bash_pattern_from_a_shell_shaped_line():
+    spec = _spec_with_acceptance(["python -m pytest tests -q passes"])
+    assert routed._acceptance_tools(spec) == ["Bash(python -m pytest:*)"]
+
+
+def test_acceptance_tools_derives_nothing_from_prose():
+    spec = _spec_with_acceptance(["all tests green"])
+    assert routed._acceptance_tools(spec) == []
+
+
+def test_acceptance_tools_covers_each_known_runner_token():
+    table = {
+        "python -m pytest tests -q passes": "Bash(python -m pytest:*)",
+        "pytest tests/test_x.py passes": "Bash(pytest tests/test_x.py:*)",
+        "npm run build succeeds": "Bash(npm run build:*)",
+        "node scripts/check.js ok": "Bash(node scripts/check.js:*)",
+        "cargo test passes": "Bash(cargo test:*)",
+        "go test ./... passes": "Bash(go test ./...:*)",
+        "make check succeeds": "Bash(make check:*)",
+    }
+    for line, expected in table.items():
+        spec = _spec_with_acceptance([line])
+        assert routed._acceptance_tools(spec) == [expected], line
+
+
+def test_acceptance_tools_combines_multiple_shell_shaped_lines():
+    spec = _spec_with_acceptance([
+        "python -m pytest tests -q passes",
+        "npm run build succeeds",
+        "no prose here at all",
+    ])
+    assert routed._acceptance_tools(spec) == [
+        "Bash(python -m pytest:*)",
+        "Bash(npm run build:*)",
+    ]
+
+
+def test_a_claude_local_command_profile_gets_derived_allowedtools(monkeypatch):
+    captured: dict = {}
+
+    def fake_build_adapter(profile, **kwargs):
+        captured["profile"] = profile
+        return FakeAdapter(_green_events()), "built"
+
+    monkeypatch.setattr(routed, "build_adapter", fake_build_adapter)
+
+    original = WorkerProfile(worker_id="claude.headless", adapter=Adapter.LOCAL_COMMAND,
+                             command="claude", args=["-p", "--permission-mode", "acceptEdits"],
+                             capabilities={"edit", "python"}, can_edit_files=True)
+    registry = Registry([original])
+    spec = _spec_with_acceptance(["python -m pytest tests -q passes"])
+
+    execute = routed_executor(registry)
+    execute(spec, "claude.headless")
+
+    built = captured["profile"]
+    assert built.args == [
+        "-p", "--permission-mode", "acceptEdits",
+        "--allowedTools", "Bash(python -m pytest:*)",
+    ]
+    # The original registry profile is never mutated.
+    assert original.args == ["-p", "--permission-mode", "acceptEdits"]
+    assert built is not original
+
+
+def test_a_claude_profile_with_only_prose_acceptance_is_untouched(monkeypatch):
+    captured: dict = {}
+
+    def fake_build_adapter(profile, **kwargs):
+        captured["profile"] = profile
+        return FakeAdapter(_green_events()), "built"
+
+    monkeypatch.setattr(routed, "build_adapter", fake_build_adapter)
+
+    original = WorkerProfile(worker_id="claude.headless", adapter=Adapter.LOCAL_COMMAND,
+                             command="claude", args=["-p", "--permission-mode", "acceptEdits"],
+                             capabilities={"edit", "python"}, can_edit_files=True)
+    execute = routed_executor(Registry([original]))
+    execute(_spec_with_acceptance(["all tests green"]), "claude.headless")
+
+    assert captured["profile"] is original
+
+
+def test_a_non_claude_local_command_profile_is_untouched(monkeypatch):
+    captured: dict = {}
+
+    def fake_build_adapter(profile, **kwargs):
+        captured["profile"] = profile
+        return FakeAdapter(_green_events()), "built"
+
+    monkeypatch.setattr(routed, "build_adapter", fake_build_adapter)
+
+    original = WorkerProfile(worker_id="aider.local", adapter=Adapter.LOCAL_COMMAND,
+                             command="aider", args=["--yes"],
+                             capabilities={"edit", "python"}, can_edit_files=True)
+    execute = routed_executor(Registry([original]))
+    execute(_spec_with_acceptance(["python -m pytest tests -q passes"]), "aider.local")
+
+    assert captured["profile"] is original
+    assert captured["profile"].args == ["--yes"]
+
+
+def test_ollama_and_gateway_profiles_are_never_extended(monkeypatch):
+    captured: list = []
+
+    def fake_build_adapter(profile, **kwargs):
+        captured.append(profile)
+        return FakeAdapter(_green_events()), "built"
+
+    monkeypatch.setattr(routed, "build_adapter", fake_build_adapter)
+
+    ollama = _profile("local.fake")
+    gateway = WorkerProfile(worker_id="api.paid", adapter=Adapter.GATEWAY,
+                           model="auto:free", tier=CostTier.CHEAP,
+                           capabilities={"edit", "python"}, can_edit_files=True)
+    execute = routed_executor(Registry([ollama, gateway]))
+    spec = _spec_with_acceptance(["python -m pytest tests -q passes"])
+
+    execute(spec, "local.fake")
+    execute(spec, "api.paid")
+
+    assert captured[0] is ollama
+    assert captured[1] is gateway
