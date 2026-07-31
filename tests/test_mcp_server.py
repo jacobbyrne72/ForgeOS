@@ -123,7 +123,7 @@ def test_tools_list_shape(server):
 
     tools = {t["name"]: t for t in resp["result"]["tools"]}
     assert set(tools) == {
-        "forgeos_doctor", "forgeos_receipts", "forgeos_plan",
+        "forgeos_doctor", "forgeos_receipts", "forgeos_leaderboard", "forgeos_plan",
         "forgeos_submit_job", "forgeos_queue_status",
     }
     for tool in tools.values():
@@ -131,6 +131,7 @@ def test_tools_list_shape(server):
         assert tool["inputSchema"]["type"] == "object"
     assert tools["forgeos_plan"]["inputSchema"]["required"] == ["objective"]
     assert set(tools["forgeos_submit_job"]["inputSchema"]["required"]) == {"objective", "budget_usd"}
+    assert tools["forgeos_leaderboard"]["inputSchema"]["required"] == ["paths"]
 
 
 # ------------------------------------------------------------- read-only tools
@@ -151,6 +152,42 @@ def test_doctor_call_returns_a_sane_result(server):
     text = result["content"][0]["text"]
     assert "forgeos doctor" in text
     assert "Runnable now:" in text
+
+
+def test_leaderboard_call_returns_a_local_ranked_receipt(tmp_path):
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text(json.dumps({
+        "schema": "forgeos.forgebench.v1",
+        "model_ref": "local/demo",
+        "mode": "live",
+        "provenance": "measured",
+        "suite": {"name": "smoke", "savings_class": "A", "tasks": [{"id": "t"}]},
+        "aborted": {"reason": "", "at_task": ""},
+        "comparison_voided": False,
+        "exit_gate_passed": True,
+        "totals": {
+            "baseline": {"accepted_count": 1, "attempted_count": 1, "usd_micros": 1_000_000},
+            "forgeos": {"accepted_count": 1, "attempted_count": 1, "usd_micros": 250_000},
+        },
+        "proof": {"mission_id": "smoke", "repo_revision": "abc", "contract_hash": "c"},
+    }), encoding="utf-8")
+    proc = _start_server(tmp_path)
+    try:
+        _initialize(proc)
+        _send(proc, {
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": {"name": "forgeos_leaderboard", "arguments": {"paths": [str(receipt)]}},
+        })
+        resp = _recv(proc)
+        result = resp["result"]
+        assert result["isError"] is False
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["schema"] == "forgeos.leaderboard.v1"
+        assert payload["entries"][0]["label"] == "local/demo"
+        assert payload["entries"][0]["cost_per_accepted_usd"] == 0.25
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
 
 
 def test_plan_call_returns_a_task_graph(server, tmp_path):

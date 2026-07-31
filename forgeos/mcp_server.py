@@ -106,6 +106,24 @@ class McpServer:
                 "inputSchema": {"type": "object", "properties": {}},
             },
             {
+                "name": "forgeos_leaderboard",
+                "description": (
+                    "Read-only cost-per-accepted-task leaderboard from local ForgeBench "
+                    "receipts; ranks only measured paired runs and never calls a provider."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "ForgeBench receipt JSON file paths to rank",
+                        },
+                    },
+                    "required": ["paths"],
+                },
+            },
+            {
                 "name": "forgeos_plan",
                 "description": (
                     "Compile a natural-language objective into a task graph. Dry-run "
@@ -186,6 +204,21 @@ class McpServer:
 
         return _capture_stdout(cmd_receipts, argparse.Namespace(state_dir=self.state_dir))
 
+    def _call_leaderboard(self, arguments: dict[str, Any]) -> str:
+        paths = arguments.get("paths")
+        if (
+            not isinstance(paths, list)
+            or not paths
+            or any(not isinstance(path, str) or not path.strip() for path in paths)
+        ):
+            raise _ToolError("paths must be a non-empty array of receipt file paths")
+
+        from .forgebench_table import load_receipt
+        from .leaderboard import build_leaderboard
+
+        receipts = [(path, load_receipt(path)) for path in paths]
+        return json.dumps(build_leaderboard(receipts), sort_keys=True)
+
     def _call_plan(self, arguments: dict[str, Any]) -> str:
         from .__main__ import _print_mission_graph
         from .compiler import CompilerError, compile_mission
@@ -255,6 +288,7 @@ class McpServer:
     _HANDLERS = {
         "forgeos_doctor": _call_doctor,
         "forgeos_receipts": _call_receipts,
+        "forgeos_leaderboard": _call_leaderboard,
         "forgeos_plan": _call_plan,
         "forgeos_submit_job": _call_submit_job,
         "forgeos_queue_status": _call_queue_status,
