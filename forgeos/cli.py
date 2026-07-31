@@ -14,13 +14,26 @@ from forgeos.prompt_cache import PromptCache
 
 def cmd_run(args) -> int:
     from forgeos import Forge
+    from forgeos.optimizer import CostOptimizer
+    from forgeos.auto_optimize import AutoOptimizer
 
     Forge()
     mission = compile_mission(args.objective, cwd=args.cwd or ".")
     print(f"Mission compiled: {len(mission.tasks)} tasks")
     for t in mission.tasks:
         print(f"  [{t.id[:12]}] {t.subject}")
-    print(f"Spending: ${args.budget:.2f}" if hasattr(args, "budget") else "")
+    # Show cost savings projection
+    auto = AutoOptimizer()
+    planner = CostOptimizer()
+    total_saved = 0.0
+    for t in mission.tasks:
+        plan = planner.plan_for("code_gen")
+        opt = auto.apply("code_gen", t.subject)
+        total_saved += opt.saved_usd
+    print()
+    print(f"Estimated savings per task: ${plan.estimated_savings_usd:.4f}")
+    print(f"Estimated savings for this mission: ${total_saved:.4f}")
+    print("Optimization plan: " + ", ".join(plan.steps))
     print("Use forge resume <job-id> to track progress.")
     return 0
 
