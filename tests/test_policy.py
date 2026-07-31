@@ -87,10 +87,31 @@ def test_unbounded_read_over_the_limit_is_denied():
     assert d.exit_code == 2
 
 
-def test_denial_carries_a_copy_pasteable_replacement_command():
-    """A denial without a next step just gets worked around."""
+def test_denial_carries_a_copy_pasteable_replacement_command(tmp_path, monkeypatch):
+    """A denial without a next step just gets worked around.
+
+    The digest tool is optional-and-detected, so the test injects one rather
+    than asserting this machine happens to have it — the original assertion
+    passed only on the one machine with ~/.codex-brain and failed on every
+    clean CI runner.
+    """
+    tool = tmp_path / "digest.py"
+    tool.write_text("# fake digest tool")
+    monkeypatch.setenv("FORGEOS_DIGEST_TOOL", str(tool))
     d = check_read(_req("core/big.py", size_bytes=5 * 1024 * 1024))
     assert "digest.py" in d.suggestion
+    assert "core/big.py" in d.suggestion
+    assert "offset" in d.suggestion
+
+
+def test_denial_without_a_digest_tool_still_gives_a_runnable_next_step(tmp_path, monkeypatch):
+    """On a machine with no external tool the fallback advice must stand alone —
+    suggesting a command that does not exist reads as a broken tool, not a rule."""
+    monkeypatch.setenv("FORGEOS_DIGEST_TOOL", "")
+    monkeypatch.setattr("forgeos.policy.os.path.expanduser",
+                        lambda p: str(tmp_path / "nohome"))
+    d = check_read(_req("core/big.py", size_bytes=5 * 1024 * 1024))
+    assert "digest.py" not in d.suggestion
     assert "core/big.py" in d.suggestion
     assert "offset" in d.suggestion
 
