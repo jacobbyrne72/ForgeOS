@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from .contracts import Budget, Scope, TaskSpec, new_id
+from .core.manager import SafetyVerdict, parallel_safety
 
 LANG_MAP: dict[str, str] = {
     ".py": "python",
@@ -343,6 +344,37 @@ def analyze_codebase(cwd: str) -> list[FileAnalysis]:
     return analyses
 
 
+def _sequence_unsafe_pairs(tasks: list[TaskSpec], deps: dict[str, list[str]]) -> None:
+    """Post-flight over every produced task pair: a `manager.parallel_safety`
+    violation becomes a `depends_on` edge, never a silent drop.
+
+    Pairs already sequenced (either direction) are skipped -- the two-task
+    bugfix/refactor branches above already declare `diagnose -> fix` as a hard
+    dependency, and re-running the check on top of a decision already made
+    would be pure overhead, not a second opinion.
+
+    Direction: `verdict.introduces_before` names the introducer when the
+    violation is a contract conflict. A pure scope overlap has no natural
+    direction (either order sequences the pair correctly), so it falls back
+    to a deterministic tiebreak on task id -- sorting, not insertion order or
+    dict iteration, so the same pair always sequences the same way run to run.
+    """
+    for i, a in enumerate(tasks):
+        for b in tasks[i + 1:]:
+            if a.id in b.depends_on or b.id in a.depends_on:
+                continue
+            verdict: SafetyVerdict = parallel_safety(a, b)
+            if verdict.safe:
+                continue
+            first_id, second_id = verdict.introduces_before or sorted((a.id, b.id))
+            dependent = b if second_id == b.id else a
+            if first_id not in dependent.depends_on:
+                dependent.depends_on.append(first_id)
+            deps.setdefault(second_id, [])
+            if first_id not in deps[second_id]:
+                deps[second_id].append(first_id)
+
+
 def compile_mission(objective: str, *, cwd: str = ".", max_tasks: int = 6) -> Mission:
     """Compile a natural-language objective into decomposed tasks."""
     objective = objective.strip()
@@ -417,6 +449,7 @@ def compile_mission(objective: str, *, cwd: str = ".", max_tasks: int = 6) -> Mi
                 capabilities=_caps_for(kind),
             )
         )
+    _sequence_unsafe_pairs(tasks, deps)
     mission = Mission(objective=objective, tasks=tasks, dependencies=deps)
     mission.task_map = {t.id: t.subject for t in tasks}
     return mission

@@ -1,0 +1,78 @@
+name: Feature request
+description: A new capability or change to forgeos's cost-governed harness.
+title: "[feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        forgeos is domain-agnostic infrastructure (see AGENTS.md) -- it is the tool that
+        builds other projects, not one of them. A request that only makes sense for one
+        downstream project's vocabulary (trading, or anything else) belongs in that project,
+        not here; a domain-specific default here is a bug.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the problem
+      description: >
+        What can't you do today, or what does today's behavior cost you (in dollars, tokens,
+        or time). Concrete, not "it would be nice if."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: Which cost lever or module does this touch
+      description: >
+        See the Layout table in AGENTS.md if you're not sure which one owns this.
+      options:
+        - router
+        - gateway
+        - economy
+        - verify
+        - quota
+        - dashboard
+        - CLI
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: measurement
+    attributes:
+      label: How would we MEASURE the saving?
+      description: >
+        Claims need receipts (CONTRIBUTING.md; SavingsProof's measured/replayed/modelled
+        distinction) -- "should be cheaper/faster" isn't one. Say what you'd compare against
+        what, and where the number would actually come from.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change and how you'd verify it
+      description: >
+        What you'd change, and what a passing acceptance check would look like (AGENTS.md
+        hard rule 6: a task is done when its acceptance criteria pass, verified by running
+        something -- state that criteria now, not after the fact).
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and didn't find this one already filed.
+          required: true
+        - label: >-
+            This is domain-agnostic -- it doesn't hardcode a vocabulary from whatever project
+            forgeos happens to be pointed at.
+          required: true
+        - label: >-
+            This isn't a workaround for a tripped budget/cap/loop-detection governor
+            (AGENTS.md hard rule 1) -- a trip is a signal to escalate, not a limit to raise.
+          required: true

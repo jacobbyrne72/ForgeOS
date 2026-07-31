@@ -1,0 +1,87 @@
+name: Bug report
+description: Something in forgeos isn't behaving. File it with the evidence, not a guess.
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We debug output, not descriptions. "It doesn't work" tells nobody anything a command
+        and its real output wouldn't tell faster -- AGENTS.md hard rule 6: a bug, like a task,
+        is proven by running something, not by how it looks.
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command you ran
+      description: >
+        Copy-pasteable, not paraphrased. If someone can't reproduce this from the line alone,
+        it isn't the right line yet.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: What actually happened -- paste the real output
+      description: >
+        The actual stdout/stderr/traceback, verbatim. Not "it failed" -- paste what failed.
+        Truncate long output from the middle if you must, never the error itself.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`python -m forgeos doctor` output"
+      description: >
+        Provider readiness, worker runnability, and catalog staleness in one place -- run it
+        and paste the output. If doctor itself is broken, say so and paste whatever it printed
+        anyway; that's still evidence.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: OS and Python version
+      description: e.g. "Windows 11, Python 3.11.9" -- `python --version` plus how you'd describe the OS.
+      placeholder: OS + python --version
+    validations:
+      required: true
+
+  - type: input
+    id: scope
+    attributes:
+      label: Which module or file
+      description: >
+        e.g. forgeos/core/router.py, forgeos/gateway/client.py. See the Layout table in
+        AGENTS.md if you're not sure who owns it.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and didn't find this one already filed.
+          required: true
+        - label: >-
+            I ran the command above myself, on this machine, just now -- not "this should
+            reproduce it."
+          required: true
+        - label: >-
+            I am not asking anyone to widen a budget, cap, or timeout to make this pass
+            (AGENTS.md hard rule 1). If that's what's actually broken, I've said so above.
+          required: true

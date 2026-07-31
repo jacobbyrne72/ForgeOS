@@ -178,6 +178,25 @@ def cmd_receipts(args: argparse.Namespace) -> int:
         ledger.close()
 
 
+# ---------------------------------------------------------------------- watch
+
+
+def cmd_watch(args: argparse.Namespace) -> int:
+    from forgeos.watch import watch_queue
+
+    stats = watch_queue(
+        args.queue,
+        state_dir=args.state_dir,
+        once=args.once,
+        poll_interval=args.poll_interval,
+    )
+    print(
+        f"watch: {stats.jobs_done} done, {stats.jobs_failed} failed"
+        + (" (halted by operator)" if stats.halted else "")
+    )
+    return 0
+
+
 # ----------------------------------------------------------------------- cli
 
 
@@ -200,6 +219,19 @@ def main(argv: list[str] | None = None) -> int:
         "--state-dir", help="Where the ledger lives (default: forgeos's DEFAULT_HOME, ~/.forgeos)"
     )
 
+    p_watch = sub.add_parser(
+        "watch", help="Unattended job-queue daemon: poll --queue, run each job, write receipts"
+    )
+    p_watch.add_argument("--queue", required=True, help="Directory with incoming/done/failed queue subdirs")
+    p_watch.add_argument(
+        "--state-dir", help="Where the ledger/halt-flag live (default: forgeos's DEFAULT_HOME, ~/.forgeos)"
+    )
+    p_watch.add_argument("--once", action="store_true", help="Process the current backlog once and exit")
+    p_watch.add_argument(
+        "--poll-interval", type=float, default=5.0,
+        help="Seconds between polls when not --once (default: 5)",
+    )
+
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
@@ -208,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
     dispatch = {
         "doctor": cmd_doctor,
         "receipts": cmd_receipts,
+        "watch": cmd_watch,
     }
     return dispatch[args.command](args)
 
