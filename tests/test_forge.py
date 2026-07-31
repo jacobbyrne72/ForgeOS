@@ -724,6 +724,23 @@ def _editing_executor(content: str):
     return _exec
 
 
+def _dispatch_editor(edits: dict[str, tuple[str, str]]):
+    """A fake executor that writes a different real file/content per task,
+    keyed by `spec.subject` -- `Forge.run` takes one executor for every task
+    in the run, so tests that need several tasks to touch different (or
+    deliberately the same) paths dispatch through this instead of
+    `_editing_executor`'s single fixed edit."""
+    def _exec(spec, worker):  # noqa: ARG001
+        filename, content = edits[spec.subject]
+        cwd = Path(current_task_cwd())
+        path = cwd / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        _commit_all(cwd, f"{spec.id} edit {filename}")
+        return _green(files_touched=[filename])
+    return _exec
+
+
 @pytest.fixture
 def passing_security(monkeypatch):
     """Fake the security gate to PASS for the worktree tests.
@@ -845,6 +862,183 @@ def test_isolate_worktrees_retry_reuses_the_same_worktree(forge, tmp_path, passi
     assert calls["n"] == 2
     assert seen_cwds[0] == seen_cwds[1]  # same worktree reused across the retry
     assert (repo / "shared.txt").read_text(encoding="utf-8") == "second attempt\n"
+
+
+# ============================================================ batch merge
+# `batch_merge=True` (only meaningful alongside `isolate_worktrees=True`)
+# checks a wave's gate-accepted worktree branches together through
+# `core.batchmerge.verify_batch` instead of merging them one candidate at a
+# time. Off by default -- every worktree test above this section runs with
+# it unset and must stay exactly as green as it always was.
+
+
+@pytest.mark.slow
+def test_batch_merge_three_compatible_branches_cost_fewer_checks_than_naive(
+    forge, tmp_path, passing_security,
+):
+    """The whole claim, measured: three mutually compatible, disjoint-path
+    edits land through ONE batch check instead of three individual ones."""
+    repo = _git_repo(tmp_path)
+    a = _task("task a", paths=["src/a/"])
+    b = _task("task b", paths=["src/b/"])
+    c = _task("task c", paths=["src/c/"])
+    edits = {
+        "task a": ("src/a/file.txt", "from A\n"),
+        "task b": ("src/b/file.txt", "from B\n"),
+        "task c": ("src/c/file.txt", "from C\n"),
+    }
+
+    result = forge.run(
+        "ship", [a, b, c], executor=_dispatch_editor(edits), reviewer=_pass_review,
+        cwd=str(repo), isolate_worktrees=True, batch_merge=True,
+    )
+
+    assert result.accepted == 3, result.outcomes
+    assert result.rejected == 0
+
+    batch_events = [
+        e for e in forge.events.replay(result.job_id)
+        if e.type is EventType.ACTION_RECORDED and e.payload.get("action") == "batch_merge"
+    ]
+    assert len(batch_events) == 1
+    payload = batch_events[0].payload
+    assert payload["naive_checks"] == 3
+    assert payload["checks_run"] == 1  # one call verified all three together
+    assert payload["checks_run"] < payload["naive_checks"]
+
+
+@pytest.mark.slow
+def test_batch_merge_isolates_the_one_culprit_the_other_two_still_land(
+    forge, tmp_path, passing_security,
+):
+    """D lands first (a batch of one) and advances main's shared.txt. A and C
+    never touch shared.txt and must land regardless; B's worktree -- branched
+    off the same original base as everyone else -- now genuinely conflicts
+    with the real repo, independent of A or C, so bisection must isolate it
+    without taking the other two down with it."""
+    repo = _git_repo(tmp_path)
+    d = _task("task d", paths=["src/d/"])
+    a = _task("task a", paths=["src/a/"])
+    b = _task("task b", paths=["src/b/"])
+    c = _task("task c", paths=["src/c/"])
+    a.depends_on = [d.id]
+    b.depends_on = [d.id]
+    c.depends_on = [d.id]
+    edits = {
+        "task d": ("shared.txt", "from D\n"),
+        "task a": ("src/a/file.txt", "from A\n"),
+        "task b": ("shared.txt", "from B\n"),
+        "task c": ("src/c/file.txt", "from C\n"),
+    }
+
+    result = forge.run(
+        "ship", [d, a, b, c], executor=_dispatch_editor(edits), reviewer=_pass_review,
+        cwd=str(repo), isolate_worktrees=True, batch_merge=True,
+    )
+
+    assert result.accepted == 3, result.outcomes
+    assert result.rejected == 1
+    refused = next(o for o in result.outcomes if not o.accepted)
+    assert refused.task_id == b.id
+    assert any("merge conflict against main" in r for r in refused.merge_reasons)
+    assert (repo / "shared.txt").read_text(encoding="utf-8") == "from D\n"
+    assert (repo / "src" / "a" / "file.txt").read_text(encoding="utf-8") == "from A\n"
+    assert (repo / "src" / "c" / "file.txt").read_text(encoding="utf-8") == "from C\n"
+
+
+@pytest.mark.slow
+def test_batch_merge_isolates_two_culprits_the_third_still_lands(
+    forge, tmp_path, passing_security,
+):
+    """Same setup as the single-culprit case, except both B and C target
+    shared.txt and each independently conflicts with D's already-landed
+    change -- bisection must isolate BOTH without a false accept or a false
+    refusal of the innocent A."""
+    repo = _git_repo(tmp_path)
+    d = _task("task d", paths=["src/d/"])
+    a = _task("task a", paths=["src/a/"])
+    b = _task("task b", paths=["src/b/"])
+    c = _task("task c", paths=["src/c/"])
+    a.depends_on = [d.id]
+    b.depends_on = [d.id]
+    c.depends_on = [d.id]
+    edits = {
+        "task d": ("shared.txt", "from D\n"),
+        "task a": ("src/a/file.txt", "from A\n"),
+        "task b": ("shared.txt", "from B\n"),
+        "task c": ("shared.txt", "from C\n"),
+    }
+
+    result = forge.run(
+        "ship", [d, a, b, c], executor=_dispatch_editor(edits), reviewer=_pass_review,
+        cwd=str(repo), isolate_worktrees=True, batch_merge=True,
+    )
+
+    assert result.accepted == 2, result.outcomes
+    assert result.rejected == 2
+    refused_ids = {o.task_id for o in result.outcomes if not o.accepted}
+    accepted_ids = {o.task_id for o in result.outcomes if o.accepted}
+    assert refused_ids == {b.id, c.id}
+    assert accepted_ids == {d.id, a.id}
+    for o in result.outcomes:
+        if not o.accepted:
+            assert any("merge conflict against main" in r for r in o.merge_reasons)
+    assert (repo / "shared.txt").read_text(encoding="utf-8") == "from D\n"
+
+
+def test_batch_merge_off_by_default_verify_batch_never_called(
+    forge, tmp_path, passing_security, monkeypatch,
+):
+    """`isolate_worktrees=True` alone -- `batch_merge` left at its False
+    default -- must still merge one candidate at a time exactly as before;
+    `verify_batch` is never even imported into the call path."""
+    import forgeos.forge as forge_module
+
+    calls = []
+    monkeypatch.setattr(forge_module, "verify_batch", lambda *a, **k: calls.append((a, k)))
+
+    repo = _git_repo(tmp_path)
+    a = _task("task a", paths=["src/a/"])
+    b = _task("task b", paths=["src/b/"])
+
+    result = forge.run(
+        "ship", [a, b], executor=_editing_executor("shared by both\n"),
+        reviewer=_pass_review, cwd=str(repo), isolate_worktrees=True,
+    )
+
+    assert result.accepted == 2, result.outcomes
+    assert calls == []
+
+
+@pytest.mark.slow
+def test_batch_merge_verify_batch_raising_falls_back_to_serial_merge_and_records_degradation(
+    forge, tmp_path, passing_security, monkeypatch,
+):
+    """A bug in the batch machinery itself must never lose an accepted task:
+    it falls back to the existing one-at-a-time merge path and records the
+    failure as a degradation rather than swallowing it silently."""
+    import forgeos.forge as forge_module
+    from forgeos import diagnostics
+
+    monkeypatch.setattr(
+        forge_module, "verify_batch",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("batchmerge exploded")),
+    )
+
+    repo = _git_repo(tmp_path)
+    a = _task("task a", paths=["src/a/"])
+    b = _task("task b", paths=["src/b/"])
+
+    result = forge.run(
+        "ship", [a, b], executor=_editing_executor("shared by both\n"),
+        reviewer=_pass_review, cwd=str(repo), isolate_worktrees=True, batch_merge=True,
+    )
+
+    assert result.accepted == 2, result.outcomes  # no accepted task lost to the batching bug
+    assert result.rejected == 0
+    matches = [d for d in diagnostics.degradations() if d.subsystem == "forge.batchmerge"]
+    assert matches, "expected a recorded degradation for the raising batch check"
+    assert "batchmerge exploded" in matches[0].reason
 
 
 # =============================================== checkpoint/resume threading

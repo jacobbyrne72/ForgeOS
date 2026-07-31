@@ -30,6 +30,7 @@ import json
 import re
 import subprocess
 import threading
+import uuid
 from collections.abc import Callable, MutableMapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -50,6 +51,7 @@ from .contracts import (
     from_micros,
 )
 from .core.awareness import TeamBoard
+from .core.batchmerge import BatchCandidate, BatchPlan, CheckOutcome, RunBatchCheck, verify_batch
 from .core.governor import Action, Governor
 from .core.market import CapacityMarket
 from .core.resources import ResourceGovernor, WorkerKind, sample_pressure
@@ -250,6 +252,13 @@ class TaskOutcome(BaseModel):
     merge_warnings: list[str] = Field(default_factory=list)
     usd_micros: int = 0
     attempts: int = 0
+    # Set only under `batch_merge=True`: the merge gate allowed this task but
+    # the actual git landing was deferred to the wave-level batch step
+    # (`Forge._finalize_batch_wave`) instead of happening inline in
+    # `_run_task`. `accepted`/`reason`/`merge_reasons` above are provisional
+    # -- still True/"pending"/gate-only -- until that step rules and clears
+    # this flag. Never set outside batch mode, so no existing caller sees it.
+    pending_batch_merge: bool = False
 
 
 class ForgeResult(BaseModel):
@@ -575,6 +584,7 @@ class Forge:
         reviewer: Executor | None = None,
         operations: dict[str, Operation] | None = None,
         isolate_worktrees: bool = False,
+        batch_merge: bool = False,
         allow_repeat_work: bool = False,
         resume_job_id: str | None = None,
     ) -> ForgeResult:
@@ -598,6 +608,18 @@ class Forge:
         gate allows is only truly accepted once its worktree branch actually
         merges into the repo's current branch; a conflict turns an
         otherwise-accepted task into an honest refusal instead of a false green.
+
+        `batch_merge` (default False) is only meaningful paired with
+        `isolate_worktrees=True` -- with worktrees off there are no per-task
+        branches to batch, so the flag is inert and a batch of one task is
+        just today's path anyway. When both are set, a wave's gate-accepted
+        worktree branches are no longer landed one at a time; instead the
+        whole wave is checked together through `core.batchmerge.verify_batch`
+        (a disposable scratch worktree stands in for "does this subset
+        integrate cleanly", discarded either way -- see `_scratch_batch_check`)
+        and only a conflict pays for the bisection down to its culprit(s). A
+        batching failure never loses an accepted task: it falls back to
+        merging the wave serially and records a degradation instead.
         """
         resume_mode = resume_job_id is not None
         executor_is_default = executor is None
@@ -750,13 +772,14 @@ class Forge:
                         self._run_task_guarded, job, spec, executor, reviewer,
                         isolate_worktrees=isolate_worktrees, repo_root=repo_root,
                         executor_is_default=executor_is_default, job_base_ref=job_base_ref,
-                        checkpoint_store=checkpoint_store,
+                        checkpoint_store=checkpoint_store, batch_merge=batch_merge,
                     )))
 
                 # Collect in SUBMISSION order, not completion order. Completion
                 # order is scheduling noise; a result list that reorders between
                 # identical runs makes every downstream comparison flaky.
                 progressed = False
+                pending_batch: list[tuple[TaskSpec, TaskOutcome]] = []
                 for spec, future in wave:
                     outcome = future.result()
                     if outcome is None:
@@ -767,6 +790,15 @@ class Forge:
                         continue
                     outcomes.append(outcome)
                     progressed = True
+
+                    if outcome.pending_batch_merge:
+                        # The merge gate allowed it, but landing -- and the
+                        # ledger state that follows from it -- waits for this
+                        # wave's batch step below, exactly like the serial
+                        # path already waits for its own merge_check/
+                        # merge_accepted before touching either.
+                        pending_batch.append((spec, outcome))
+                        continue
 
                     # Every finished task MUST leave the ready set. Without this a
                     # task that ends unaccepted without a state change (no capable
@@ -781,6 +813,22 @@ class Forge:
                         self.ledger.set_task_state(
                             spec.id, TaskState.DONE if outcome.accepted else TaskState.FAILED
                         )
+
+                if pending_batch:
+                    # repo_root is guaranteed set here: `pending_batch_merge`
+                    # is only ever produced when `isolate_worktrees` created a
+                    # worktree, which itself requires a detected repo_root.
+                    assert repo_root is not None
+                    self._finalize_batch_wave(job, repo_root, pending_batch)
+                    for spec, outcome in pending_batch:
+                        task_row = self.ledger.task(spec.id)
+                        if task_row is None:
+                            raise RuntimeError(f"ledger task disappeared: {spec.id}")
+                        state = TaskState(task_row["state"])
+                        if state not in (TaskState.DONE, TaskState.FAILED, TaskState.PAUSED):
+                            self.ledger.set_task_state(
+                                spec.id, TaskState.DONE if outcome.accepted else TaskState.FAILED
+                            )
 
                 if self._trip.is_set():
                     # One thread observed a governor trip. The whole job stops:
@@ -842,6 +890,7 @@ class Forge:
                           repo_root: str | None = None, executor_is_default: bool = False,
                           job_base_ref: str | None = None,
                           checkpoint_store: MutableMapping[str, dict] | None = None,
+                          batch_merge: bool = False,
                           ) -> TaskOutcome | None:
         """`_run_task` plus the two guarantees threading adds.
 
@@ -857,7 +906,8 @@ class Forge:
                                   isolate_worktrees=isolate_worktrees, repo_root=repo_root,
                                   executor_is_default=executor_is_default,
                                   job_base_ref=job_base_ref,
-                                  checkpoint_store=checkpoint_store)
+                                  checkpoint_store=checkpoint_store,
+                                  batch_merge=batch_merge)
         except Exception as exc:  # noqa: BLE001 — the alternative is a vanished task
             reason = f"worker thread raised {type(exc).__name__}: {exc}"
             try:
@@ -887,6 +937,7 @@ class Forge:
                   repo_root: str | None = None, executor_is_default: bool = False,
                   job_base_ref: str | None = None,
                   checkpoint_store: MutableMapping[str, dict] | None = None,
+                  batch_merge: bool = False,
                   ) -> TaskOutcome | None:
         attempts = 0
         tier_used: int | None = None
@@ -1338,6 +1389,28 @@ class Forge:
             # skips this: there is no point checking mergeability of work the
             # gate already refused on its own merits.
             if worktree_info is not None and verdict.allowed:
+                if batch_merge:
+                    # Defer the actual git landing to this wave's batch step
+                    # (`Forge._finalize_batch_wave`, called once from `run`
+                    # after every task in the wave has returned) instead of
+                    # merging one candidate at a time here. The branch and
+                    # its commits survive `_finish` below regardless --
+                    # `remove_worktree(..., keep_branch=True)` only ever
+                    # discards the on-disk checkout -- so the batch step can
+                    # still act on the branch after this thread returns.
+                    # Event logging and the worker report are deferred with
+                    # it: both must reflect the FINAL landed/refused ruling,
+                    # not this provisional gate pass, exactly like the serial
+                    # path below already waits for its own merge_check/
+                    # merge_accepted before logging anything.
+                    return _finish(TaskOutcome(
+                        task_id=spec.id, subject=spec.subject, accepted=True,
+                        worker_id=worker_id, tier=tier_used,
+                        reason="merge gate allowed; pending batch merge",
+                        merge_reasons=merge_reasons, merge_warnings=merge_warnings,
+                        attempts=attempts, usd_micros=self.ledger.task_spend_micros(spec.id),
+                        pending_batch_merge=True,
+                    ))
                 with self._sched_lock:
                     check = merge_check(repo_root, worktree_info.branch)
                     landed = check.clean and merge_accepted(
@@ -1428,6 +1501,176 @@ class Forge:
                            merge_reasons=merge_reasons, merge_warnings=merge_warnings,
                            attempts=attempts,
                            usd_micros=self.ledger.task_spend_micros(spec.id)))
+
+    # --------------------------------------------------------- batch merge
+
+    def _scratch_batch_check(self, repo_root: str, branch_of: dict[str, str]) -> RunBatchCheck:
+        """Build the `run_batch_check` callable `verify_batch` drives.
+
+        Honest because it is a REAL integration, not a pairwise approximation:
+        each call creates a fresh, disposable worktree off `repo_root`'s
+        actual current HEAD -- via `create_worktree`/`remove_worktree`, the
+        same primitives the single-candidate path already trusts -- and
+        merges every candidate branch into it, chained in the subset's order,
+        so a conflict between two candidates that are each individually clean
+        against HEAD still surfaces. The scratch worktree is torn down every
+        time, pass or fail, and it never touches the branch the caller
+        actually lands on afterward -- that real merge happens separately,
+        against `repo_root` itself, only for candidates this check passed.
+
+        Any failure in here (git missing, disk full, a worktree that
+        wouldn't create) raises out to `verify_batch`, which is exactly the
+        UNKNOWN path in `core/batchmerge.py` -- an unrun check must never be
+        read as a pass.
+        """
+        def run_batch_check(subset: list[BatchCandidate]) -> CheckOutcome:
+            scratch_id = f"batchcheck-{uuid.uuid4().hex[:16]}"
+            scratch = create_worktree(repo_root, scratch_id, base="HEAD")
+            try:
+                for candidate in subset:
+                    branch = branch_of[candidate.id]
+                    check = merge_check(scratch.path, branch)
+                    if not check.clean:
+                        detail = (", ".join(check.conflicts) if check.conflicts
+                                 else check.detail or "merge could not be completed")
+                        return CheckOutcome(passed=False, evidence=f"{candidate.id}: {detail}")
+                    if not merge_accepted(scratch.path, branch,
+                                          message=f"batch check: {candidate.id}"):
+                        return CheckOutcome(
+                            passed=False,
+                            evidence=f"{candidate.id}: merge could not be completed",
+                        )
+                return CheckOutcome(passed=True)
+            finally:
+                remove_worktree(repo_root, scratch_id)
+
+        return run_batch_check
+
+    def _finalize_batch_wave(
+        self, job: JobSpec, repo_root: str, pending: list[tuple[TaskSpec, "TaskOutcome"]],
+    ) -> None:
+        """Land one wave's worth of gate-accepted worktree branches through
+        `core.batchmerge.verify_batch` instead of merging them one at a time.
+
+        Mutates each outcome in `pending` in place (`accepted`/`reason`/
+        `merge_reasons`/`pending_batch_merge`) and performs exactly the hook/
+        event/report bookkeeping the serial path already does per candidate
+        -- just once per wave, after the batch verdict is known, instead of
+        inline per task. `pending` arrives in wave submission order and every
+        branch below preserves it: `verify_batch` itself never reorders
+        `landed`, and the culprit/requeued loops below walk their own result
+        lists, which `verify_batch` also builds by encounter order over the
+        same submission-ordered candidate list.
+        """
+        branch_of = {o.task_id: f"{_WORKTREE_BRANCH_PREFIX}{o.task_id}" for _, o in pending}
+        plan = BatchPlan(candidates=[BatchCandidate(id=o.task_id) for _, o in pending])
+
+        try:
+            with self._sched_lock:
+                result = verify_batch(plan, self._scratch_batch_check(repo_root, branch_of))
+        except Exception as exc:  # noqa: BLE001 - a batching bug must not lose an accepted task
+            record_degradation(
+                "forge.batchmerge", "batch verification raised", exc,
+                consequence=f"merged {len(pending)} accepted task(s) serially instead of batched",
+            )
+            for spec, outcome in pending:
+                self._land_single_candidate(job, repo_root, spec, outcome, branch_of[outcome.task_id])
+            return
+
+        # The savings receipt: `checks_run` vs `naive_checks` (=N candidates)
+        # is `BatchResult`'s own honesty contract (core/batchmerge.py) --
+        # reported here, never asserted as a saving. `ForgeResult` has no
+        # per-wave home for it (one job can run many waves), so it goes on
+        # the job's event log instead of inventing a field a single job-level
+        # result can't actually hold; job-level (`task_id=None`) because it
+        # describes the wave's batch, not any one task.
+        self.events.append(
+            job.id, EventType.ACTION_RECORDED, task_id=None, action="batch_merge",
+            checks_run=result.checks_run, naive_checks=result.naive_checks,
+            landed=len(result.landed), culprits=len(result.culprits),
+            requeued_unknown=len(result.requeued_unknown),
+        )
+
+        by_id = {outcome.task_id: (spec, outcome) for spec, outcome in pending}
+        for task_id in result.landed:
+            spec, outcome = by_id[task_id]
+            self._land_single_candidate(job, repo_root, spec, outcome, branch_of[task_id])
+        for culprit in result.culprits:
+            spec, outcome = by_id[culprit.candidate_id]
+            self._finalize_gate_ruling(
+                job, spec, outcome, allowed=False,
+                merge_reasons=outcome.merge_reasons
+                + [f"merge conflict against main: {culprit.evidence}"],
+            )
+        for task_id in result.requeued_unknown:
+            # House rule from core/batchmerge.py: an unrun check proves
+            # nothing, so these were never bisected. Verify each on its own,
+            # same as the single-candidate path always has.
+            spec, outcome = by_id[task_id]
+            self._land_single_candidate(job, repo_root, spec, outcome, branch_of[task_id])
+
+    def _land_single_candidate(
+        self, job: JobSpec, repo_root: str, spec: TaskSpec, outcome: "TaskOutcome", branch: str,
+    ) -> None:
+        """The same individual `merge_check` + `merge_accepted` the serial
+        path always used, reused here for the requeued-UNKNOWN half of a
+        batch and for the whole-wave fallback when the batch machinery
+        itself errors -- both need one candidate actually verified and
+        landed against the real repo, not the disposable scratch check."""
+        with self._sched_lock:
+            check = merge_check(repo_root, branch)
+            landed = check.clean and merge_accepted(
+                repo_root, branch, message=f"{spec.id}: {spec.subject}"
+            )
+        if landed:
+            self._finalize_gate_ruling(job, spec, outcome, allowed=True,
+                                       merge_reasons=outcome.merge_reasons)
+        else:
+            detail = (", ".join(check.conflicts) if check.conflicts
+                     else check.detail or "merge could not be completed")
+            self._finalize_gate_ruling(
+                job, spec, outcome, allowed=False,
+                merge_reasons=outcome.merge_reasons + [f"merge conflict against main: {detail}"],
+            )
+
+    def _finalize_gate_ruling(
+        self, job: JobSpec, spec: TaskSpec, outcome: "TaskOutcome", *,
+        allowed: bool, merge_reasons: list[str],
+    ) -> None:
+        """Everything `_run_task`'s inline merge-gate finish already does for
+        the serial path -- the post_gate hook, the TASK_ACCEPTED/REJECTED
+        event, and the worker's WorkerReport -- replayed here once the batch
+        step, rather than `_run_task` itself, learns the final ruling for a
+        task it deferred. `run`'s wave loop still owns the ledger state
+        transition afterward, same as it does for every non-batch outcome.
+        """
+        hook_result = self.hooks.run(
+            HookEvent.POST_GATE,
+            task_payload(job, spec, worker_id=outcome.worker_id, tier=outcome.tier,
+                        merge_allowed=allowed),
+        )
+        with self._sched_lock:
+            self._log_hooks(job.id, spec.id, HookEvent.POST_GATE, hook_result)
+            self.events.append(
+                job.id, EventType.TASK_ACCEPTED if allowed else EventType.TASK_REJECTED,
+                task_id=spec.id,
+                reason="merge gate allowed" if allowed else "; ".join(merge_reasons)[:400],
+            )
+            self.ledger.record_report(
+                WorkerReport(
+                    task_id=spec.id, worker_id=outcome.worker_id,
+                    state=TaskState.DONE if allowed else TaskState.FAILED,
+                    verdict=Verdict.PASS if allowed else Verdict.FAIL,
+                    summary="merge gate ruling",
+                    blocker="" if allowed else "; ".join(merge_reasons)[:300],
+                    usd_micros=0,
+                )
+            )
+
+        outcome.accepted = allowed
+        outcome.reason = "merged" if allowed else "merge gate refused"
+        outcome.merge_reasons = merge_reasons
+        outcome.pending_batch_merge = False
 
     def _halted(self, job_id: str) -> bool:
         """Whether the operator pressed halt in the dashboard.
