@@ -11,6 +11,7 @@ The executor is injected and fake throughout — no network, no model, no subscr
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -19,8 +20,10 @@ from forgeos.contracts import Budget, FailureClass, Scope, TaskSpec, TaskState, 
 from forgeos.core.market import CapacityMarket, Entitlement, Forecast, TelemetrySource
 from forgeos.events import EventType
 from forgeos.forge import ExecutionResult, Forge, current_task_cwd
+from forgeos.hooks import HookRunner
 from forgeos.leases import LeaseType
 from forgeos.registry import Adapter, CostTier, Registry, WorkerProfile
+from forgeos.settings import HookDef, HookEvent
 from forgeos.worktrees import list_task_worktrees
 
 
@@ -887,3 +890,60 @@ def test_allow_repeat_work_reruns_a_settled_contract(forge):
     second = forge.run("deliberate rerun", [_task()], executor=lambda s, w: _green(),
                        reviewer=_pass_review, allow_repeat_work=True)
     assert second.accepted == 1, second.outcomes
+
+
+# ============================================================ lifecycle hooks
+
+
+@pytest.mark.slow
+def test_pre_route_hook_veto_refuses_before_the_executor_runs(forge):
+    """A pre_route veto is the earliest of the two veto points: it must refuse
+    the task before the executor -- and therefore any spend -- is ever reached."""
+    calls = {"n": 0}
+
+    def counting(spec, worker):  # noqa: ARG001
+        calls["n"] += 1
+        return _green()
+
+    code = ("import json,sys; sys.stdin.read(); "
+            "print(json.dumps({'veto': 'blocked by policy'})); sys.exit(2)")
+    forge.hooks = HookRunner([HookDef(event=HookEvent.PRE_ROUTE, command=sys.executable,
+                                      args=["-c", code])])
+
+    result = forge.run("ship", [_task()], executor=counting, reviewer=_pass_review)
+
+    assert result.accepted == 0
+    assert calls["n"] == 0, "a pre_route veto must never reach the executor"
+    assert "hook veto (pre_route)" in result.outcomes[0].reason
+    assert "blocked by policy" in result.outcomes[0].reason
+
+
+@pytest.mark.slow
+def test_post_gate_hook_veto_cannot_change_the_ruling(forge):
+    """post_gate is observe-only by construction: even a hook that returns the
+    one documented veto shape must not flip an otherwise-accepted task -- the
+    merge gate is the only thing that may declare a task accepted."""
+    code = ("import json,sys; sys.stdin.read(); "
+            "print(json.dumps({'veto': 'i disagree with the gate'})); sys.exit(2)")
+    forge.hooks = HookRunner([HookDef(event=HookEvent.POST_GATE, command=sys.executable,
+                                      args=["-c", code])])
+
+    result = forge.run("ship", [_task()], executor=lambda s, w: _green(), reviewer=_pass_review)
+
+    assert result.accepted == 1
+    assert result.outcomes[0].reason == "merged"
+
+
+def test_no_hooks_configured_means_zero_hook_invocations(forge, monkeypatch):
+    """The empty (default) hook configuration must cost nothing end to end --
+    across all four wired call sites in one real run, not just at the
+    HookRunner unit level (see tests/test_hooks.py)."""
+    forge.hooks = HookRunner()  # explicit empty, independent of any real settings file
+
+    def _boom(*a, **kw):
+        raise AssertionError("subprocess.run must not be called with no hooks configured")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+
+    result = forge.run("ship", [_task()], executor=lambda s, w: _green(), reviewer=_pass_review)
+    assert result.accepted == 1

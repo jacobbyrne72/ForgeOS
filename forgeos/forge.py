@@ -67,10 +67,11 @@ from .economy.preflight import (
 from .economy.reducer import reduce_generic, reduce_pytest
 
 from .events import EventLog, EventType
+from .hooks import HookResult, HookRunner, job_end_payload, task_payload
 from .leases import LeaseStore
 from .ledger import Ledger
 from .registry import Adapter, CostTier, Registry, WorkerProfile, default_registry
-from .settings import Settings
+from .settings import HookEvent, Settings
 from .worktrees import (
     BRANCH_PREFIX as _WORKTREE_BRANCH_PREFIX,
     create_worktree,
@@ -398,6 +399,7 @@ class Forge:
         self.spans = SpanStore(self.home / "spans.db")
 
         self.settings = settings or Settings.load()
+        self.hooks = HookRunner.from_settings(self.settings)
         self.registry = registry or default_registry()
         self._gateway = gateway
         self._owns_gateway = gateway is None
@@ -710,7 +712,18 @@ class Forge:
                     break
 
         self.ledger.close_job(job.id, TaskState.DONE if not halted else TaskState.PAUSED)
-        return self._result(job, objective, outcomes, halted)
+        result = self._result(job, objective, outcomes, halted)
+
+        # --- hooks: job_end — observe only; never changes the result --------
+        hook_result = self.hooks.run(
+            HookEvent.JOB_END,
+            job_end_payload(job, accepted=result.accepted, rejected=result.rejected,
+                             spend_usd=result.spend_usd, halted_reason=result.halted_reason),
+        )
+        with self._sched_lock:
+            self._log_hooks(job.id, None, HookEvent.JOB_END, hook_result)
+
+        return result
 
     def _run_task_guarded(self, job: JobSpec, spec: TaskSpec, executor: Executor,
                           reviewer: Executor | None, *, isolate_worktrees: bool = False,
@@ -814,6 +827,19 @@ class Forge:
                     # Pressure refusals shrink concurrency, they never fail work:
                     # the task waits for a later wave instead of running anyway.
                     return _finish(None)
+
+            # --- hooks: pre_route — may veto BEFORE any spend -----------------
+            # A crashed/timed-out/malformed hook proceeds with a warning; only
+            # a clean exit 2 + {"veto": reason} refuses the task (hooks.py).
+            hook_result = self.hooks.run(HookEvent.PRE_ROUTE, task_payload(job, spec))
+            with self._sched_lock:
+                self._log_hooks(job.id, spec.id, HookEvent.PRE_ROUTE, hook_result)
+            if hook_result.vetoed:
+                return _finish(TaskOutcome(
+                    task_id=spec.id, subject=spec.subject, accepted=False,
+                    reason=f"hook veto (pre_route): {hook_result.veto_reason}",
+                    attempts=attempts,
+                ))
 
             # --- route: cheapest tier that can finish, priced by the market ---
             # Quota awareness: skip providers whose window is exhausted.
@@ -973,6 +999,30 @@ class Forge:
                 updates["description"] = f"{spec.description}\n\n{board_context}"
             if updates:
                 task_for_attempt = spec.model_copy(update=updates)
+
+            # --- hooks: pre_execute — last veto point before any spend --------
+            # Leases and worktree are already held at this point, so a veto here
+            # must release them exactly like the crash path below does, or the
+            # lease would leak for the rest of the job.
+            hook_result = self.hooks.run(
+                HookEvent.PRE_EXECUTE,
+                task_payload(job, spec, worker_id=worker_id, tier=tier_used),
+            )
+            with self._sched_lock:
+                self._log_hooks(job.id, spec.id, HookEvent.PRE_EXECUTE, hook_result)
+            if hook_result.vetoed:
+                reason = f"hook veto (pre_execute): {hook_result.veto_reason}"
+                with self._sched_lock:
+                    self.scheduler.report(
+                        WorkerReport(task_id=spec.id, worker_id=worker_id,
+                                     state=TaskState.FAILED, blocker=reason),
+                        job_id=job.id, budget=spec.budget,
+                    )
+                return _finish(TaskOutcome(
+                    task_id=spec.id, subject=spec.subject, accepted=False,
+                    worker_id=worker_id, tier=tier_used, reason=reason, attempts=attempts,
+                    usd_micros=self.ledger.task_spend_micros(spec.id),
+                ))
 
             # The default routed executor bakes its cwd in at construction
             # (adapters/routed.py); rebuilding it here, once per isolated
@@ -1182,6 +1232,20 @@ class Forge:
                     })
                     merge_reasons = verdict.reasons
 
+            # --- hooks: post_gate — observe only, on the FINAL ruling ---------
+            # `hook_result.vetoed` is deliberately never read below. The merge
+            # gate above (including the worktree merge-check it just went
+            # through) is the only thing that may declare a task accepted
+            # (AGENTS.md rules 1, 2) — a hook can log an opinion, never cast
+            # the vote.
+            hook_result = self.hooks.run(
+                HookEvent.POST_GATE,
+                task_payload(job, spec, worker_id=worker_id, tier=tier_used,
+                             merge_allowed=verdict.allowed),
+            )
+            with self._sched_lock:
+                self._log_hooks(job.id, spec.id, HookEvent.POST_GATE, hook_result)
+
             # The merge gate is the only thing that may declare a task accepted.
             # The scheduler emits TASK_COMPLETED when a worker claims success;
             # this is where that claim is either ratified or refused.
@@ -1263,6 +1327,22 @@ class Forge:
         if isinstance(entry, dict):
             return bool(entry.get("halted", True))
         return bool(entry)
+
+    def _log_hooks(self, job_id: str, task_id: str | None,
+                   event: HookEvent, result: HookResult) -> None:
+        """Record what a lifecycle event's hooks said. Observe-only: this never
+        decides anything, and it never runs at all when no hook fired (that
+        is `result.outcomes` empty, which is exactly what `HookRunner.run`
+        returns for an unconfigured event without spawning a subprocess).
+        Caller holds `_sched_lock`.
+        """
+        if not result.outcomes:
+            return
+        self.events.append(
+            job_id, EventType.HOOK_INVOKED, task_id=task_id,
+            hook_event=event.value, vetoed=result.vetoed,
+            veto_reason=result.veto_reason, warnings=result.warnings,
+        )
 
     def _pick_reviewer(self, spec: TaskSpec, *, exclude: str) -> str:
         """A real second worker, or "" meaning no independent review happened.

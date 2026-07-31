@@ -111,12 +111,39 @@ class RoleBinding(BaseModel):
         return not self.worker_id
 
 
+class HookEvent(str, Enum):
+    """The four lifecycle events a hook may attach to. See `forgeos/hooks.py`
+    for the veto/observe split between them."""
+
+    PRE_ROUTE = "pre_route"
+    PRE_EXECUTE = "pre_execute"
+    POST_GATE = "post_gate"
+    JOB_END = "job_end"
+
+
+class HookDef(BaseModel):
+    """One lifecycle hook: an external command Forge invokes at `event`.
+
+    Config-driven only — this model is reachable exclusively through
+    `Settings.hooks`, loaded from `~/.forgeos/settings.json`. A task
+    description can never define a hook: task text is untrusted input to the
+    router (AGENTS.md rule 9), and letting it name a command Forge executes
+    would hand untrusted text direct execution.
+    """
+
+    event: HookEvent
+    command: str
+    args: list[str] = Field(default_factory=list)
+    timeout_seconds: float = 30.0
+
+
 class Settings(BaseModel):
     providers: dict[str, Provider] = Field(default_factory=dict)
     roles: dict[Role, RoleBinding] = Field(default_factory=dict)
     max_parallel_workers: int = 4
     default_job_usd: float = 20.0
     default_task_usd: float = 2.0
+    hooks: list[HookDef] = Field(default_factory=list)
 
     # ------------------------------------------------------------- providers
 
@@ -257,6 +284,8 @@ def default_settings() -> Settings:
 
 __all__ = [
     "AuthMode",
+    "HookDef",
+    "HookEvent",
     "Provider",
     "ProviderKind",
     "Role",

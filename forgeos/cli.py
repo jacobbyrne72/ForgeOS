@@ -77,10 +77,28 @@ def cmd_receipts(args) -> int:
     return _cmd_receipts(args)
 
 
+def _doctor_probe(settings, args) -> int:
+    """Actually contact each provider. Free: lists models, never completes."""
+    from forgeos.core.probe import probe_all, save_report
+
+    report = probe_all(settings.providers.values(), timeout=getattr(args, "timeout", 10.0))
+    if getattr(args, "json", False):
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    else:
+        print(report.render())
+    home = Path(getattr(args, "state_dir", None) or Path.cwd() / ".forgeos")
+    save_report(report, home / "provider_probe.json")
+    # Non-zero when nothing can be routed to: a scripted setup step should be
+    # able to fail on "no working provider" without parsing this output.
+    return 0 if report.routable else 1
+
+
 def cmd_doctor(args) -> int:
     from forgeos.settings import Settings
 
     settings = Settings.load()
+    if getattr(args, "probe", False):
+        return _doctor_probe(settings, args)
     usable = settings.usable_providers()
     total = len(settings.providers)
     score = round(len(usable) / total * 100, 1) if total else 0
@@ -88,6 +106,11 @@ def cmd_doctor(args) -> int:
     for p in sorted(settings.providers.values(), key=lambda x: x.name):
         status = "ready" if p.usable else f"unavailable ({p.status()})"
         print(f"  {p.name:<12} {p.kind.value:<10} {status}")
+    # Say plainly what this number is, because it reads like a verification and
+    # is not one: it counts enabled + installed + env-var-present. A key with no
+    # credit left, a CLI that is signed out, and an ollama with nothing pulled
+    # all score "ready" here and then fail on the first real call.
+    print("  (declared, not verified -- run `forge doctor --probe` to test them)")
     cache = PromptCache()
     try:
         cs = cache.stats()
@@ -355,7 +378,7 @@ def cmd_init(args) -> int:
     # travel with the repo while CLAUDE.md does. Silently writing files with
     # different fates is how a teammate ends up without the settings.
     print(f"  CLAUDE.md          {'written' if wrote_claude else 'left alone (already exists)'}")
-    print(f"  .forgeos/settings.json  ready  (gitignored -- local to you)")
+    print("  .forgeos/settings.json  ready  (gitignored -- local to you)")
     print("Init complete! Run 'forge run <objective> --dry-run' to preview without spending.")
     return 0
 
@@ -654,6 +677,13 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command")
     p_doctor = sub.add_parser("doctor", help="What can this machine do right now")
     p_doctor.add_argument("--state-dir", default=None)
+    p_doctor.add_argument(
+        "--probe", action="store_true",
+        help="Actually contact each provider to see which ones work. Free -- "
+             "lists models, never requests a completion.",
+    )
+    p_doctor.add_argument("--json", action="store_true", help="Machine-readable probe output")
+    p_doctor.add_argument("--timeout", type=float, default=10.0)
     p_quota = sub.add_parser("quota", help="Read local subscription quota telemetry")
     p_quota.add_argument("--state-dir", default=None)
     p_quota.add_argument("--json", action="store_true")

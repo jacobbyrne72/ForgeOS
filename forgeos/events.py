@@ -58,6 +58,13 @@ class EventType(str, Enum):
     # would be the exact bug this event exists to prevent, expressed in the
     # projection instead of the scheduler.
     REPORT_FENCED = "report_fenced"
+    # A lifecycle hook (forgeos/hooks.py) ran for pre_route, pre_execute,
+    # post_gate, or job_end. Deliberately absent from `_PROJECTION`: a hook
+    # observes and, for the first two events only, may veto BEFORE this event
+    # is even reached (the veto itself surfaces as a TASK_REJECTED/failed
+    # outcome through the normal path). This event is a record of what the
+    # hook said, never a state transition in its own right.
+    HOOK_INVOKED = "hook_invoked"
 
 
 # The only transitions the projection honours. An event that would move a task

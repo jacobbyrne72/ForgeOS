@@ -367,6 +367,69 @@ def cmd_team(args: argparse.Namespace) -> int:
     )
 
 
+# ------------------------------------------------------------------- serve-mcp
+
+
+def cmd_serve_mcp(args: argparse.Namespace) -> int:
+    from forgeos.mcp_server import serve
+
+    serve(state_dir=args.state_dir, queue_dir=args.queue)
+    return 0
+
+
+# ---------------------------------------------------------------------- memory
+
+
+def cmd_memory(args: argparse.Namespace) -> int:
+    """Mine the ledger/event log for recurring patterns and file each as an
+    unverified claim candidate (see `forgeos.knowledge.automemory`). Never
+    promotes anything -- see `forgeos.knowledge.claims.ClaimStore.promote`
+    for the separate, evidence-gated step that does.
+    """
+    if not args.mine:
+        print("Nothing to do -- pass --mine to scan the ledger/events for lesson candidates.")
+        return 1
+
+    state_dir = _resolve_state_dir(args.state_dir)
+    ledger_path = state_dir / "ledger.db"
+    events_path = state_dir / "events.db"
+    if not ledger_path.exists() or not events_path.exists():
+        print(f"No ledger/events under {state_dir}.")
+        print("Fix: pass --state-dir to a directory forgeos has run a job in, or run one first.")
+        return 1
+
+    from forgeos.events import EventLog
+    from forgeos.knowledge.automemory import file_candidates, mine_lessons
+    from forgeos.knowledge.claims import ClaimStore
+    from forgeos.ledger import Ledger
+
+    ledger = Ledger(ledger_path)
+    events = EventLog(events_path)
+    claims_store = ClaimStore(state_dir / "claims.db")
+    try:
+        candidates = mine_lessons(ledger, events)
+        if not candidates:
+            print("No repeated patterns found -- nothing to file.")
+            return 0
+
+        print(f"Mined {len(candidates)} lesson candidate(s):")
+        for c in candidates:
+            print(f"  [{c.kind.value}] {c.subject} (x{c.occurrences})")
+            print(f"    {c.claim_text}")
+
+        filed = file_candidates(claims_store, candidates)
+        print()
+        print(
+            f"Filed {len(filed)} claim(s) into {state_dir / 'claims.db'} -- all UNVERIFIED, "
+            "pending corroboration/promotion. Nothing here is an instruction yet."
+        )
+        return 0
+    finally:
+        ledger.close()
+        events.close()
+        claims_store.close()
+
+
 # ----------------------------------------------------------------------- cli
 
 
@@ -419,6 +482,27 @@ def main(argv: list[str] | None = None) -> int:
         help="Print the compiled task graph and exit without spending anything",
     )
 
+    p_mcp = sub.add_parser(
+        "serve-mcp",
+        help="MCP server over stdio -- expose doctor/receipts/plan/submit-job as tools for any MCP-speaking agent",
+    )
+    p_mcp.add_argument(
+        "--state-dir", help="Where the ledger lives for forgeos_receipts (default: forgeos's DEFAULT_HOME, ~/.forgeos)"
+    )
+    p_mcp.add_argument(
+        "--queue", help="Queue directory for forgeos_submit_job (omit to leave that tool unavailable)"
+    )
+
+    p_memory = sub.add_parser(
+        "memory", help="Mine ledger/events for recurring patterns -> unverified claim candidates"
+    )
+    p_memory.add_argument(
+        "--mine", action="store_true", help="Scan and file lesson candidates (the only mode today)"
+    )
+    p_memory.add_argument(
+        "--state-dir", help="Where the ledger/events/claims live (default: forgeos's DEFAULT_HOME, ~/.forgeos)"
+    )
+
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
@@ -429,6 +513,8 @@ def main(argv: list[str] | None = None) -> int:
         "receipts": cmd_receipts,
         "watch": cmd_watch,
         "team": cmd_team,
+        "serve-mcp": cmd_serve_mcp,
+        "memory": cmd_memory,
     }
     return dispatch[args.command](args)
 
