@@ -8,6 +8,8 @@ Routes each task to the cheapest execution path:
 from __future__ import annotations
 
 from enum import Enum
+from .circuit_breaker import CircuitBreaker, BreakerState
+
 
 class Route(Enum):
     LOCAL = "local"      
@@ -45,10 +47,23 @@ class CostRouter:
     def __init__(self):
         self.routes_taken: dict[str, int] = {}
         self.total_saved = 0.0
+        self._breaker = CircuitBreaker(failure_threshold=3, cooldown_seconds=30)
+
 
     def route(self, task_type: str) -> Route:
-        """Determine cheapest route for a task type."""
+        """Determine cheapest route for a task type.
+
+        If the circuit breaker is OPEN for full-model tasks,
+        downgrade to deferred or cheap alternatives when possible.
+        """
         route = ROUTING_RULES.get(task_type, Route.FULL_MODEL)
+
+        # If breaker is OPEN and task would use full model,
+        # check for cheaper alternatives
+        if self._breaker.is_open() and route == Route.FULL_MODEL:
+            # Downgrade to cheap model if available
+            route = Route.CHEAP_MODEL
+
         key = route.value
         self.routes_taken[key] = self.routes_taken.get(key, 0) + 1
         return route

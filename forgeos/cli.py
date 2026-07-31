@@ -409,6 +409,7 @@ def main() -> int:
         "models": cmd_models,
         "profile": cmd_profile,
         "optimize": cmd_optimize,
+        "prompt": cmd_prompt_opt,
         "auto": cmd_auto,
         "batch": cmd_batch,
         "bench": cmd_bench,
@@ -419,6 +420,8 @@ def main() -> int:
         "smartbatch": cmd_smartbatch,
         "audit": cmd_audit,
         "route": cmd_route,
+        "optimize": cmd_optimize,
+        "prompt": cmd_prompt_opt,
         "track": cmd_track,
         "doctor": cmd_doctor,
         "init": cmd_init,
@@ -551,6 +554,27 @@ def cmd_route(args):
         print("  " + route + ": " + str(data["count"]) + " tasks, $" + str(round(data["cost"], 4)))
     print()
     print("Savings vs full model for all: $" + str(result["savings_vs_full_model"]))
+    return 0
+
+
+
+def cmd_prompt_opt(args):
+    from forgeos.prompt_optimizer import optimize_prompt
+    # Demo prompt with excessive tokens
+    demo = "You are an AI assistant." + chr(10) + chr(10) + "Previous turns:" + chr(10)
+    for i in range(15):
+        demo += "- User: Task " + str(i) + chr(10) + "- Assistant: Response " + str(i) + chr(10)
+    demo += chr(10) + "Now write something useful."
+    optimized, stats = optimize_prompt(demo, max_tokens=args.max_tokens)
+    print("=== Prompt Optimizer ===")
+    print("Original tokens:", stats["original_tokens"])
+    print("Optimized tokens:", stats["optimized_tokens"])
+    print("Tokens saved:", stats["tokens_saved"])
+    print("Savings:", stats["savings_pct"], "%")
+    print("Under budget:", stats["under_budget"])
+    print()
+    reduction_pct = round((1 - stats["optimized_tokens"] / max(1, stats["original_tokens"])) * 100, 1)
+    print("Token reduction:", reduction_pct, "%")
     return 0
 
 def cmd_audit(args):

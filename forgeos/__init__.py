@@ -102,6 +102,7 @@ __all__ = [
     "CostAuditor",
     "CostRouter",
     "Route",
+    "CostTracker",
 ]
 
 from .adaptive_batch import AdaptiveBatch
@@ -111,3 +112,5 @@ from .cost_audit import CostAuditor
 
 from .cost_router import CostRouter, Route
 from .cost_tracker import CostTracker
+
+from .prompt_optimizer import optimize_prompt, estimate_tokens
