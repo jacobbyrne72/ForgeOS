@@ -64,8 +64,11 @@ class CostRouter:
         # Check any worker's breaker state for OPEN
         try:
             breaker_open = False
+            # QUARANTINED counts here too: it means a worker's local setup is
+            # broken, which is an even more certain "don't send it work" than
+            # a plain OPEN trip -- both are reasons to downgrade the route.
             breaker_open = any(
-                state.value == "open"
+                state.value in ("open", "quarantined")
                 for state in self._breaker.get_all_states().values()
             )
             if breaker_open and route == Route.FULL_MODEL:

@@ -410,7 +410,9 @@ def cmd_breaker(args) -> int:
         print("No worker history yet.")
         return 0
     for wid, s in stats.items():
-        icon = {"closed": "[OK]", "open": "[TRIP]", "half_open": "[TEST]"}.get(s["state"], "[?]")
+        icon = {
+            "closed": "[OK]", "open": "[TRIP]", "half_open": "[TEST]", "quarantined": "[QUARANTINE]",
+        }.get(s["state"], "[?]")
         print(f"{icon} {wid}: {s['state']} ({s['total_calls']} calls, {s['failure_rate']:.0%} fail)")
     return 0
 
