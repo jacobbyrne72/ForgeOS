@@ -41,7 +41,9 @@ Three deliberate positions for `watch_queue()`:
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import tempfile
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -248,7 +250,22 @@ def _write_heartbeat(queue_dir: Path, *, state: str, current_job: str | None, st
         "jobs_done": stats.jobs_done,
         "jobs_failed": stats.jobs_failed,
     }
-    (queue_dir / "heartbeat.json").write_text(json.dumps(payload), encoding="utf-8")
+    # A monitor can read this file between any two writes. Write a complete
+    # snapshot to a same-directory temporary file, flush it, then atomically
+    # replace the published heartbeat; a partial JSON document must never look
+    # like a dead daemon or make the monitor's parser fail closed by accident.
+    fd, tmp_name = tempfile.mkstemp(prefix=".heartbeat-", suffix=".tmp", dir=queue_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        Path(tmp_name).replace(queue_dir / "heartbeat.json")
+    finally:
+        try:
+            Path(tmp_name).unlink()
+        except FileNotFoundError:
+            pass
 
 
 def watch_queue(

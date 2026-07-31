@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 
 from forgeos.forge import ForgeResult
-from forgeos.watch import WATCH_HALT_KEY, WatchStats, watch_queue
+from forgeos.watch import WATCH_HALT_KEY, WatchStats, _write_heartbeat, watch_queue
 
 
 class _FakeForge:
@@ -188,6 +188,15 @@ def test_heartbeat_reflects_counts_after_processing_jobs(tmp_path):
     heartbeat = json.loads((queue / "heartbeat.json").read_text())
     assert heartbeat["jobs_done"] == 1
     assert heartbeat["state"] == "idle"  # back to idle once the backlog drains
+
+
+def test_heartbeat_publication_is_atomic_and_leaves_no_temp_snapshot(tmp_path):
+    _write_heartbeat(tmp_path, state="running", current_job="job.json", stats=WatchStats())
+
+    heartbeat = json.loads((tmp_path / "heartbeat.json").read_text(encoding="utf-8"))
+    assert heartbeat["state"] == "running"
+    assert heartbeat["current_job"] == "job.json"
+    assert list(tmp_path.glob(".heartbeat-*.tmp")) == []
 
 
 # ----------------------------------------------------------------------- halt
