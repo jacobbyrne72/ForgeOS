@@ -278,12 +278,30 @@ def test_queue_ownership_is_enforced_across_processes(tmp_path):
     child = subprocess.Popen(
         [sys.executable, "-c", child_code, str(queue), str(ready), str(stop)],
         cwd=str(Path.cwd()),
+        # Capture the child's own error. Without this the only signal is
+        # "ready never appeared", which is indistinguishable between a broken
+        # lock, an ImportError, and a slow start — three very different bugs,
+        # one useless message.
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     try:
-        deadline = time.monotonic() + 5
-        while not ready.exists() and time.monotonic() < deadline:
+        # Generous on purpose: this asserts a CORRECTNESS property (two
+        # processes cannot both own the queue), not a latency one. The child
+        # pays a full interpreter start plus a `forgeos.watch` import, measured
+        # at ~3s on a loaded developer machine and slower on a cold CI runner —
+        # a 5s budget made a correctness test fail for being slow.
+        deadline = time.monotonic() + 60
+        while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert ready.exists(), "child never acquired the queue lock"
+        if not ready.exists():
+            # The child died or hung; surface its reason instead of asserting
+            # a conclusion the evidence does not support.
+            child.kill()
+            out, err = child.communicate(timeout=10)
+            raise AssertionError(
+                "child never acquired the queue lock; "
+                f"exit={child.returncode} stdout={out[-500:]!r} stderr={err[-500:]!r}"
+            )
         stats = watch_queue(queue, once=True, forge_factory=lambda: _FakeForge([]))
         assert stats.ownership_conflict is True
     finally:
