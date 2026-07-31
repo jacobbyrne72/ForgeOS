@@ -136,6 +136,18 @@ def main() -> int:
     p_cache = sub.add_parser("cache", help="Manage prompt cache")
     p_cache.add_argument("cache_action", choices=["clear", "stats", "prune"])
     sub.add_parser("breaker", help="Circuit breaker state")
+    p_compress = sub.add_parser("compress", help="AST-based context compression")
+    p_compress.add_argument("objective")
+    p_compress.add_argument("--files", nargs="*", default=[])
+    p_adapt = sub.add_parser("adapt", help="Adaptive adapter selection")
+    p_adapt.add_argument("--capabilities", default="")
+    p_adapt.add_argument("--budget", type=int, default=None)
+    p_bench = sub.add_parser("bench", help="Reproducible cost benchmark")
+    p_bench.add_argument("objective")
+    p_bench.add_argument("--iterations", type=int, default=3)
+    p_watch = sub.add_parser("watch", help="Continuous cost monitoring")
+    p_watch.add_argument("--interval", type=int, default=30)
+    p_watch.add_argument("--max-alerts", type=int, default=5)
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -146,6 +158,69 @@ def main() -> int:
         "doctor": cmd_doctor, "init": cmd_init, "compile": cmd_compile,
         "cache": cmd_cache, "breaker": cmd_breaker,
     }
+
+def cmd_compress(args):
+    from forgeos.context_compress import compress_context
+    files = [(f, open(f).read()) for f in args.files] if args.files else []
+    result = compress_context(args.objective, files)
+    for path, filtered in result:
+        print(f"=== {path} ===")
+        print(filtered[:500])
+    print(f"Compressed {len(files)} -> {len(result)} relevant file(s)")
+    return 0
+
+
+def cmd_adapt(args):
+    from forgeos.adapt import AdapterProfiler
+    profiler = AdapterProfiler()
+    # Load any existing profiles from ledger
+    try:
+        from forgeos import open_ledger
+        from pathlib import Path
+        ledger = open_ledger(Path.home() / ".forgeos" / "ledger.db")
+        rows = ledger._conn.execute(
+            "SELECT task_id, worker_id, usd_micros, seconds FROM reports WHERE task_id IS NOT NULL"
+        ).fetchall()
+        for row in rows:
+            profiler.record_task(
+                row.get("worker_id", "unknown"),
+                row.get("usd_micros", 0),
+                row.get("seconds", 0),
+                True,
+            )
+    except Exception:
+        pass
+    decision = profiler.best_adapter(
+        required_capabilities=set(args.capabilities.split(",")) if args.capabilities else set(),
+        budget_usd_micros=args.budget,
+    )
+    if decision:
+        print(json.dumps({
+            "adapter": decision.adapter_name,
+            "reason": decision.reason,
+            "estimated_cost_usd": decision.estimated_cost_usd,
+            "estimated_seconds": decision.estimated_seconds,
+            "confidence": decision.confidence,
+        }, indent=2))
+    else:
+        print("No suitable adapter found")
+    return 0
+
+
+def cmd_bench(args):
+    from forgeos.bench import run_benchmark_cli
+    print(run_benchmark_cli(args.objective, iterations=args.iterations or 3))
+    return 0
+
+
+def cmd_watch(args):
+    from forgeos.watch import watch
+    print(f"Watching for cost anomalies (interval={args.interval}s)...")
+    alerts = watch(None, interval_seconds=args.interval, max_alerts=args.max_alerts or 5)
+    for a in alerts:
+        print(json.dumps(a, indent=2))
+    return 0
+
     return dispatch[args.command](args)
 
 if __name__ == "__main__":
