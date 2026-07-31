@@ -64,11 +64,11 @@ def _duration(value: str | None) -> float | None:
     number = _number(text)
     if number is None:
         return None
-    if re.search(r"\bd\b|day", text):
+    if re.search(r"\d+(?:\.\d+)?\s*d(?:ays?)?$", text):
         return number * 86_400
-    if re.search(r"\bh\b|hour", text):
+    if re.search(r"\d+(?:\.\d+)?\s*h(?:ours?)?$", text):
         return number * 3_600
-    if re.search(r"\bm\b|min", text):
+    if re.search(r"\d+(?:\.\d+)?\s*m(?:in(?:ute)?s?)?$", text):
         return number * 60
     return number
 

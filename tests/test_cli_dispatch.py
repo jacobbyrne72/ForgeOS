@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import pathlib
 
 import pytest
@@ -235,6 +236,43 @@ def test_quota_cli_reads_local_snapshot_as_json(tmp_path, capsys):
     assert '"schema": "forgeos.quota.v1"' in output
     assert '"provider": "claude"' in output
     assert '"pct_remaining": 75.0' in output
+
+
+def test_quota_cli_ingests_local_headers_and_persists_typed_state(tmp_path, capsys):
+    headers = tmp_path / "headers.json"
+    headers.write_text(
+        '{"anthropic-ratelimit-unified-5h-utilization": "0.25", '
+        '"anthropic-ratelimit-unified-5h-reset": "2h"}',
+        encoding="utf-8",
+    )
+
+    assert cli.main([
+        "quota", "ingest", "--provider", "anthropic", "--model", "sonnet",
+        "--headers-file", str(headers), "--state-dir", str(tmp_path),
+        "--at", "1800000000", "--json",
+    ]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["ok"] is True
+    assert output["state"]["pct_remaining"] == 75.0
+    assert output["state"]["resets_at"] == 1800007200.0
+    assert output["state"]["model"] == "sonnet"
+    assert (tmp_path / "quota.json").exists()
+
+
+def test_quota_cli_ingests_provider_report_without_network_access(tmp_path, capsys):
+    report = tmp_path / "quota.txt"
+    report.write_text("Weekly: 60% remaining", encoding="utf-8")
+
+    assert cli.main([
+        "quota", "ingest", "--provider", "claude", "--report-file", str(report),
+        "--state-dir", str(tmp_path), "--json",
+    ]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["ok"] is True
+    assert output["observation"]["source"] == "cli_report"
+    assert output["state"]["pct_remaining"] == 60.0
 
 
 def test_fleet_is_safe_on_windows_cp1252_console(monkeypatch, capsys):

@@ -165,7 +165,61 @@ def _print_quota(state_dir: str | None, *, as_json: bool) -> None:
 
 
 def cmd_quota(args) -> int:
+    if getattr(args, "quota_action", None) == "ingest":
+        return cmd_quota_ingest(args)
     _print_quota(args.state_dir, as_json=args.json)
+    return 0
+
+
+def cmd_quota_ingest(args) -> int:
+    """Import operator-provided quota facts without contacting a provider.
+
+    The CLI deliberately accepts only local files: a JSON header mapping or
+    plain-text output copied from a provider CLI. This keeps credential and
+    network policy in adapters while making the durable ingestion seam useful
+    from a shell and easy to audit in automation.
+    """
+    from forgeos.core.quota import QuotaTracker
+    from forgeos.core.quota_ingest import QuotaIngestor
+
+    root = Path(args.state_dir or Path.cwd() / ".forgeos")
+    path = root / "quota.json"
+    try:
+        tracker = QuotaTracker.load(path)
+        if args.headers_file:
+            raw = json.loads(Path(args.headers_file).read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("headers file must contain a JSON object")
+            observation = QuotaIngestor.from_headers(
+                args.provider, raw, model=args.model, at=args.at
+            )
+        else:
+            text = Path(args.report_file).read_text(encoding="utf-8")
+            observation = QuotaIngestor.from_report(
+                args.provider, text, model=args.model, at=args.at
+            )
+        state = QuotaIngestor.apply(tracker, observation)
+        tracker.save(path)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
+        else:
+            print(f"Quota ingest failed: {exc}", file=sys.stderr)
+        return 2
+
+    payload = {
+        "ok": True,
+        "path": str(path),
+        "observation": observation.model_dump(mode="json"),
+        "state": state.model_dump(mode="json"),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(
+            f"Recorded {state.provider}/{state.model or '*'} quota telemetry "
+            f"at {path}"
+        )
     return 0
 
 
@@ -450,6 +504,30 @@ def main(argv: list[str] | None = None) -> int:
     p_quota = sub.add_parser("quota", help="Read local subscription quota telemetry")
     p_quota.add_argument("--state-dir", default=None)
     p_quota.add_argument("--json", action="store_true")
+    quota_sub = p_quota.add_subparsers(dest="quota_action")
+    p_quota_ingest = quota_sub.add_parser(
+        "ingest", help="Import a local header JSON or provider CLI report"
+    )
+    p_quota_ingest.add_argument("--provider", required=True)
+    p_quota_ingest.add_argument("--model", default="")
+    p_quota_ingest.add_argument("--state-dir", default=None)
+    p_quota_ingest.add_argument("--at", type=float, default=None)
+    p_quota_ingest.add_argument("--json", action="store_true")
+    quota_input = p_quota_ingest.add_mutually_exclusive_group(required=True)
+    quota_input.add_argument("--headers-file")
+    quota_input.add_argument("--report-file")
+    # Compatibility alias for the structural CLI contract and for operators
+    # who want a terse top-level command. The canonical spelling remains
+    # ``forge quota ingest``.
+    p_ingest = sub.add_parser("ingest", help="Import local quota telemetry")
+    p_ingest.add_argument("--provider", required=True)
+    p_ingest.add_argument("--model", default="")
+    p_ingest.add_argument("--state-dir", default=None)
+    p_ingest.add_argument("--at", type=float, default=None)
+    p_ingest.add_argument("--json", action="store_true")
+    ingest_input = p_ingest.add_mutually_exclusive_group(required=True)
+    ingest_input.add_argument("--headers-file")
+    ingest_input.add_argument("--report-file")
     sub.add_parser("fleet", help="What you have, what's alive, what's cheapest TODAY")
     p_receipts = sub.add_parser("receipts", help="Read-only ledger spend and acceptance summary")
     p_receipts.add_argument("--state-dir", default=None)
@@ -599,6 +677,7 @@ def main(argv: list[str] | None = None) -> int:
         "proj": cmd_project,
         "doctor": cmd_doctor,
         "quota": cmd_quota,
+        "ingest": cmd_quota_ingest,
         "init": cmd_init,
         "compile": cmd_compile,
         "cache": cmd_cache,
