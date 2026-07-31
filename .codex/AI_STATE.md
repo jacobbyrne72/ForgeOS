@@ -68,7 +68,8 @@
 
 ## Known blockers
 - No blocker for the source upgrade. Full catalog clone coverage remains intentionally unperformed because it is 713 repositories.
-- An unrelated uncommitted change is present in `forgeos/economy/reducer.py`; it was not touched by this benchmark work and must be preserved.
+- Unrelated reducer wrapper-summary fixes were committed concurrently; they were not touched by this benchmark work.
+- A concurrent uncommitted routed-execution change is now present in `forgeos/adapters/routed.py`, `forgeos/forge.py`, and `tests/test_routed_executor.py`; it was not touched here. Its focused route tests currently pass (15 passed).
 
 ## Next best steps
 - Commit the pinned-suite JSON receipt wiring; do not run `tools/ab_bench.py --live`, `forge forgebench` live, or a real `forge run` without explicit operator-approved provider/budget calls.
