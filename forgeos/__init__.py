@@ -91,9 +91,20 @@ __all__ = [
     "ModelProfile",
     "AutoOptimizer",
     "AutoOptimizeResult",
+    "TokenBudget",
+    "BudgetExceeded",
+    "CostOptimizer",
+    "OptimizationPlan",
+    "BatchOptimizer",
+    "CostReplacer",
+    "AdaptiveBatch",
+    "SmartBatchPredictor",
+    "CostAuditor",
 ]
 
 from .adaptive_batch import AdaptiveBatch
 from .smart_batch import SmartBatchPredictor
 
 from .cost_audit import CostAuditor
+
+from .cost_router import CostRouter, Route

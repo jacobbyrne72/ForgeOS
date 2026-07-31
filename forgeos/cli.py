@@ -394,6 +394,7 @@ def main() -> int:
     sub.add_parser("adaptbatch", help="Auto-select cheapest batch strategy for any workload")
     sub.add_parser("smartbatch", help="ML-inspired batch cost predictor using history")
     p_audit = sub.add_parser("audit", help="Scan project for AI cost waste")
+    p_route = sub.add_parser("route", help="Route tasks to cheapest execution path")
     p_audit.add_argument("--dir", default=".", dest="audit_dir")
     args = parser.parse_args()
     if not args.command:
@@ -417,6 +418,7 @@ def main() -> int:
         "adaptbatch": cmd_adbatch,
         "smartbatch": cmd_smartbatch,
         "audit": cmd_audit,
+        "route": cmd_route,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -499,6 +501,28 @@ def cmd_smartbatch(args):
     return 0
 
 
+
+
+
+def cmd_route(args):
+    from forgeos.cost_router import CostRouter, Route
+    router = CostRouter()
+    print("=== Cost Router ===")
+    demo_tasks = [
+        {"type": "format"}, {"type": "format"},
+        {"type": "lint"}, {"type": "summarize"},
+        {"type": "code_gen"}, {"type": "debug"},
+        {"type": "security_scan"}, {"type": "grep"},
+    ]
+    result = router.route_many(demo_tasks)
+    print("Tasks:", result["total_tasks"])
+    print("Total cost: $" + str(result["total_cost_usd"]))
+    print()
+    for route, data in result["routes"].items():
+        print("  " + route + ": " + str(data["count"]) + " tasks, $" + str(round(data["cost"], 4)))
+    print()
+    print("Savings vs full model for all: $" + str(result["savings_vs_full_model"]))
+    return 0
 
 def cmd_audit(args):
     from forgeos.cost_audit import CostAuditor

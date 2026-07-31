@@ -25,13 +25,10 @@ class AdaptiveBatch:
 
         # Strategy selection based on workload shape
         if len(types) == 1:
-            strategy = "bulk_single"
             rationale = "Single task type — batch with same optimizer"
         elif len(types) <= 3:
-            strategy = "grouped"
             rationale = "Few types — group same types, apply per-type optimizer"
         else:
-            strategy = "auto_pipeline"
             rationale = "Many types — let auto-optimizer pick per-task"
 
         # Calculate savings for each strategy
