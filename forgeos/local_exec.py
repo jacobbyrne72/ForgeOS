@@ -6,6 +6,7 @@ Uses AST analysis to detect unsafe operations before execution.
 from __future__ import annotations
 
 import ast
+import builtins
 import io
 from contextlib import redirect_stdout, redirect_stderr
 from .cost_router import CostRouter
@@ -19,7 +20,14 @@ SAFE_FUNCTIONS = {
 }
 
 SAFE_IMPORTS = {"json", "re", "datetime", "os", "sys"}
-SAFE_ATTRIBUTES = {"open"}
+SAFE_ATTRIBUTES: set[str] = set()
+
+
+def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+    """Import only the small standard-library allowlist used by local code."""
+    if level != 0 or name.split(".")[0] not in SAFE_IMPORTS:
+        raise ImportError(f"local import is not allowed: {name}")
+    return builtins.__import__(name, globals, locals, fromlist, level)
 
 
 class LocalExecutor:
@@ -46,6 +54,8 @@ class LocalExecutor:
                 elif isinstance(node.func, ast.Attribute):
                     if node.func.attr not in SAFE_ATTRIBUTES:
                         return False, "unsafe_attribute:" + node.func.attr
+                else:
+                    return False, "unsafe_callable_expression"
             if isinstance(node, ast.Import) or isinstance(node, ast.ImportFrom):
                 names = []
                 if isinstance(node, ast.Import):
@@ -68,7 +78,14 @@ class LocalExecutor:
                 stdout_capture = io.StringIO()
                 stderr_capture = io.StringIO()
                 with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-                    exec(compile(code, "<local>", "exec"), {})
+                    safe_builtins = {
+                        name: getattr(builtins, name) for name in SAFE_FUNCTIONS
+                    }
+                    safe_builtins["__import__"] = _safe_import
+                    exec(
+                        compile(code, "<local>", "exec"),
+                        {"__builtins__": safe_builtins},
+                    )
                 return {
                     "executed_locally": True,
                     "cost": 0.0,

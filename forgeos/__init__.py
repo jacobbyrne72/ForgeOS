@@ -118,6 +118,7 @@ __all__ = [
     "shrink_prompt",
     "estimate_prompt_tokens",
     "ModelRanker",
+    "truncate_response",
 ]
 
 from .adaptive_batch import AdaptiveBatch
@@ -153,3 +154,5 @@ from .prompt_shrinker import shrink_prompt, estimate_prompt_tokens
 from .model_ranker import ModelRanker
 
 from .response_truncator import truncate_response
+
+from .batch_projection import BatchProjection

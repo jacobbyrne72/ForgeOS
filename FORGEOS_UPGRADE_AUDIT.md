@@ -54,14 +54,15 @@ Fixed defects found during review:
 - Repaired malformed response-truncation newline literals and made the truncator return valid metadata on every path.
 - Made missing ledger task/job rows explicit failures and made routed execution safe when no ledger is configured.
 - Hardened diff hunk parsing against optional regex groups and normalized security finding counts.
+- Restricted local code execution to an explicit builtin/import allowlist and rejected indirect callable expressions that could reach file I/O.
 
 Current evidence:
 
 - `ruff check forgeos tests`: passes.
-- Full current test suite: 1301 passed, 1 dependency deprecation warning.
+- Full current test suite: 1307 passed, 1 dependency deprecation warning.
 - Focused Forge/lease/CLI regression suite: 202 passed.
 - Dependency audit: `uv pip compile pyproject.toml --all-extras` followed by `pip-audit`; no known vulnerabilities found.
-- No production `eval`, `exec`, or `shell=True` found.
+- No unguarded production `eval` or `shell=True` found; the intentional local executor uses `exec` only after AST validation with an explicit builtin/import allowlist.
 - Pyright currently reports 7 inferred-type errors, all at dynamic SQLite row access or third-party tree-sitter/gateway protocol boundaries; runtime behavior is covered by the passing suite.
 
 The stricter supplemental security rules still flag intentional resilience handlers, runtime assertions, controlled SQL placeholder construction, and bounded subprocess argv. These were reviewed and not changed without a demonstrated behavioral defect.

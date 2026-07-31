@@ -415,6 +415,8 @@ def main() -> int:
     p_shrink = sub.add_parser("shrink", help="Shrink prompts to save tokens")
     p_rank = sub.add_parser("model-rank", help="Rank models by cost-effectiveness")
     p_trunc = sub.add_parser("truncate", help="Truncate responses to save tokens")
+    p_proj = sub.add_parser("proj", help="Project batch costs before execution")
+    p_proj.add_argument("--tasks", type=int, default=2, dest="num_tasks")
     p_trunc.add_argument("--max-tokens", type=int, default=4096, dest="max_tokens")
     p_rank.add_argument("--complexity", type=str, default="simple", dest="complexity")
     p_rank.add_argument("--max-cost", type=float, default=0.01, dest="max_cost")
@@ -461,6 +463,7 @@ def main() -> int:
         "shrink": cmd_shrink,
         "model-rank": cmd_model_rank,
         "truncate": cmd_truncate,
+        "proj": cmd_project,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -758,6 +761,16 @@ def cmd_output_compress(args):
     print("Savings:", str(info["savings_pct"]) + "%")
     print()
     print("Preview:", result[:300])
+    return 0
+
+
+def cmd_project(args):
+    from forgeos.batch_projection import BatchProjection
+    bp = BatchProjection()
+    tasks = [{"type": "code_gen", "name": "task_1"}, {"type": "review", "name": "task_2"}]
+    for i in range(2, args.num_tasks):
+        tasks.append({"type": "code_gen", "name": "task_" + str(i+1)})
+    bp.print_projection(tasks)
     return 0
 
 
