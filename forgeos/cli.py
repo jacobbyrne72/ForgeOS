@@ -426,6 +426,7 @@ def main() -> int:
         "local": cmd_local,
         "retry": cmd_retry,
         "schedule": cmd_schedule,
+        "guard": cmd_guard,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -635,6 +636,21 @@ def cmd_schedule(args):
         print("  " + b["task_type"] + " batch " + str(b["batch_index"]) + ": " + str(b["batch_size"]) + " tasks, $" + str(b["cost"]))
     print()
     print("Savings vs all-API ($0.03 each): $" + str(round(plan["total_tasks"] * 0.03 - plan["total_cost"], 4)))
+    return 0
+
+
+def cmd_guard(args):
+    from forgeos.cost_guard import CostGuard
+    g = CostGuard(budget_usd=args.guard_budget)
+    print("=== Cost Guard ===")
+    print("Budget: $" + str(g.budget_usd))
+    print()
+    ok, info = g.check(0.03)
+    print("Normal call (0.03):", "ALLOWED" if ok else "BLOCKED")
+    print("  Remaining:", info.get("remaining_budget", 0))
+    print()
+    ok2, info2 = g.check(args.guard_budget)
+    print("Large call: ALLOWED" if ok2 else "BLOCKED")
     return 0
 
 
