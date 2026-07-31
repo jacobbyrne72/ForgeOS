@@ -69,20 +69,21 @@
 - `python tools/aggregate_bench.py <temp receipt> --json-out <temp table>` (one dry-run retained, zero eligible savings)
 - `python -m forgeos.cli forgebench-table <temp receipt> --json-out <temp table>` (same zero-claim result)
 - `python -m forgeos.cli receipts --state-dir <missing temp dir>` (read-only failure, directory not created)
-- `rtk proxy python -m pytest tests -q -m "not slow"` (1735 passed, 17 deselected, 1 existing FastAPI/httpx deprecation warning)
+- `rtk proxy python -m pytest tests -q -m "not slow"` after the quota work (1782 passed, 1 failure in concurrent ForgeBench packing work, 17 deselected, 1 existing FastAPI/httpx deprecation warning)
 - `python -m pytest tests/test_quota.py -q` (52 passed)
 - `python -m pytest tests/test_forge.py tests/test_dashboard.py -q` (53 passed, 1 existing FastAPI/httpx deprecation warning)
 - offline dashboard dogfood with a persisted `Weekly: 75% remaining` report (`/api/quota` and summary both showed 25% burn)
 
 ## Test status
-- Passing: 1735 tests in the non-slow full suite; 164 focused benchmark/CLI/aggregator tests; Ruff; compileall; CLI dogfood and no-call benchmark smoke checks.
-- Failing: none observed.
+- Passing: 106 focused quota/Forge/dashboard tests; 164 focused benchmark/CLI/aggregator tests; Ruff; compileall; CLI dogfood and no-call benchmark smoke checks.
+- Failing: full non-slow sweep currently has one unrelated concurrent failure in `tests/test_forgebench_packing.py::test_definition_weighting_is_what_makes_that_true` while `forgeos/forgebench.py` is concurrently modified.
 - Not run: none.
 
 ## Known blockers
 - No blocker for the source upgrade. Full catalog clone coverage remains intentionally unperformed because it is 713 repositories.
 - Unrelated reducer wrapper-summary fixes were committed concurrently; they were not touched by this benchmark work.
 - A concurrent routed-execution change in `forgeos/adapters/routed.py`, `forgeos/forge.py`, and `tests/test_routed_executor.py` was committed separately; it was not touched here. Its focused route tests passed (15 passed).
+- Concurrent ForgeBench packing work is dirty in `forgeos/forgebench.py` and `tests/test_forgebench_packing.py`; `forgeos/economy/savings.py` is also dirty. Do not stage or revert those files.
 
 ## Next best steps
 - Keep provider calls opt-in; do not run `tools/ab_bench.py --live`, `forge forgebench` live, or a real `forge run` without explicit operator-approved provider/budget calls.
