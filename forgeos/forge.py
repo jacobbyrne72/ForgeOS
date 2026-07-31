@@ -425,7 +425,10 @@ class Forge:
                     # worker, a refused merge) is handed back by ready_tasks
                     # forever, and because an outcome was produced the loop reads
                     # it as progress — an infinite loop that looks like work.
-                    state = TaskState(self.ledger.task(spec.id)["state"])
+                    task_row = self.ledger.task(spec.id)
+                    if task_row is None:
+                        raise RuntimeError(f"ledger task disappeared: {spec.id}")
+                    state = TaskState(task_row["state"])
                     if state not in (TaskState.DONE, TaskState.FAILED, TaskState.PAUSED):
                         self.ledger.set_task_state(
                             spec.id, TaskState.DONE if outcome.accepted else TaskState.FAILED
@@ -607,6 +610,8 @@ class Forge:
             # a tripwire.
             with self._sched_lock:
                 job_row = self.ledger.job(job.id)
+                if job_row is None:
+                    raise RuntimeError(f"ledger job disappeared: {job.id}")
                 remaining = int(job_row["max_usd_micros"]) - self.ledger.job_spend_micros(job.id)
                 task_remaining = spec.budget.max_usd_micros - self.ledger.task_spend_micros(spec.id)
             headroom = min(remaining, task_remaining)

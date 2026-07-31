@@ -140,8 +140,8 @@ class Registry:
                 continue
 
             s = stats.get(w.worker_id)
-            measured = bool(s and s.get("attempts", 0) >= MIN_ATTEMPTS_TO_TRUST)
-            if measured:
+            measured = s is not None and s.get("attempts", 0) >= MIN_ATTEMPTS_TO_TRUST
+            if measured and s is not None:
                 win = float(s["win_rate"])
                 usd = int(s["avg_usd_micros"])
                 secs = float(s["avg_seconds"])

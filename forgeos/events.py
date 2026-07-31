@@ -149,7 +149,7 @@ class EventLog:
                 " VALUES (?,?,?,?,?,?)",
                 (ev.id, ev.job_id, ev.task_id, ev.type.value, json.dumps(ev.payload), ev.created_at),
             )
-            ev.seq = int(cur.lastrowid)
+            ev.seq = int(cur.lastrowid or 0)
         return ev
 
     # ----------------------------------------------------------------- read

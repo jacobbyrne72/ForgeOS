@@ -42,19 +42,27 @@ Fixed defects found during review:
 - Security checks could deadlock task execution when all reported paths were absent.
 - Multiple unused exports, imports, locals, and non-strict `zip()` calls violated the project lint policy.
 - Concurrent CLI additions left handlers unreachable, duplicated dispatch keys, and omitted parser arguments; all registered CLI commands now have reachable subparsers.
+- The later `format` and `purge` handlers were also missing parser registrations; both now have explicit arguments and reachable dispatch paths.
 - An empty mission could leave the CLI optimization plan uninitialized.
 - A second `cmd_compress` definition shadowed context compression and required an unregistered argument; it is now a separate `output-compress` command.
 - The output-compressor demo contained a malformed newline literal.
 - `output_compressor.py` contained additional malformed newline literals that prevented repository-wide parsing; those literals are now valid.
 - Benchmarks accepted `iterations=0` and could read uninitialized results; invalid iteration counts now fail explicitly.
+- The CLI-team factory imported a nonexistent `CliTeamAdapter` symbol instead of the implemented `OMCTeamAdapter`, making that backend appear unavailable; the factory now builds the implemented adapter.
+- Normalized event sequence IDs and watch spend history types to match SQLite/runtime values.
+- Fixed Python 3.11-incompatible nested f-strings in model ranking and CLI output.
+- Repaired malformed response-truncation newline literals and made the truncator return valid metadata on every path.
+- Made missing ledger task/job rows explicit failures and made routed execution safe when no ledger is configured.
+- Hardened diff hunk parsing against optional regex groups and normalized security finding counts.
 
 Current evidence:
 
 - `ruff check forgeos tests`: passes.
-- Full current test suite: 1289 passed, 1 dependency deprecation warning.
+- Full current test suite: 1301 passed, 1 dependency deprecation warning.
+- Focused Forge/lease/CLI regression suite: 202 passed.
 - Dependency audit: `uv pip compile pyproject.toml --all-extras` followed by `pip-audit`; no known vulnerabilities found.
 - No production `eval`, `exec`, or `shell=True` found.
-- Pyright currently reports 81 inferred-type errors, concentrated in dynamic executor/CLI models and third-party library stubs; runtime behavior is covered by the passing suite, but these annotations remain follow-up work.
+- Pyright currently reports 7 inferred-type errors, all at dynamic SQLite row access or third-party tree-sitter/gateway protocol boundaries; runtime behavior is covered by the passing suite.
 
 The stricter supplemental security rules still flag intentional resilience handlers, runtime assertions, controlled SQL placeholder construction, and bounded subprocess argv. These were reviewed and not changed without a demonstrated behavioral defect.
 

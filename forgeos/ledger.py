@@ -30,7 +30,7 @@ from .contracts import (
     new_id,
     now,
 )
-from ._sqlite import connect as _sql_connect
+from ._sqlite import GuardedConnection, connect as _sql_connect
 
 # Below this many calls in a period (baseline OR recent), a hit-rate is noise --
 # one cached call out of two is a coin flip, not a signal. `cache_health`
@@ -208,7 +208,7 @@ class Ledger:
         self._conn.close()
 
     @contextmanager
-    def _tx(self) -> Iterator[sqlite3.Connection]:
+    def _tx(self) -> Iterator[GuardedConnection]:
         with self._conn:
             yield self._conn
 
@@ -448,7 +448,7 @@ class Ledger:
         ).fetchone()
         return int(row["n"])
 
-    def cache_stats(self, job_id: str | None = None) -> dict[str, int]:
+    def cache_stats(self, job_id: str | None = None) -> dict[str, int | float]:
         """Fresh vs cached input tokens. The cache-hit rate is the headline lever."""
         sql = (
             "SELECT COALESCE(SUM(tokens_in),0) AS fresh,"
@@ -550,9 +550,9 @@ class Ledger:
 
             if len(baseline) < CACHE_HEALTH_MIN_CALLS or len(recent) < CACHE_HEALTH_MIN_CALLS:
                 status = "insufficient_data"
-            elif baseline_hit_pct <= CACHE_HEALTH_FLOOR_PCT:
+            elif (baseline_hit_pct or 0.0) <= CACHE_HEALTH_FLOOR_PCT:
                 status = "no_cache_support"
-            elif recent_hit_pct < baseline_hit_pct * CACHE_HEALTH_REGRESSION_RATIO:
+            elif (recent_hit_pct or 0.0) < (baseline_hit_pct or 0.0) * CACHE_HEALTH_REGRESSION_RATIO:
                 status = "regressed"
             else:
                 status = "ok"

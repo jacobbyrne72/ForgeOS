@@ -252,13 +252,15 @@ class LeaseStore:
     def expire_stale(self, now: float | None = None) -> int:
         """Reap leases past their TTL so a dead worker cannot block forever."""
         at = now if now is not None else time.time()
+        expired = 0
         with self._conn:
             cur = self._conn.execute(
                 "UPDATE path_leases SET released_at = expires_at"
                 " WHERE released_at IS NULL AND expires_at <= ?",
                 (at,),
             )
-            return cur.rowcount
+            expired = cur.rowcount
+        return expired
 
 
 __all__ = ["Lease", "LeaseStore", "LeaseType", "LEASES_SCHEMA", "patterns_overlap"]

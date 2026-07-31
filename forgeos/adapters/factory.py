@@ -105,7 +105,7 @@ def _construct(
 
     if profile.adapter is Adapter.CLI_TEAM:
         try:
-            from .cli_team import CliTeamAdapter
+            from .cli_team import OMCTeamAdapter
         except Exception as exc:
             return None, f"omc team adapter unimportable: {exc}"
         # `vendor` is the backing CLI the omc runtime spawns; `agent_type` is
@@ -114,7 +114,7 @@ def _construct(
         kwargs = {}
         if profile.vendor:
             kwargs["default_agent_type"] = profile.vendor
-        return CliTeamAdapter(**kwargs), "omc team adapter built"
+        return OMCTeamAdapter(**kwargs), "omc team adapter built"
 
     if profile.adapter is Adapter.GATEWAY:
         if gateway is None:

@@ -48,6 +48,8 @@ def routed_executor(
     def _remaining_micros_for(spec: TaskSpec):
         def remaining() -> int:
             task_cap = spec.budget.max_usd_micros
+            if ledger is None:
+                return task_cap
             task_rem = task_cap - ledger.task_spend_micros(spec.id)
             job_rem = task_rem
             try:

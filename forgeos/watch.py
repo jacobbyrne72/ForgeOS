@@ -15,7 +15,7 @@ from datetime import datetime
 def watch(ledger, job_id: str | None = None, interval_seconds: int = 30, max_alerts: int = 10) -> list[dict]:
     """Monitor spend rate and return anomalies."""
     alerts: list[dict] = []
-    history: list[tuple[float, int]] = []  # (timestamp, spend_usd)
+    history: list[tuple[float, float]] = []  # (timestamp, spend_usd)
     threshold_multiplier = 3.0
 
     start = time.time()

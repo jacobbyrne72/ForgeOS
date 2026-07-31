@@ -37,7 +37,7 @@ class AdaptiveBatch:
         for s in ["bulk_single", "grouped", "auto_pipeline"]:
             savings[s] = self._estimate_strategy_savings(tasks, s)
 
-        best = max(savings, key=savings.get)
+        best = max(savings, key=lambda strategy: savings[strategy])
         return {
             "total_tasks": total_tasks,
             "task_types": types,

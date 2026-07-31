@@ -60,6 +60,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field
+from typing import Any
 
 from ..contracts import AttemptSummary, FailureClass, TaskSpec, TaskState, TestResults
 from ..economy.reducer import reduce_pytest
@@ -417,7 +418,7 @@ def _to_result(outcome: _SessionOutcome, timeout_seconds: float,
     error_text = "\n".join(agg.errors).strip()
     usage = outcome.usage
 
-    base = dict(
+    base: dict[str, Any] = dict(
         evidence=evidence,
         commands_run=list(agg.commands),
         files_touched=list(agg.files),

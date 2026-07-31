@@ -46,7 +46,7 @@ class CostTracker:
             (ts, task_type, saved_usd, saved_tokens, strategy, meta),
         )
         db.commit()
-        return cur.lastrowid
+        return int(cur.lastrowid or 0)
 
     def total_saved(self) -> dict:
         """Get total savings across all recorded events."""

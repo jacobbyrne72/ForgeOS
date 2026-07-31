@@ -74,9 +74,7 @@ class ModelProfiler:
         cands = [p for p in self._profiles.values() if p.calls >= min_calls]
         if not cands:
             return None
-        for p in cands:
-            p._score = p.cost_per_task / max(p.avg_latency_ms, 0.001)
-        cands.sort(key=lambda p: getattr(p, "_score", 1e9))
+        cands.sort(key=lambda p: p.cost_per_task / max(p.avg_latency_ms, 0.001))
         return cands[0]
 
     def summary(self):

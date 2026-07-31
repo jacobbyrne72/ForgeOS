@@ -317,7 +317,7 @@ def analyze_codebase(cwd: str) -> list[FileAnalysis]:
             mod = __import__(f"tree_sitter_{lang}", fromlist=["language"])
             L = mod.language() if hasattr(mod, "language") else mod.Language(mod.language_grammar())  # type: ignore[attr-defined]
             parser = Parser()
-            parser.set_language(L)
+            parser.set_language(L)  # type: ignore[attr-defined]  # tree-sitter 0.x API
             raw = sp.read_bytes()
             if not raw:
                 continue

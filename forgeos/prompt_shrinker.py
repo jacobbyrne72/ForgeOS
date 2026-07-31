@@ -6,7 +6,6 @@ import re
 
 def shrink_prompt(prompt: str, target_tokens: int = 2048):
     """Shrink prompt to fit within token budget."""
-    original = prompt
     original_tokens = max(1, len(prompt) // 4)
 
     # 1. Remove excessive blank lines
@@ -43,4 +42,3 @@ def shrink_prompt(prompt: str, target_tokens: int = 2048):
 def estimate_prompt_tokens(prompt: str):
     """Estimate token count for a prompt."""
     return max(1, len(prompt) // 4)
-

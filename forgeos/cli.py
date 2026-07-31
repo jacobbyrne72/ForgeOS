@@ -1,5 +1,3 @@
-"""forgeos CLI — dispatch subcommands."""
-
 from __future__ import annotations
 import argparse
 import json
@@ -71,9 +69,10 @@ def cmd_report(args) -> int:
         print("Per-task breakdown:")
         print("-" * 60)
         for task in ledger.tasks_for_job(args.job_id):
-            task_spend = ledger.task_spend_micros(task.id)
-            print(f"  [{task.id[:12]}] {task.subject[:50]}")
-            print(f"    cost: ${task_spend / 1e6:.4f}  state: {task.state.value}")
+            task_id = task["id"]
+            task_spend = ledger.task_spend_micros(task_id)
+            print(f"  [{task_id[:12]}] {task['subject'][:50]}")
+            print(f"    cost: ${task_spend / 1e6:.4f}  state: {task['state']}")
     return 0
 
 
@@ -415,6 +414,8 @@ def main() -> int:
     p_purge = sub.add_parser("purge", help="Purge expensive prompt-cache entries")
     p_shrink = sub.add_parser("shrink", help="Shrink prompts to save tokens")
     p_rank = sub.add_parser("model-rank", help="Rank models by cost-effectiveness")
+    p_trunc = sub.add_parser("truncate", help="Truncate responses to save tokens")
+    p_trunc.add_argument("--max-tokens", type=int, default=4096, dest="max_tokens")
     p_rank.add_argument("--complexity", type=str, default="simple", dest="complexity")
     p_rank.add_argument("--max-cost", type=float, default=0.01, dest="max_cost")
     p_shrink.add_argument("--tokens", type=int, default=2048, dest="max_tokens")
@@ -459,6 +460,7 @@ def main() -> int:
         "purge": cmd_purge,
         "shrink": cmd_shrink,
         "model-rank": cmd_model_rank,
+        "truncate": cmd_truncate,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -759,6 +761,18 @@ def cmd_output_compress(args):
     return 0
 
 
+def cmd_truncate(args):
+    from forgeos.response_truncator import truncate_response
+    demo = "This is a long response that goes on and on and takes up many tokens. " * 100
+    result, info = truncate_response(demo, max_tokens=args.max_tokens)
+    print("=== Response Truncator ===")
+    print("Original tokens:", info["original_tokens"])
+    print("Final tokens:", info["final_tokens"])
+    print("Tokens saved:", info["tokens_saved"])
+    print("Savings:", str(info["savings_pct"]) + "%")
+    return 0
+
+
 def cmd_model_rank(args):
     from forgeos.model_ranker import ModelRanker
     ranker = ModelRanker()
@@ -766,7 +780,7 @@ def cmd_model_rank(args):
     print()
     print("Top 5 models by quality-per-dollar:")
     for m in ranker.rank()[:5]:
-                print("  " + m["model"] + " (" + m["provider"] + "): $" + str(m["cost_per_1k_tokens"]) + "/1k tokens, quality=" + str(m["quality_score"]) + ", value=" + str(m["quality_per_dollar"]))
+        print(f"  {m['model']} ({m['provider']}): ${m['cost_per_1k_tokens']}/1k tokens, quality={m['quality_score']}, value={m['quality_per_dollar']}")
     print()
     best = ranker.recommend(max_cost=args.max_cost)
     if best:

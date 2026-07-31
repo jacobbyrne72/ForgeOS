@@ -73,10 +73,12 @@ def _parse_diff(raw: str) -> DiffResult:
             continue
         hunk_match = HUNK_RE.match(raw_line)
         if hunk_match:
-            current_old_line = int(hunk_match.group(1)) if hunk_match.lastindex >= 1 else 0
-            current_new_line = int(hunk_match.group(2)) if hunk_match.lastindex >= 2 else 0
-            if hunk_match.lastindex < 2:
-                current_new_line = int(hunk_match.group(1))
+            old_group = hunk_match.group(1) or "0"
+            new_group = hunk_match.group(2) or "0"
+            current_old_line = int(old_group)
+            current_new_line = int(new_group)
+            if hunk_match.group(2) is None:
+                current_new_line = int(old_group)
             in_hunk = True
             continue
         if in_hunk and current_file and raw_line:
@@ -214,7 +216,7 @@ def run_gitleaks_on_diff(diff: DiffResult, *, cwd: str | None = None):
 def run_diff_security(diff: DiffResult, *, cwd: str | None = None):
     sem = run_semgrep_on_diff(diff, cwd=cwd)
     leaks = run_gitleaks_on_diff(diff, cwd=cwd)
-    sem_count = sem.get("findings_count", 0) or 0
+    sem_count = int(sem.get("findings_count", 0) or 0)
     leak_count = len(leaks.get("findings", []) or [])
     total = sem_count + leak_count
     if sem.get("status") == "fail" or leaks.get("status") == "fail":

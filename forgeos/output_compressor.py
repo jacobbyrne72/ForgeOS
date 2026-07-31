@@ -6,7 +6,6 @@ import re
 
 def compress_output(output: str, target_tokens: int = 4096):
     """Compress output to fit within token budget."""
-    original = output
     original_tokens = max(1, len(output) // 4)
 
     # 1. Collapse 3+ blank lines to 2
@@ -43,4 +42,3 @@ def compress_output(output: str, target_tokens: int = 4096):
 def estimate_output_tokens(output: str):
     """Estimate token count for a model output."""
     return max(1, len(output) // 4)
-

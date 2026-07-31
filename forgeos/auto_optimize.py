@@ -23,7 +23,7 @@ class AutoOptimizer:
         self._selector = selector
         self._profiler = profiler
 
-    def apply(self, task_type: str, prompt: str, model: str = None) -> AutoOptimizeResult:
+    def apply(self, task_type: str, prompt: str, model: str | None = None) -> AutoOptimizeResult:
         from forgeos.optimizer import CostOptimizer
 
         plan = CostOptimizer().plan_for(task_type)

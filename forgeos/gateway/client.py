@@ -32,7 +32,7 @@ import os
 import threading
 import time
 from functools import lru_cache
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import httpx
 from pydantic import BaseModel, Field
@@ -463,7 +463,7 @@ class LiteLLMTransport:
             kwargs["tools"] = tools_schema
 
         try:
-            resp = litellm.completion(**kwargs)
+            resp: Any = litellm.completion(**kwargs)
         except Exception as e:  # litellm raises many provider-specific error types
             raise TransportError(f"litellm call failed: {e}") from e
 
@@ -824,7 +824,7 @@ class Gateway:
         by_name = {
             t.name: t
             for t in self._transports
-            if not getattr(t, "serves", set()) or card.provider in t.serves
+            if not (serves := getattr(t, "serves", set())) or card.provider in serves
         }
         if not by_name:
             raise TransportError(
