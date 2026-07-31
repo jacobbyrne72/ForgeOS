@@ -284,6 +284,7 @@ def test_gitleaks_scans_the_working_tree_not_the_whole_history(monkeypatch):
     captured = _gitleaks_returning("[]", monkeypatch)
     run_gitleaks(["a.py"], cwd="/repo")
     assert "--no-git" in captured["cmd"]
+    assert captured["cmd"][-1] == "a.py"
 
 
 def test_a_finding_on_a_changed_path_still_fails_the_gate(monkeypatch):

@@ -142,6 +142,7 @@ def main() -> int:
         return 0
     dispatch = {
         "run": cmd_run, "resume": cmd_resume, "report": cmd_report,
+        "compress": cmd_compress, "bench": cmd_bench, "watch": cmd_watch,
         "doctor": cmd_doctor, "init": cmd_init, "compile": cmd_compile,
         "cache": cmd_cache, "breaker": cmd_breaker,
     }

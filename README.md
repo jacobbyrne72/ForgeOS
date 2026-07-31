@@ -11,10 +11,15 @@ The optimisation target is **cost per accepted task** — not tokens, not calls.
 A router that halves per-call cost while doubling retries has made things worse,
 and per-call metrics score that as a win.
 
-> **Status: v0.2.0 — production-hardened.** Full CLI, mission compiler, circuit
-> breakers, prompt prefix caching, diff-aware security scanning, adapter auto-discovery,
-> and SQLite WAL tuning with indexes. Costs dropped ~70% vs v0.1.0 on the same tasks.
-> 2000+ tests pass. See [What's new](#whats-new) and [Benchmarks](#benchmarks).
+> **Status: v0.2.0 — pre-1.0, not production-hardened.** A `forge` CLI, mission
+> compiler, circuit breakers, prompt prefix caching, diff-aware scanning, adapter
+> auto-discovery and SQLite WAL tuning are all present and tested. **1124 tests
+> collected.** It runs end to end against real providers.
+>
+> It is not production-hardened, and saying so would be the exact
+> self-flattery this project exists to prevent: a race that granted two workers
+> the same write lease was found and fixed *after* a full green suite, because
+> the test that catches it passes on luck. See [Known gaps](#known-gaps).
 
 ## The idea
 
@@ -52,20 +57,32 @@ happened.
 
 ## Benchmarks
 
-```
-# Before v0.2.0 (no compiler, no cache):
-forge run "Add null check"  ->  1 call to GPT-4o  ->  $0.023  ->  PASS
+**One measured A/B**, run by `tools/ab_bench.py` against a real DeepSeek key.
+Same question, same model, same pricing code; the only difference is what
+happens around the call. Both answers were checked and both were correct.
 
-# After v0.2.0 (full pipeline):
-forge run "Add null check"  ->  0 model calls
-                                ->  1 call to free-tier local model
-                                ->  $0.003  ->  PASS
-# 87% cost reduction
+```
+prompt size   baseline  25,924 tokens  (5 whole files — the naive approach)
+              ForgeOS    1,549 tokens  (3 of 31 ranked blocks)
+
+round 1 (cold)    baseline $0.000140    ForgeOS $0.000073     1.9x cheaper
+round 2 (cached)  baseline $0.000192    ForgeOS $0.000075     2.6x cheaper
+overall                                                        2.1x cheaper
+                                        14.7s -> 9.0s          39% faster
 ```
 
-The compiler eliminates the model call. Tree-sitter analysis runs in
-under 50ms for a 100-file codebase. Circuit breakers prevent retry storms.
-Prompt prefix caching makes repeated requests essentially free.
+On a genuinely cold first call the gap was **11.1×**; it narrows to ~2× once the
+provider caches the large prompt too. Real tasks vary their prompt, so most calls
+land nearer the cold number — but reporting only the 11.1× would be picking the
+flattering half.
+
+**What this does not show.** It exercises the context lever alone: not routing,
+not retries, not escalation, not the merge gate. One question is one data point.
+There is no measured before/after for the CLI, the mission compiler or the prefix
+cache — those are built and tested, not benchmarked. A number that has not been
+run is not a benchmark, and this section will only ever carry numbers that were.
+
+Reproduce it: `python tools/ab_bench.py --env ~/.hermes/.env --repeat 3`
 
 **Why the unit matters.** A 2,908-run study of provider-billed agent traffic
 (arXiv 2607.12161) found prompt-cache traffic was ~87% of cost composition, and

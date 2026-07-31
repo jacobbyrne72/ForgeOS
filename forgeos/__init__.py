@@ -14,6 +14,9 @@ from .contracts import (
 from .ledger import Ledger, open_ledger
 from .registry import Adapter, CostTier, Registry, WorkerProfile, default_registry
 from .adapter.auto_discover import DiscoveredAdapter, discover_adapters
+from .bench import BenchmarkResult, Layer, bench, format_benchmark
+from .context_compress import compress_context
+from .watch import watch
 __all__ = [
     "Forge", "ForgeResult", "ExecutionResult", "TaskOutcome",
     "compile_mission", "Mission", "CompilerError",
@@ -27,4 +30,7 @@ __all__ = [
     "JobSpec", "Scope", "TaskSpec", "TaskState", "TestResults",
     "Verdict", "WorkerReport", "from_micros", "to_micros",
     "__version__",
+    "bench", "BenchmarkResult", "Layer",
+    "compress_context",
+    "watch",
 ]

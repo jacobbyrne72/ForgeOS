@@ -35,6 +35,7 @@ GITLEAKS = "gitleaks"
 RUFF = "ruff"
 
 DEFAULT_TIMEOUT = 300
+SECURITY_TIMEOUT = 30
 
 
 class Gate(IntEnum):
@@ -125,7 +126,7 @@ def run_semgrep(paths: list[str], *, cwd: str | None = None) -> GateResult:
     cmd = [resolve_tool(SEMGREP) or SEMGREP, "--config", "p/security-audit",
            "--metrics=off", "--json", "--quiet", "--error", "--", *paths]
     try:
-        r = _run(cmd, cwd=cwd)
+        r = _run(cmd, cwd=cwd, timeout=SECURITY_TIMEOUT)
     except subprocess.TimeoutExpired:
         return GateResult(gate=Gate.SECURITY, status=GateStatus.UNAVAILABLE,
                           command=" ".join(cmd), evidence="semgrep timed out")
@@ -187,22 +188,25 @@ def run_gitleaks(paths: list[str] | None = None, *, cwd: str | None = None) -> G
         return GateResult(gate=Gate.SECURITY, status=GateStatus.UNAVAILABLE,
                           evidence="gitleaks not on PATH")
 
-    cmd = [resolve_tool(GITLEAKS) or GITLEAKS, "detect", "--no-git", "--no-banner", "--redact",
-           "--report-format", "json", "--report-path", "-"]
-    if cwd:
-        cmd += ["--source", "."]
-    try:
-        r = _run(cmd, cwd=cwd)
-    except subprocess.TimeoutExpired:
-        return GateResult(gate=Gate.SECURITY, status=GateStatus.UNAVAILABLE,
-                          command=" ".join(cmd), evidence="gitleaks timed out")
-
-    findings: list[Finding] = []
-    raw = (r.stdout or "").strip()
-    if raw and raw not in ("null", "[]"):
+    sources = list(dict.fromkeys(paths or ["."]))
+    commands: list[list[str]] = []
+    all_findings: list[Finding] = []
+    for source in sources:
+        cmd = [resolve_tool(GITLEAKS) or GITLEAKS, "detect", "--no-git", "--no-banner", "--redact",
+               "--report-format", "json", "--report-path", "-"]
+        cmd += ["--source", source]
+        commands.append(cmd)
         try:
-            for item in json.loads(raw) or []:
-                findings.append(
+            r = _run(cmd, cwd=cwd, timeout=SECURITY_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return GateResult(gate=Gate.SECURITY, status=GateStatus.UNAVAILABLE,
+                              command=" && ".join(" ".join(c) for c in commands),
+                              evidence="gitleaks timed out")
+
+        raw = (r.stdout or "").strip()
+        if raw and raw not in ("null", "[]"):
+            try:
+                all_findings.extend(
                     Finding(
                         rule=str(item.get("RuleID", "")),
                         path=str(item.get("File", "")),
@@ -211,12 +215,15 @@ def run_gitleaks(paths: list[str] | None = None, *, cwd: str | None = None) -> G
                         # --redact means the secret itself is never captured here.
                         message=str(item.get("Description", ""))[:200],
                     )
+                    for item in json.loads(raw) or []
                 )
-        except json.JSONDecodeError:
-            return GateResult(gate=Gate.SECURITY, status=GateStatus.UNAVAILABLE,
-                              command=" ".join(cmd), evidence=raw[-2000:])
+            except json.JSONDecodeError:
+                return GateResult(gate=Gate.SECURITY, status=GateStatus.UNAVAILABLE,
+                                  command=" && ".join(" ".join(c) for c in commands),
+                                  evidence=raw[-2000:])
 
-    scanned = len(findings)
+    scanned = len(all_findings)
+    findings = all_findings
     findings = _only_in(findings, paths)
     elsewhere = scanned - len(findings)
 
@@ -229,7 +236,7 @@ def run_gitleaks(paths: list[str] | None = None, *, cwd: str | None = None) -> G
     return GateResult(
         gate=Gate.SECURITY,
         status=GateStatus.FAIL if findings else GateStatus.PASS,
-        command=" ".join(cmd),
+        command=" && ".join(" ".join(c) for c in commands),
         evidence=evidence,
         findings=findings,
     )
