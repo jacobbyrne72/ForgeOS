@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.5.5"
+__version__ = "0.5.6"
 from .compiler import CompilerError, Mission, compile_mission
 from .circuit_breaker import BreakerState, CircuitBreaker
 from .prompt_cache import CacheEntry, PromptCache
@@ -111,6 +111,8 @@ __all__ = [
     "CostGuard",
     "CostForecast",
     "CostEfficiency",
+    "compress_output",
+    "estimate_output_tokens",
 ]
 
 from .adaptive_batch import AdaptiveBatch
@@ -134,3 +136,5 @@ from .cost_guard import CostGuard
 from .cost_forecast import CostForecast
 
 from .cost_efficiency import CostEfficiency
+
+from .output_compressor import compress_output, estimate_output_tokens
