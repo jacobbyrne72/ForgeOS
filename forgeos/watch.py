@@ -50,6 +50,7 @@ from pathlib import Path
 from pydantic import BaseModel, ValidationError
 
 from .contracts import Budget, TaskSpec
+from .diagnostics import record_degradation
 
 # Reserved job id under which an operator halts the WHOLE `watch_queue`
 # daemon (as opposed to one job) in the shared halts.json -- see
@@ -227,7 +228,11 @@ def _watch_halted(state_dir: Path) -> bool:
         return False
     try:
         data = json.loads(flag.read_text(encoding="utf-8") or "{}")
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        record_degradation(
+            "watch_queue", "halt flag read failed", exc,
+            consequence="the queue daemon continued; an operator halt may not have been honored",
+        )
         return False
     entry = data.get(WATCH_HALT_KEY)
     if isinstance(entry, dict):

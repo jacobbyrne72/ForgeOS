@@ -256,3 +256,15 @@ def test_corrupt_settings_are_recorded_before_defaults_are_used(tmp_path):
     [degradation] = degradations()
     assert degradation.subsystem == "settings"
     assert "default settings" in degradation.consequence
+
+
+def test_corrupt_watch_halt_flag_is_recorded_before_daemon_continues(tmp_path):
+    from forgeos.watch import _watch_halted
+
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "halts.json").write_text("{not-json", encoding="utf-8")
+    assert _watch_halted(state) is False
+    [degradation] = degradations()
+    assert degradation.subsystem == "watch_queue"
+    assert "halt may not have been honored" in degradation.consequence
