@@ -30,6 +30,7 @@ from .bench import BenchmarkResult, Layer, bench, format_benchmark
 from .context_compress import compress_context
 from .watch import watch
 from .adapt import AdapterProfiler, AdapterDecision, AdapterProfile
+from .model_select import ModelSelector, ModelRecommendation
 
 __all__ = [
     "Forge",
@@ -76,6 +77,7 @@ __all__ = [
     "format_benchmark",
     "compress_context",
     "watch",
+    "ModelSelector", "ModelRecommendation",
     "AdapterProfiler",
     "AdapterDecision",
     "AdapterProfile",

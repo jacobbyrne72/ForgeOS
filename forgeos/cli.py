@@ -326,6 +326,10 @@ def main() -> int:
     p_cache.add_argument("cache_action", choices=["clear", "stats", "prune"])
     sub.add_parser("breaker", help="Circuit breaker state")
     p_compress = sub.add_parser("compress", help="AST-based context compression")
+    p_models = sub.add_parser("models", help="Select cheapest capable model")
+    p_models.add_argument("--capabilities", default="")
+    p_models.add_argument("--complexity", default="simple", choices=["simple","medium","complex"])
+    p_models.add_argument("--max-cost", type=float, default=1.0, dest="max_cost")
     p_compress.add_argument("objective")
     p_compress.add_argument("--files", nargs="*", default=[])
     p_adapt = sub.add_parser("adapt", help="Adaptive adapter selection")
@@ -347,6 +351,7 @@ def main() -> int:
         "report": cmd_report,
         "adapt": cmd_adapt,
         "compress": cmd_compress,
+        "models": cmd_models,
         "bench": cmd_bench,
         "watch": cmd_watch,
         "doctor": cmd_doctor,
@@ -356,8 +361,30 @@ def main() -> int:
         "breaker": cmd_breaker,
         "fleet": cmd_fleet,
     }
-    return dispatch[args.command](args)
+    handler = dispatch.get(args.command)
+    if handler is None:
+        print(f"ERROR: no handler registered for '{args.command}'", file=sys.stderr)
+        return 2
+    return handler(args)
 
 
 if __name__ == "__main__":
     sys.exit(main())
+def cmd_models(args):
+    from forgeos.model_select import ModelSelector
+    s = ModelSelector()
+    rec = s.recommend(
+        required_capabilities=set(args.capabilities.split(",")) if args.capabilities else set(),
+        task_complexity=args.complexity or "simple",
+        max_cost_usd=args.max_cost or 1.0,
+    )
+    if rec:
+        print(rec.model)
+        print(f"  provider: {rec.provider}")
+        print(f"  cost: ${rec.estimated_cost_usd:.6f}/task")
+        print(f"  reason: {rec.reason}")
+    else:
+        print("No model found within budget")
+    return 0
+
+
