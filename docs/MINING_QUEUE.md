@@ -63,6 +63,32 @@ justified" is done.
 | 41 | `Johell1NS/browser-search` | | queued |
 | 42 | `colbymchenry/codegraph` | **install-and-use, not port** | queued |
 | 43 | `CodeGraphContext/CodeGraphContext` | **install-and-use, not port** | queued |
+| 44 | `FoundationAgents/MetaGPT` | "this repo is a winner" | MINING NOW |
+| 45 | `microsoft/autogen` | | MINING NOW |
+| 46 | `conductor-oss/conductor` | "WOAH GOLDMINE" — durable workflow engine | MINING NOW |
+| 47 | `apache/airflow` | "OP" — DAG scheduling, retries, SLAs | MINING NOW |
+| 48 | `docling-project/docling` | document extraction | queued |
+| 49 | `headroomlabs-ai/headroom` | token compression — pair, not port | queued |
+| 50 | `Panniantong/Agent-Reach` | "this ones good" | queued |
+| 51 | `mvanhorn/last30days-skill` | | queued |
+| 52 | `BerriAI/litellm` | already the price-table source; mine the router | queued |
+| 53 | `CherryHQ/cherry-studio` | | queued |
+| 54 | `Aider-AI/aider` | already vendored | queued |
+| 55 | `HKUDS/nanobot` | | queued |
+| 56 | `rohitg00/ai-engineering-from-scratch` | | queued |
+| 57 | `patchy631/ai-engineering-hub` | "NEED to read all of this" | queued |
+| 58 | `tinyhumansai/openhuman` | "op" | queued |
+| 59 | `continuedev/continue` | | queued |
+| 60 | `VectifyAI/PageIndex` | document indexing | queued |
+| 61 | `qdrant/qdrant` | vector DB — dependency, not port | queued |
+| 62 | `lutzroeder/netron` | | queued |
+| 63 | `lightpanda-io/browser` | fast headless browser — crawler backend candidate | queued |
+| 64 | `linshenkx/prompt-optimizer` | | queued |
+| 65 | `zeroclaw-labs/zeroclaw` | | queued |
+| 66 | `langfuse/langfuse` | LLM observability — pair, not port | queued |
+| 67 | `SillyTavern/SillyTavern` | | queued |
+| 68 | `onyx-dot-app/onyx` | | queued |
+| 69 | `iOfficeAI/AionUi` | "bingo" — 24/7 cowork UI | queued |
 
 ## Use directly vs port
 
