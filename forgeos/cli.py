@@ -424,6 +424,7 @@ def main() -> int:
         "prompt": cmd_prompt_opt,
         "track": cmd_track,
         "local": cmd_local,
+        "retry": cmd_retry,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -596,6 +597,23 @@ def cmd_local(args):
     print()
     print("Local calls:", e.local_calls)
     print("API calls:", e.api_calls)
+    return 0
+
+
+def cmd_retry(args):
+    from forgeos.cost_retry import CostRetry
+    retry = CostRetry(max_retries=args.max_retries)
+    print("=== Cost-Aware Retry ===")
+    print("Max retries:", retry.max_retries)
+    print("Base budget:", retry.base_cost_budget)
+    print("Retry cost per call: $0.03")
+    print()
+    print("How it works:")
+    print("  - Exponential backoff: wait doubles each retry")
+    print("  - Budget check: stops if next retry costs more than remaining budget")
+    print("  - Waste detection: skips retry on non-recoverable errors")
+    print()
+    print("Savings report:", retry.savings_report())
     return 0
 
 
