@@ -417,3 +417,37 @@ def test_select_seat_with_no_candidates_is_not_ready():
     choice = QuotaTracker().select_seat("gpt5", [], at=T0)
     assert choice.ready is False
     assert choice.seat is None
+
+
+# ------------------------------------------------------------ persistence
+
+
+def test_quota_snapshot_round_trips_provider_facts_and_parked_work(tmp_path):
+    path = tmp_path / "quota.json"
+    original = QuotaTracker()
+    original.record_exhaustion(
+        "claude", model="sonnet", window=QuotaWindow.WEEKLY,
+        resets_at=T0 + 2 * HOUR, banked_resets=1, at=T0,
+    )
+    original.park(
+        "job-1", "claude", model="sonnet", task_id="task-1", value=0.9, reason="weekly cap"
+    )
+    original.record_probe("claude", model="sonnet")
+    original.mark_banked_consumed("claude", model="sonnet", at=T0)
+    original.save(path)
+
+    restored = QuotaTracker.load(path)
+
+    assert restored.state("claude", model="sonnet").banked_resets == 0
+    assert restored.state("claude", model="sonnet").source is QuotaSource.ESTIMATED
+    assert restored.parked_for("claude")[0].task_id == "task-1"
+    assert restored.next_probe_at("claude", model="sonnet", at=T0) is None
+    assert restored.snapshot()["schema"] == "forgeos.quota.v1"
+
+
+def test_corrupt_quota_snapshot_is_rejected(tmp_path):
+    path = tmp_path / "quota.json"
+    path.write_text('{"schema":"wrong"}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="expected quota snapshot schema"):
+        QuotaTracker.load(path)

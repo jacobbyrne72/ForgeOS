@@ -302,6 +302,34 @@ def test_doctor_includes_the_capacity_market_when_priced(tmp_path):
         f.close()
 
 
+def test_quota_telemetry_survives_forge_restart(tmp_path):
+    home = tmp_path / "quota-home"
+    first = Forge(home=home, registry=_fleet())
+    first.quota.record_exhaustion("premium", resets_at=1_800_003_600, at=1_800_000_000)
+    first.close()
+
+    second = Forge(home=home, registry=_fleet())
+    try:
+        state = second.quota.state("premium")
+        assert state is not None
+        assert state.exhausted is True
+        assert second.quota.available("premium", at=1_800_000_001) is False
+    finally:
+        second.close()
+
+
+def test_corrupt_quota_snapshot_does_not_block_forge_startup(tmp_path):
+    home = tmp_path / "corrupt-quota"
+    home.mkdir()
+    (home / "quota.json").write_text('{"schema":"wrong"}', encoding="utf-8")
+    f = Forge(home=home, registry=_fleet())
+    try:
+        assert f.quota_load_error
+        assert f.quota.states() == []
+    finally:
+        f.close()
+
+
 def test_max_parallel_is_sized_to_this_machine(forge):
     """A fixed worker count either starves a workstation or thrashes a laptop."""
     assert forge.scheduler.max_parallel >= 1

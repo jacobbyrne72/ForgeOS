@@ -33,8 +33,12 @@ Three deliberate design positions:
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from enum import Enum
+from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -46,6 +50,7 @@ from ..contracts import now
 PROBE_BACKOFF_SECONDS = (60, 300, 900, 1800, 3600)
 # How soon after a reported reset to confirm it actually reopened.
 CONFIRM_AFTER_RESET_SECONDS = 30
+QUOTA_SNAPSHOT_SCHEMA = "forgeos.quota.v1"
 
 
 class QuotaWindow(str, Enum):
@@ -119,6 +124,7 @@ class ParkedJob(BaseModel):
     job_id: str
     task_id: str | None = None
     provider: str
+    model: str = ""
     parked_at: float = Field(default_factory=now)
     reason: str = ""
     value: float = 0.5  # 0..1; gates whether a banked reset is worth spending
@@ -128,6 +134,7 @@ class BankedResetOffer(BaseModel):
     """A consumable reset the operator may choose to spend. Never spent silently."""
 
     provider: str
+    model: str = ""
     banked_available: int
     parked_jobs: int
     highest_parked_value: float
@@ -228,6 +235,107 @@ class QuotaTracker:
         self._parked: list[ParkedJob] = []
         self._probe_attempts: dict[str, int] = {}
         self.banked_consumed: list[tuple[str, float]] = []
+
+    # ------------------------------------------------------------ persistence
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return a versioned, JSON-safe snapshot of quota orchestration state.
+
+        Quota is provider telemetry, not a spend ledger. Keeping it in its own
+        file lets Forge restart without forgetting a confirmed exhaustion while
+        preserving the distinction between reported and estimated facts.
+        """
+        return {
+            "schema": QUOTA_SNAPSHOT_SCHEMA,
+            "states": [
+                state.model_dump(mode="json")
+                for _key, state in sorted(self._states.items())
+            ],
+            "parked": [job.model_dump(mode="json") for job in self._parked],
+            "probe_attempts": dict(sorted(self._probe_attempts.items())),
+            "banked_consumed": [
+                {"provider": provider, "at": at}
+                for provider, at in self.banked_consumed
+            ],
+        }
+
+    def restore(self, snapshot: dict[str, Any]) -> None:
+        """Replace in-memory state from a validated snapshot.
+
+        Validation happens into temporary collections before assignment, so a
+        malformed file can never leave a half-restored tracker active.
+        """
+        if snapshot.get("schema") != QUOTA_SNAPSHOT_SCHEMA:
+            raise ValueError(
+                f"expected quota snapshot schema {QUOTA_SNAPSHOT_SCHEMA!r}, "
+                f"got {snapshot.get('schema')!r}"
+            )
+        raw_states = snapshot.get("states", [])
+        raw_parked = snapshot.get("parked", [])
+        raw_probes = snapshot.get("probe_attempts", {})
+        raw_consumed = snapshot.get("banked_consumed", [])
+        if not all(isinstance(value, list) for value in (raw_states, raw_parked, raw_consumed)):
+            raise ValueError("quota snapshot lists are malformed")
+        if not isinstance(raw_probes, dict):
+            raise ValueError("quota snapshot probe_attempts must be an object")
+
+        states: dict[str, QuotaState] = {}
+        for raw in raw_states:
+            state = QuotaState.model_validate(raw)
+            states[self._key(state.provider, state.model)] = state
+        parked = [ParkedJob.model_validate(raw) for raw in raw_parked]
+        probes = {str(key): int(value) for key, value in raw_probes.items()}
+        consumed: list[tuple[str, float]] = []
+        for raw in raw_consumed:
+            if not isinstance(raw, dict) or not isinstance(raw.get("provider"), str):
+                raise ValueError("quota snapshot banked_consumed entry is malformed")
+            consumed.append((raw["provider"], float(raw["at"])))
+
+        self._states = states
+        self._parked = parked
+        self._probe_attempts = probes
+        self.banked_consumed = consumed
+
+    @classmethod
+    def load(cls, path: str | Path, **kwargs: Any) -> "QuotaTracker":
+        """Load a snapshot, returning an empty tracker when no file exists."""
+        target = Path(path)
+        tracker = cls(**kwargs)
+        if not target.exists():
+            return tracker
+        try:
+            raw = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"cannot read quota snapshot {target}: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise ValueError(f"quota snapshot {target} must contain an object")
+        tracker.restore(raw)
+        return tracker
+
+    def save(self, path: str | Path) -> Path:
+        """Atomically persist the current snapshot without touching the ledger."""
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.tmp")
+        try:
+            temporary.write_text(
+                json.dumps(self.snapshot(), indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(temporary, target)
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+        return target
+
+    def states(self) -> list[QuotaState]:
+        """Return stable, read-only-friendly state ordering for operators/UI."""
+        return sorted(self._states.values(), key=lambda state: (state.provider, state.model))
+
+    def parked(self) -> list[ParkedJob]:
+        return list(self._parked)
 
     @staticmethod
     def _key(provider: str, model: str) -> str:
@@ -445,40 +553,45 @@ class QuotaTracker:
 
     # ---------------------------------------------------------------- park
 
-    def park(self, job_id: str, provider: str, *, task_id: str | None = None,
+    def park(self, job_id: str, provider: str, *, model: str = "", task_id: str | None = None,
              value: float = 0.5, reason: str = "") -> ParkedJob:
-        p = ParkedJob(job_id=job_id, task_id=task_id, provider=provider,
+        p = ParkedJob(job_id=job_id, task_id=task_id, provider=provider, model=model,
                       value=value, reason=reason)
         self._parked.append(p)
         return p
 
-    def parked_for(self, provider: str) -> list[ParkedJob]:
-        return [p for p in self._parked if p.provider == provider]
+    def parked_for(self, provider: str, *, model: str | None = None) -> list[ParkedJob]:
+        return [
+            p for p in self._parked
+            if p.provider == provider and (model is None or p.model == model)
+        ]
 
     def resume_ready(self, at: float | None = None) -> list[ParkedJob]:
         """Parked work whose provider window has reopened. Removed from the park."""
         at = at or now()
-        ready = [p for p in self._parked if self.available(p.provider, at)]
+        ready = [p for p in self._parked if self.available(p.provider, at, model=p.model)]
         if ready:
-            ids = {(p.job_id, p.task_id) for p in ready}
+            ids = {(p.job_id, p.task_id, p.provider, p.model) for p in ready}
             self._parked = [p for p in self._parked
-                            if (p.job_id, p.task_id) not in ids]
+                            if (p.job_id, p.task_id, p.provider, p.model) not in ids]
         return ready
 
     # -------------------------------------------------------------- banked
 
-    def banked_offer(self, provider: str, at: float | None = None) -> BankedResetOffer | None:
+    def banked_offer(
+        self, provider: str, at: float | None = None, *, model: str = ""
+    ) -> BankedResetOffer | None:
         """Surface a banked reset as a decision, with the context to make it.
 
         Returned when one exists and work is waiting — the operator sees how long the
         natural reset is and how valuable the parked work is, rather than a bare
         'use a reset?' prompt.
         """
-        st = self._states.get(provider)
+        st = self._states.get(self._key(provider, model))
         if st is None or not st.exhausted or st.banked_resets <= 0:
             return None
 
-        parked = self.parked_for(provider)
+        parked = self.parked_for(provider, model=model)
         top = max((p.value for p in parked), default=0.0)
         wait = st.seconds_until_reset(at)
 
@@ -493,6 +606,7 @@ class QuotaTracker:
 
         return BankedResetOffer(
             provider=provider,
+            model=model,
             banked_available=st.banked_resets,
             parked_jobs=len(parked),
             highest_parked_value=top,
@@ -502,11 +616,13 @@ class QuotaTracker:
             recommendation=rec,
         )
 
-    def should_auto_consume(self, provider: str, at: float | None = None) -> bool:
+    def should_auto_consume(
+        self, provider: str, at: float | None = None, *, model: str = ""
+    ) -> bool:
         """Whether policy permits spending a banked reset without asking."""
         if not self.auto_consume_banked:
             return False
-        offer = self.banked_offer(provider, at)
+        offer = self.banked_offer(provider, at, model=model)
         if offer is None or offer.parked_jobs == 0:
             return False
         if offer.highest_parked_value < self.banked_value_threshold:
@@ -516,18 +632,22 @@ class QuotaTracker:
             return False
         return True
 
-    def mark_banked_consumed(self, provider: str, *, at: float | None = None) -> QuotaState | None:
+    def mark_banked_consumed(
+        self, provider: str, *, model: str = "", at: float | None = None
+    ) -> QuotaState | None:
         """Record that a reset was applied — by the operator or by policy.
 
         Recorded either way so the dashboard can show a finite benefit being spent.
         """
-        st = self._states.get(provider)
+        key = self._key(provider, model)
+        st = self._states.get(key)
         if st is None or st.banked_resets <= 0:
             return None
         at = at or now()
         self.banked_consumed.append((provider, at))
         refreshed = QuotaState(
             provider=provider,
+            model=model,
             window=st.window,
             exhausted=False,
             pct_remaining=100.0,
@@ -536,8 +656,8 @@ class QuotaTracker:
             observed_at=at,
             detail="banked reset applied; awaiting /usage confirmation",
         )
-        self._states[provider] = refreshed
-        self._probe_attempts.pop(provider, None)
+        self._states[key] = refreshed
+        self._probe_attempts.pop(key, None)
         return refreshed
 
 
@@ -545,6 +665,7 @@ __all__ = [
     "BankedResetOffer",
     "CONFIRM_AFTER_RESET_SECONDS",
     "PROBE_BACKOFF_SECONDS",
+    "QUOTA_SNAPSHOT_SCHEMA",
     "ExhaustionSignal",
     "ParkedJob",
     "QuotaSource",

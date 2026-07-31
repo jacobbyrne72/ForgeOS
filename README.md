@@ -346,8 +346,11 @@ one that admits them:
   but free *API* workers here summarise and classify; a real edit needs a local
   worker, a flat-rate seat, or a metered model.
 - **Several subsystems are built and tested but not yet in the execution path:**
-  capsule, packing, savings receipts, quota/capacity market, mission compiler,
-  model traits, discovery.
+  capsule, packing, savings receipts, mission compiler, model traits, discovery.
+- **Quota telemetry is durable but still operator-fed.** Provider-reported quota
+  facts persist in `.forgeos/quota.json` and appear at `/api/quota`; ForgeOS does
+  not probe or invent subscription usage, so live source adapters remain future
+  work.
 - **Live CLI backends are young.** The omc team adapter is verified against a
   real install, but long-haul reliability (crashed sessions, orphaned
   worktrees) has not been proven over days of continuous use.

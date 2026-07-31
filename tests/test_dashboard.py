@@ -21,9 +21,11 @@ from forgeos.dashboard.app import (
     LEASES_DB,
     LEDGER_DB,
     PORT,
+    QUOTA_FILE,
     STATIC_DIR,
     create_app,
 )
+from forgeos.core.quota import QuotaTracker
 from forgeos.economy.avoidance import AvoidanceLog, AvoidanceMethod
 from forgeos.events import EventLog, EventType
 from forgeos.ledger import Ledger
@@ -170,6 +172,27 @@ def test_summary_reflects_seeded_spend_and_one_accepted_task(state_dir: Path):
     assert body["accepted_tasks"] == 1
     assert body["cost_per_accepted_task"] == pytest.approx(0.25)
     assert body["active_jobs"] == 1
+
+
+def test_quota_endpoint_reports_persisted_provider_fact_without_network(state_dir: Path):
+    quota = QuotaTracker()
+    quota.record_report("claude", "Weekly: 75% remaining", at=1_800_000_000)
+    quota.save(state_dir / QUOTA_FILE)
+    client = TestClient(create_app(state_dir))
+
+    body = client.get("/api/quota").json()
+    assert body["available"] is True
+    assert body["error"] is None
+    assert body["states"][0]["provider"] == "claude"
+    assert body["states"][0]["source"] == "reported"
+    assert body["states"][0]["pct_remaining"] == 75.0
+    assert body["states"][0]["pct_burn"] == 25.0
+    assert client.get("/api/summary").json()["cap_burn"] == {
+        "measured": True,
+        "value_pct": 25.0,
+        "currency": "subscription_cap",
+        "note": "one provider window reported by the provider",
+    }
 
 
 def test_jobs_list_and_detail_include_documented_fields(state_dir: Path):

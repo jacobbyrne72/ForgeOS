@@ -14,9 +14,8 @@ signed off on, not one that merely finished.
 
 Subscription "cap burn" and API "dollars" are different currencies and are
 never summed into one total (a dollar figure for subscription-routed work
-would be fiction). Today forgeos has no subscription-quota data source wired
-into the ledger, so `cap_burn` is reported honestly as unmeasured rather than
-invented from spend data.
+would be fiction). Forge persists provider-reported quota telemetry beside the
+ledger; this dashboard reads that snapshot but never probes a provider itself.
 
 Binds 127.0.0.1 only -- see `forgeos/dashboard/__init__.py`.
 """
@@ -42,6 +41,7 @@ from ..economy.avoidance import AvoidanceLog
 from ..events import EventLog, EventType
 from ..ledger import Ledger
 from ..leases import LeaseStore
+from ..core.quota import QUOTA_SNAPSHOT_SCHEMA, QuotaSource, QuotaTracker
 from ..registry import MIN_ATTEMPTS_TO_TRUST, default_registry
 
 HOST = "127.0.0.1"
@@ -61,6 +61,7 @@ EVENTS_DB = "events.db"
 AVOIDANCE_DB = "avoidance.db"
 LEASES_DB = "leases.db"
 HALTS_FILE = "halts.json"
+QUOTA_FILE = "quota.json"
 
 WS_POLL_SECONDS = 2.0
 
@@ -266,6 +267,7 @@ def create_app(state_dir: str | Path) -> FastAPI:
     avoidance_log = AvoidanceLog(state_dir / AVOIDANCE_DB)
     lease_store = LeaseStore(state_dir / LEASES_DB)
     halts = HaltStore(state_dir / HALTS_FILE)
+    quota_path = state_dir / QUOTA_FILE
 
     # `Ledger` exposes `active_jobs()` (open only) and `job(id)` (one row) but
     # no "every job, open or closed" aggregate -- adding one means editing
@@ -286,6 +288,78 @@ def create_app(state_dir: str | Path) -> FastAPI:
             "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()
 
+    def _quota_view() -> dict[str, Any]:
+        """Read the last local quota snapshot without making a provider call."""
+        try:
+            tracker = QuotaTracker.load(quota_path)
+        except ValueError as exc:
+            return {
+                "schema": QUOTA_SNAPSHOT_SCHEMA,
+                "available": False,
+                "error": str(exc),
+                "states": [],
+                "parked_jobs": 0,
+                "cap_burn": {
+                    "measured": False,
+                    "value_pct": None,
+                    "currency": "subscription_cap",
+                    "note": "quota snapshot is invalid; no cap figure inferred",
+                },
+            }
+
+        states = []
+        for state in tracker.states():
+            remaining = state.pct_remaining
+            states.append(
+                {
+                    "provider": state.provider,
+                    "model": state.model,
+                    "window": state.window.value,
+                    "pct_remaining": remaining,
+                    "pct_burn": round(100.0 - remaining, 3) if remaining is not None else None,
+                    "resets_at": state.resets_at,
+                    "seconds_until_reset": state.seconds_until_reset(),
+                    "exhausted": state.exhausted,
+                    "available": state.available(),
+                    "source": state.source.value,
+                    "observed_at": state.observed_at,
+                    "detail": state.detail,
+                }
+            )
+        measured = [
+            row for row in states
+            if row["source"] == QuotaSource.REPORTED.value and row["pct_burn"] is not None
+        ]
+        if len(measured) == 1:
+            cap_burn = {
+                "measured": True,
+                "value_pct": measured[0]["pct_burn"],
+                "currency": "subscription_cap",
+                "note": "one provider window reported by the provider",
+            }
+        elif measured:
+            cap_burn = {
+                "measured": False,
+                "value_pct": None,
+                "currency": "subscription_cap",
+                "note": "multiple provider windows present; inspect /api/quota rather than averaging them",
+            }
+        else:
+            cap_burn = {
+                "measured": False,
+                "value_pct": None,
+                "currency": "subscription_cap",
+                "note": "no provider-reported percentage in the local quota snapshot",
+            }
+        return {
+            "schema": QUOTA_SNAPSHOT_SCHEMA,
+            "available": quota_path.exists(),
+            "error": None,
+            "states": states,
+            "parked_jobs": len(tracker.parked()),
+            "cap_burn": cap_burn,
+        }
+
     def _summary() -> dict[str, Any]:
         all_jobs = _all_jobs()
         spend_micros_total = sum(ledger.job_spend_micros(j["id"]) for j in all_jobs)
@@ -296,17 +370,7 @@ def create_app(state_dir: str | Path) -> FastAPI:
         cost_per_accepted_task = (spend_usd_total / accepted) if accepted else None
         return {
             "spend_usd": spend_usd_total,
-            "cap_burn": {
-                "measured": False,
-                "value_pct": None,
-                "currency": "subscription_cap",
-                "note": (
-                    "no subscription-quota source is wired into the ledger yet; "
-                    "intentionally not derived from spend_usd -- API dollars and "
-                    "subscription cap usage are different currencies and must "
-                    "never be summed"
-                ),
-            },
+            "cap_burn": _quota_view()["cap_burn"],
             "cache_hit_pct": cache["cache_hit_pct"],
             "avoided_tokens": avoided["saved_tokens"],
             "active_jobs": len(ledger.active_jobs()),
@@ -426,6 +490,10 @@ def create_app(state_dir: str | Path) -> FastAPI:
     @app.get("/api/summary")
     def get_summary() -> dict[str, Any]:
         return _summary()
+
+    @app.get("/api/quota")
+    def get_quota() -> dict[str, Any]:
+        return _quota_view()
 
     @app.get("/api/jobs")
     def get_jobs() -> dict[str, Any]:

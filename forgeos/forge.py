@@ -398,7 +398,17 @@ class Forge:
         self._gateway = gateway
         self._owns_gateway = gateway is None
         self.market = market or CapacityMarket()
-        self.quota = QuotaTracker()
+        self.quota_path = self.home / "quota.json"
+        self.quota_persist_error = ""
+        try:
+            self.quota = QuotaTracker.load(self.quota_path)
+            self.quota_load_error = ""
+        except ValueError as exc:
+            # A corrupt telemetry snapshot must not prevent the operator from
+            # opening Forge. Start conservatively empty and surface the error
+            # for diagnostics rather than treating stale data as truth.
+            self.quota = QuotaTracker()
+            self.quota_load_error = str(exc)
 
         self.resources = ResourceGovernor()
         self.governor = Governor(self.ledger, self.events)
@@ -432,10 +442,12 @@ class Forge:
         # buys away every torn read. `_trip` is how the first thread to see a
         # governor trip stops the others from spending through it.
         self._sched_lock = threading.Lock()
+        self._quota_lock = threading.Lock()
         self._trip = threading.Event()
         self._trip_reason = ""
 
     def close(self) -> None:
+        self._persist_quota()
         if self._owns_gateway and self._gateway is not None:
             try:
                 self._gateway.close()
@@ -446,6 +458,18 @@ class Forge:
                 store.close()
             except Exception:
                 pass
+
+    def _persist_quota(self) -> None:
+        """Best-effort persistence for telemetry; never replaces ledger truth."""
+        with self._quota_lock:
+            self._persist_quota_locked()
+
+    def _persist_quota_locked(self) -> None:
+        try:
+            self.quota.save(self.quota_path)
+            self.quota_persist_error = ""
+        except OSError as exc:
+            self.quota_persist_error = str(exc)
 
     def default_executor(self, *, cwd: str = ".") -> Executor:
         """Build the standard routed executor with this Forge's ledger.
@@ -740,14 +764,14 @@ class Forge:
             # Quota awareness: skip providers whose window is exhausted.
             # A subscription with 0% remaining is not "cheapest capable" —
             # routing there burns a retry and a rate-limit error. Fall through.
-            exhausted = {
-                name for name, state in self.quota._states.items()
-                if not state.available()
-            }
+            with self._quota_lock:
+                exhausted_providers = {
+                    state.provider for state in self.quota.states() if not state.available()
+                }
             with self._sched_lock:
                 stats = {r["worker_id"]: r
                          for r in self.ledger.worker_stats(spec.capabilities)
-                         if not any(ex in r["worker_id"] for ex in exhausted)}
+                         if r["worker_id"].split(".", 1)[0] not in exhausted_providers}
             route = self.router.route(
                 spec.capabilities,
                 stats=stats,
@@ -1008,7 +1032,9 @@ class Forge:
                 # the window reopens. "resets in 2h 15m" → don't burn retries.
                 if result.blocker:
                     provider = worker_id.split(".")[0] if "." in worker_id else worker_id
-                    self.quota.record_report(provider, result.blocker)
+                    with self._quota_lock:
+                        self.quota.record_report(provider, result.blocker)
+                        self._persist_quota_locked()
                 attempt_history.insert(0, _attempt_summary(attempts, result, evidence, kept_lines))
                 if result.failure is not None:
                     escalate_route = route
@@ -1289,6 +1315,27 @@ class Forge:
         ]
         for p in sorted(self.settings.providers.values(), key=lambda x: x.name):
             lines.append(f"  {p.name:<14} {p.kind.value:<9} {p.status()}")
+        with self._quota_lock:
+            quota_states = self.quota.states()
+        lines += ["", "quota telemetry"]
+        if self.quota_load_error:
+            lines.append(f"  invalid snapshot ({self.quota_load_error}) — using empty state")
+        elif not quota_states:
+            lines.append("  no provider-reported snapshots")
+        else:
+            for state in quota_states:
+                remaining = (
+                    f"{state.pct_remaining:.0f}% remaining" if state.pct_remaining is not None
+                    else "remaining unknown"
+                )
+                reset = (
+                    f", reset in {state.seconds_until_reset():.0f}s"
+                    if state.resets_at is not None else ""
+                )
+                lines.append(
+                    f"  {state.provider:<14} {state.model or '*':<18} {remaining}"
+                    f" ({state.source.value}{reset})"
+                )
         if self.market.resources():
             lines += ["", self.market.report()]
         return "\n".join(lines)
