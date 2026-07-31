@@ -31,6 +31,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse
@@ -247,6 +248,22 @@ def _worker_lanes(ledger: Ledger, tasks: list[sqlite3.Row]) -> list[dict[str, An
             lane["reports"] += 1
             lane["spend_usd"] += from_micros(r["usd_micros"])
     return sorted(lanes.values(), key=lambda lane: -lane["spend_usd"])
+
+
+
+class ChatProposal(BaseModel):
+    """Body of POST /api/chat/propose. Module-level on purpose: with
+    `from __future__ import annotations` in force, FastAPI resolves handler
+    annotations against module globals, and a class local to `create_app` is
+    invisible there -- the parameter silently became a query param."""
+
+    objective: str
+    max_usd: float = 1.0
+
+
+class ChatApproval(BaseModel):
+    digest: str
+    dry_run: bool = True
 
 
 # ------------------------------------------------------------------- app
@@ -638,6 +655,92 @@ def create_app(state_dir: str | Path) -> FastAPI:
         # enum in events.py, so this does not require touching either schema.
         ledger.record_event(job_id, "operator_halt_requested", detail=reason)
         return {"job_id": job_id, "halted": True, "at": entry["at"], "reason": entry["reason"]}
+
+    # ------------------------------------------------------- chat / command
+
+    # One manager conversation per dashboard process. The session object is the
+    # same `ManagerSession` the CLI uses -- blueprint in, digest-gated approval,
+    # job cards out -- so the browser gets the identical spend gate, not a
+    # parallel weaker one.
+    #
+    # THE DIGEST IS ALSO THE CSRF DEFENCE. Binding to 127.0.0.1 does not make
+    # these endpoints private: any web page the operator visits can POST to
+    # loopback. But a cross-origin page cannot READ a response without CORS
+    # headers (which are never emitted), so it can call /chat/propose blind and
+    # still never learn the digest -- and /chat/run refuses without the digest
+    # of the exact blueprint that was shown. Nothing spends on the strength of
+    # a blind POST.
+    from ..manager_chat import ApprovalError, ManagerSession, draft_blueprint
+
+    chat_state: dict[str, Any] = {"session": None}
+
+    @app.post("/api/chat/propose")
+    def chat_propose(body: ChatProposal) -> dict[str, Any]:
+        objective = body.objective.strip()
+        if not objective:
+            raise HTTPException(status_code=422, detail="objective is empty")
+        if body.max_usd <= 0 or body.max_usd > 50:
+            raise HTTPException(status_code=422, detail="max_usd must be in (0, 50]")
+        session = ManagerSession(objective=objective)
+        blueprint = draft_blueprint(
+            objective,
+            plan=["compile the objective into a task graph",
+                  "run it under the budget cap",
+                  "verify through the merge gate"],
+            criteria=[("C1", "the compiled job completes and is accepted",
+                       ["ledger:job_accepted"])],
+            max_usd=body.max_usd,
+            write_scope=["**"],
+        )
+        session.propose(blueprint)
+        chat_state["session"] = session
+        return {
+            "rendered": blueprint.render(),
+            "digest": blueprint.contract.digest()[:16],
+            "phase": session.phase.value,
+        }
+
+    @app.post("/api/chat/run")
+    def chat_run(body: ChatApproval) -> dict[str, Any]:
+        session = chat_state.get("session")
+        if session is None:
+            raise HTTPException(status_code=409, detail="nothing proposed yet")
+        try:
+            session.approve(body.digest)
+        except ApprovalError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+        objective = session.objective
+        max_usd = session.blueprint.contract.budget.cash_limit
+        if body.dry_run:
+            # Free preview through the same compiler the real run uses.
+            from ..compiler import compile_mission
+
+            mission = compile_mission(objective, cwd=str(Path.cwd()))
+            return {
+                "ran": False,
+                "dry_run": True,
+                "tasks": [{"id": t.id, "subject": t.subject,
+                           "scope": list(t.scope.paths)} for t in mission.tasks],
+            }
+        # The real run is synchronous and can take minutes; hand it to a thread
+        # so the event loop (and the websocket feed) stays live. The budget cap
+        # comes from the APPROVED contract, never from the request body -- a
+        # second request cannot widen what was approved.
+        import threading
+
+        from ..__main__ import _run_team
+
+        def _work() -> None:
+            try:
+                _run_team(objective, cwd=str(Path.cwd()), budget_usd=max_usd,
+                          state_dir=str(state_dir), dry_run=False)
+            except Exception:
+                pass  # outcome lands in the ledger either way; the feed shows it
+
+        threading.Thread(target=_work, daemon=True).start()
+        return {"ran": True, "dry_run": False, "budget_usd": max_usd,
+                "note": "running; watch the activity feed and receipts"}
 
     # ------------------------------------------------------------------ ws
 

@@ -873,6 +873,30 @@
   </div>
 </div>
 
+<!-- The chat bar: intent in, digest-gated execution out. The input the whole
+     dashboard was missing -- everything else on this page observes; this is the
+     one place that commands. Approval is mechanical: the run button stays dead
+     until the exact digest of the rendered plan is echoed back, the same gate
+     the CLI manager uses. -->
+<section id="chat-bar" style="padding:10px 16px;border-bottom:1px solid var(--edge,#333);display:flex;flex-direction:column;gap:8px;">
+  <div style="display:flex;gap:8px;">
+    <input id="chat-objective" type="text" placeholder="Tell ForgeOS what to build... (Enter to propose — proposing is free)"
+           style="flex:1;padding:9px 12px;background:var(--well,#111);color:inherit;border:1px solid var(--edge,#333);border-radius:6px;font:inherit;" />
+    <input id="chat-budget" type="number" step="0.05" min="0.05" max="50" value="0.50" title="hard USD cap"
+           style="width:90px;padding:9px;background:var(--well,#111);color:inherit;border:1px solid var(--edge,#333);border-radius:6px;font:inherit;" />
+    <button id="chat-propose" style="padding:9px 16px;border-radius:6px;border:1px solid var(--edge,#333);background:transparent;color:inherit;cursor:pointer;">Propose</button>
+  </div>
+  <div id="chat-plan" hidden style="border:1px solid var(--edge,#333);border-radius:6px;padding:10px 12px;">
+    <pre id="chat-rendered" style="margin:0 0 8px;white-space:pre-wrap;font-size:12px;max-height:260px;overflow:auto;"></pre>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <input id="chat-digest" type="text" placeholder="type the DIGEST shown above to arm"
+             autocomplete="off" style="flex:1;padding:7px 10px;background:var(--well,#111);color:inherit;border:1px solid var(--edge,#333);border-radius:6px;font:inherit;" />
+      <button id="chat-dry" disabled style="padding:7px 14px;border-radius:6px;border:1px solid var(--edge,#333);background:transparent;color:inherit;">Preview (free)</button>
+      <button id="chat-run" disabled style="padding:7px 14px;border-radius:6px;border:1px solid #7a4;background:transparent;color:inherit;">Run (spends)</button>
+    </div>
+    <div id="chat-status" style="margin-top:6px;font-size:12px;opacity:.8;"></div>
+  </div>
+</section>
 <main class="deck">
   <div class="stage">
     <div class="error-banner" id="error-banner"></div>
@@ -1912,6 +1936,65 @@
   });
 
   document.addEventListener("DOMContentLoaded", init);
+</script>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let shownDigest = null;
+  const status = (t) => { $("chat-status").textContent = t; };
+
+  async function propose() {
+    const objective = $("chat-objective").value.trim();
+    if (!objective) return;
+    status("proposing… (free)");
+    try {
+      const r = await fetch("/api/chat/propose", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({objective, max_usd: parseFloat($("chat-budget").value) || 0.5}),
+      });
+      const b = await r.json();
+      if (!r.ok) { status("refused: " + (b.detail?.[0]?.msg || b.detail || r.status)); return; }
+      shownDigest = b.digest;
+      $("chat-rendered").textContent = b.rendered;
+      $("chat-plan").hidden = false;
+      $("chat-digest").value = "";
+      arm();
+      status("read the plan; type its DIGEST to arm the buttons — that IS the approval");
+    } catch (e) { status("error: " + e); }
+  }
+
+  // Mechanically dead until the typed digest matches what was shown. A page
+  // that never displayed the plan cannot produce this value.
+  function arm() {
+    const ok = shownDigest && $("chat-digest").value.trim() === shownDigest;
+    $("chat-dry").disabled = !ok;
+    $("chat-run").disabled = !ok;
+  }
+
+  async function go(dry) {
+    status(dry ? "previewing… (free)" : "running — spend is capped at the approved ceiling");
+    try {
+      const r = await fetch("/api/chat/run", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({digest: $("chat-digest").value.trim(), dry_run: dry}),
+      });
+      const b = await r.json();
+      if (!r.ok) { status("refused: " + (b.detail || r.status)); return; }
+      if (b.dry_run) {
+        status("preview: " + b.tasks.length + " task(s) — " +
+               b.tasks.map(t => t.subject).join(" | ").slice(0, 200));
+      } else {
+        status("running under $" + b.budget_usd + " cap — watch the activity feed");
+      }
+    } catch (e) { status("error: " + e); }
+  }
+
+  $("chat-propose").addEventListener("click", propose);
+  $("chat-objective").addEventListener("keydown", (e) => { if (e.key === "Enter") propose(); });
+  $("chat-digest").addEventListener("input", arm);
+  $("chat-dry").addEventListener("click", () => go(true));
+  $("chat-run").addEventListener("click", () => go(false));
+})();
 </script>
 </body>
 </html>
