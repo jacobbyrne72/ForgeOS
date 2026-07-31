@@ -477,3 +477,54 @@ def test_counterfactual_plan_ready_when_fully_specified():
 def test_counterfactual_plan_not_ready_when_incomplete(kwargs):
     plan = CounterfactualPlan(**kwargs)
     assert plan.ready() is False
+
+
+# ------------------------------------------------- small amounts stay visible
+
+
+def test_a_fraction_of_a_cent_is_never_rendered_as_zero():
+    """The bug this pins: at two decimal places every sub-cent figure rendered
+    "$0.00", so a receipt reported real spend as free. In this system a single
+    model call routinely costs less than a cent, so that was not an edge case,
+    it was the common case -- and it always erred toward looking cheaper, the
+    direction nobody double-checks.
+    """
+    f = Figure(value=0.004, unit="usd", provenance=Provenance.MEASURED)
+    assert "$0.00 " not in f.render()
+    assert "0.004" in f.render()
+
+
+def test_exact_zero_still_renders_as_zero():
+    """Zero really is zero; widening precision there would only add noise."""
+    f = Figure(value=0.0, unit="usd", provenance=Provenance.MEASURED)
+    assert f.render().startswith("$0.00")
+
+
+def test_ordinary_amounts_keep_two_decimals():
+    """No regression in the normal case -- dollars still read like dollars."""
+    assert Figure(value=12.5, unit="usd",
+                  provenance=Provenance.MEASURED).render().startswith("$12.50")
+    assert Figure(value=1234.5, unit="usd",
+                  provenance=Provenance.MEASURED).render().startswith("$1,234.50")
+
+
+def test_a_sub_cent_regression_is_still_visible_as_a_regression():
+    """Costing MORE is the failure this module exists to surface. Rounding a
+    small overspend to "$0.00" would hide exactly that."""
+    f = Figure(value=-0.003, unit="usd", provenance=Provenance.MEASURED)
+    rendered = f.render()
+    assert "0.003" in rendered and "-" in rendered
+
+
+def test_precision_never_runs_away():
+    """A denormal-ish value must not produce a fifty-character number."""
+    f = Figure(value=1e-12, unit="usd", provenance=Provenance.MEASURED)
+    assert len(f.render()) < 30
+
+
+def test_a_sub_cent_error_bound_is_also_visible():
+    """The bound shares the formatter, so it shared the bug: '$0.0042 measured
+    ±$0.00' states a precision the number does not have."""
+    f = Figure(value=0.0042, unit="usd", provenance=Provenance.MEASURED,
+               error_bound=0.0008)
+    assert "±$0.00 " not in f.render() and "0.0008" in f.render()

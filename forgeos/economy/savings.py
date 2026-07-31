@@ -33,6 +33,7 @@ kind of mission produced these tokens and dollars.
 
 from __future__ import annotations
 
+import math
 from enum import Enum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -93,10 +94,29 @@ def _weaker(a: Provenance, b: Provenance) -> Provenance:
 _CURRENCY_SYMBOLS: dict[str, str] = {"usd": "$", "eur": "€", "gbp": "£"}
 
 
+def _currency_decimals(value: float) -> int:
+    """Decimal places that keep a small amount VISIBLE.
+
+    Two decimals is right for dollars and wrong for this system. A single
+    model call routinely costs a fraction of a cent, and at 2dp every one of
+    them renders "$0.00" -- a receipt that reports real spend as free, in the
+    one module whose entire purpose is not overstating what is known about
+    money. The failure is silent and it always errs toward looking cheaper,
+    which is the direction nobody double-checks.
+
+    Below a cent, widen to show two significant digits ($0.0042, not $0.00).
+    Exact zero keeps 2dp, because zero really is zero.
+    """
+    magnitude = abs(value)
+    if magnitude == 0.0 or magnitude >= 0.01:
+        return 2
+    return min(-math.floor(math.log10(magnitude)) + 1, 8)
+
+
 def _format_value(value: float, unit: str) -> str:
     symbol = _CURRENCY_SYMBOLS.get(unit)
     if symbol is not None:
-        return f"{symbol}{value:,.2f}"
+        return f"{symbol}{value:,.{_currency_decimals(value)}f}"
     if unit == "pct":
         return f"{value:.1f}%"
     if unit == "seconds":

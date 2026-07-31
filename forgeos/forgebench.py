@@ -437,6 +437,24 @@ def _idf(terms: Sequence[str], bodies: Sequence[str]) -> dict[str, float]:
     return scores
 
 
+def rank_chunk(body: str, weights: dict[str, float], *, low: str | None = None) -> float:
+    """Relevance of one chunk: IDF over the body, plus a weighted second pass
+    over the symbol names it DEFINES.
+
+    Split out of `build_forgeos_prompt` so the ranking rule can be asserted
+    directly. Proving it through the packer needs a fixture where the budget
+    happens to force the exact trade-off, which makes the test about the
+    fixture; here the property is stated plainly -- a term in a `def`/`class`
+    name outweighs the same term in prose.
+    """
+    low = body.lower() if low is None else low
+    score = sum(w for t, w in weights.items() if t in low)
+    names = " ".join(_DEF_RE.findall(body)).lower()
+    if names:
+        score += _DEF_FIELD_WEIGHT * sum(w for t, w in weights.items() if t in names)
+    return score
+
+
 def build_forgeos_prompt(root: Path, task: PinnedTask) -> tuple[str, dict]:
     """ForgeOS arm: rank, window, and pack the SAME scope files to a hard
     budget. Same technique as `tools/ab_bench.py`'s `build_capsule_prompt`,
@@ -445,21 +463,23 @@ def build_forgeos_prompt(root: Path, task: PinnedTask) -> tuple[str, dict]:
     consulted to decide what to send."""
     terms = objective_terms(task.objective)
     chunks: list[tuple[str, str]] = []
+    scope_chars = 0
     for rel in task.scope.paths:
         text = _read_repo_file(root, rel)
         if text is not None:
+            # Sized from the FILES, never from `chunks` -- chunks overlap by 50%,
+            # so summing their bodies double-counts the scope and hands every
+            # task twice the budget it was supposed to get.
+            scope_chars += len(text)
             chunks.extend(_chunk_file(rel, text))
 
     lows = [body.lower() for _, body in chunks]
     weights = _idf(terms, lows)
-    budget = capsule_budget_for(sum(len(b) for _, b in chunks))
+    budget = capsule_budget_for(scope_chars)
 
     blocks: list[tuple[float, str, str]] = []
     for (ref, body), low in zip(chunks, lows):
-        score = sum(w for t, w in weights.items() if t in low)
-        names = " ".join(_DEF_RE.findall(body)).lower()
-        if names:
-            score += _DEF_FIELD_WEIGHT * sum(w for t, w in weights.items() if t in names)
+        score = rank_chunk(body, weights, low=low)
         if score > 0:  # a chunk matching nothing asked about is not context
             blocks.append((score, ref, body))
 
