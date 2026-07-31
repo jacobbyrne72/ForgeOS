@@ -461,6 +461,7 @@ def test_index_html_surfaces_the_measured_leaderboard_panel():
     assert 'id="leaderboard-refresh"' in html
     assert 'api("/api/leaderboard")' in html
     assert "Jump to Leaderboard" in html
+    assert "fleet_rollup" in html
     assert "measured live Class-A only" in html
 
 

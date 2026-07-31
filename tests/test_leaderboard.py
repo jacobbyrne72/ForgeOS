@@ -68,6 +68,13 @@ def test_leaderboard_aggregates_same_model_and_ranks_unit_cost() -> None:
         "ranked_entries": 2,
         "note": board["summary"]["note"],
     }
+    assert board["fleet_rollup"] == {
+        "eligible_runs": 3,
+        "accepted_count": 5,
+        "usd_micros": 3_400_000,
+        "cost_per_accepted_usd": 0.68,
+        "scope": board["fleet_rollup"]["scope"],
+    }
     assert [entry["label"] for entry in board["entries"]] == [
         "provider/model-a", "provider/model-b",
     ]
@@ -84,6 +91,8 @@ def test_leaderboard_preserves_unrankable_receipts_with_reasons() -> None:
     ])
 
     assert board["entries"] == []
+    assert board["fleet_rollup"]["accepted_count"] == 0
+    assert board["fleet_rollup"]["cost_per_accepted_usd"] is None
     assert board["summary"]["excluded_runs"] == 3
     assert [row["leaderboard_reason"] for row in board["runs"]] == [
         "not a measured live receipt",

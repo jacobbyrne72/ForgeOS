@@ -1608,8 +1608,14 @@
       meta.innerHTML = `No local receipts yet — write ForgeBench JSON to ` +
         `<code>${esc(data.receipt_dir || "<state_dir>/receipts")}</code>.`;
     } else {
+      const fleet = data.fleet_rollup || {};
+      const fleetCost = fleet.cost_per_accepted_usd == null
+        ? "—"
+        : fmtUsd(fleet.cost_per_accepted_usd) + "/accepted";
       meta.innerHTML = `${esc(fmtNum(summary.eligible_runs || 0))} eligible run${summary.eligible_runs === 1 ? "" : "s"} · ` +
-        `${esc(fmtNum(summary.excluded_runs || 0))} excluded · measured live Class-A only`;
+        `${esc(fmtNum(summary.excluded_runs || 0))} excluded · ` +
+        `fleet ${esc(fmtNum(fleet.accepted_count || 0))} accepted · ` +
+        `${esc(fleetCost)} · measured live Class-A only`;
     }
     const entries = data.entries || [];
     body.innerHTML = entries.length

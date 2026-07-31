@@ -152,6 +152,9 @@ computes savings from measured live Class-A runs with matching acceptance.
 `forge leaderboard artifacts/forgebench-*.json --json-out artifacts/leaderboard.json`
 produces the ranked cost-per-accepted-task view; only measured, paired receipts
 with matching acceptance and accepted ForgeOS work can rank.
+Its JSON also carries a `fleet_rollup`: cumulative measured ForgeOS spend and
+accepted work across eligible receipts, explicitly descriptive rather than a
+cross-suite ranking.
 
 ## The layers — built and tested, NOT individually benchmarked
 

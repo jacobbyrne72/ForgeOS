@@ -87,10 +87,35 @@ def build_leaderboard(
         entry["rank"] = rank
 
     eligible_runs = sum(1 for row in runs if row["leaderboard_eligible"])
+    fleet_accepted_count = sum(
+        int(row["forgeos"]["accepted_count"])
+        for row in runs
+        if row["leaderboard_eligible"]
+    )
+    fleet_usd_micros = sum(
+        int(row["forgeos"]["usd_micros"])
+        for row in runs
+        if row["leaderboard_eligible"]
+    )
+    fleet_rollup = {
+        "eligible_runs": eligible_runs,
+        "accepted_count": fleet_accepted_count,
+        "usd_micros": fleet_usd_micros,
+        "cost_per_accepted_usd": (
+            fleet_usd_micros / fleet_accepted_count / 1_000_000
+            if fleet_accepted_count
+            else None
+        ),
+        "scope": (
+            "Descriptive cumulative total across eligible measured live Class-A "
+            "receipts; not used as a cross-suite ranking."
+        ),
+    }
     return {
         "schema": LEADERBOARD_SCHEMA,
         "entries": entries,
         "runs": runs,
+        "fleet_rollup": fleet_rollup,
         "summary": {
             "total_runs": len(runs),
             "eligible_runs": eligible_runs,
@@ -112,6 +137,13 @@ def render_markdown(board: dict[str, Any]) -> str:
         (
             f"Runs: {summary['total_runs']} | eligible: {summary['eligible_runs']} | "
             f"excluded: {summary['excluded_runs']}"
+        ),
+        (
+            f"Fleet rollup (eligible receipts): {board['fleet_rollup']['accepted_count']} "
+            f"accepted | ${board['fleet_rollup']['usd_micros'] / 1_000_000:.6f} measured "
+            f"ForgeOS spend | ${board['fleet_rollup']['cost_per_accepted_usd']:.6f} / accepted"
+            if board["fleet_rollup"]["cost_per_accepted_usd"] is not None
+            else "Fleet rollup (eligible receipts): no accepted work"
         ),
         "",
         "| Rank | Model / fleet | Suite | Runs | Accepted | Cost / accepted | Gate passes |",
