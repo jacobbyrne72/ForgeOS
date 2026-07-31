@@ -98,3 +98,4 @@
 - The `forge` executable is not installed in this shell (`Get-Command forge` returned unavailable); the source-equivalent `python -m forgeos.cli` path is verified without installing anything.
 - Vendor-neutral quota ingestion and subscription-vs-API arbitration are committed: `QuotaIngestor`, `market_resource` mappings, effective-cost routing, `Forge.ingest_quota`, `forge quota --json`, and `forge quota ingest`.
 - Keep provider calls opt-in; stage only verified owned hunks if touching the concurrently dirty files.
+- Current audit of the concurrent control-plane work: `tests/test_automemory.py` passed 13; `tests/test_hooks.py` had two transient subprocess-start timeouts under host load, then those two cases passed in isolation; MCP stdio initialize passed once. Do not claim the full MCP/combined suite green until the other runner settles.
