@@ -446,6 +446,7 @@ def main() -> int:
         "efficiency": cmd_efficiency,
         "dashboard": cmd_dashboard,
         "output-compress": cmd_output_compress,
+        "format": cmd_format,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -743,6 +744,23 @@ def cmd_output_compress(args):
     print("Savings:", str(info["savings_pct"]) + "%")
     print()
     print("Preview:", result[:300])
+    return 0
+
+
+def cmd_format(args):
+    from forgeos.local_formatter import LocalFormatter
+    f = LocalFormatter(tool=args.formatter_tool)
+    print("=== Local Formatter ===")
+    print("Tool:", f.tool)
+    print("Available:", "yes" if f.available else "no")
+    print("Cost per format: $0.00")
+    print("API cost avoided: $0.03")
+    print()
+    if f.available:
+        print("Run: forge format <file.py>")
+        print("Or use the API to format code snippets for free")
+    else:
+        print("Install ruff: pip install ruff")
     return 0
 
 

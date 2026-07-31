@@ -138,3 +138,5 @@ from .cost_forecast import CostForecast
 from .cost_efficiency import CostEfficiency
 
 from .output_compressor import compress_output, estimate_output_tokens
+
+from .local_formatter import LocalFormatter
