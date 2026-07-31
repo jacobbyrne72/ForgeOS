@@ -969,6 +969,29 @@
       </section>
     </section>
 
+    <section class="panel" id="leaderboard-panel">
+      <div class="panel-head">
+        <h2>Measured leaderboard</h2>
+        <button class="btn" id="leaderboard-refresh">refresh</button>
+      </div>
+      <p class="sub" id="leaderboard-meta">Loading local ForgeBench receipts…</p>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>Model / fleet</th>
+              <th>Suite</th>
+              <th>Accepted</th>
+              <th>Cost / accepted</th>
+              <th>Gate passes</th>
+            </tr>
+          </thead>
+          <tbody id="leaderboard-body"></tbody>
+        </table>
+      </div>
+    </section>
+
     <section class="panel" id="providers-panel">
       <div class="panel-head">
         <h2>Providers</h2>
@@ -1006,7 +1029,7 @@
 
 <script>
   const state = {
-    summary: null, queue: null, jobs: [], workers: [], activity: [],
+    summary: null, queue: null, jobs: [], workers: [], activity: [], leaderboard: null,
     selectedJobId: null, jobDetail: null, selectedRow: null,
   };
   let ws = null;
@@ -1572,6 +1595,35 @@
       .join("");
   }
 
+  function renderLeaderboard(data) {
+    if (!data) return;
+    const body = document.getElementById("leaderboard-body");
+    const meta = document.getElementById("leaderboard-meta");
+    const summary = data.summary || {};
+    const errors = data.errors || [];
+    if (errors.length) {
+      meta.innerHTML = `<span class="badge badge-failed">unavailable</span> ` +
+        `${esc(errors[0])}`;
+    } else if (!data.available) {
+      meta.innerHTML = `No local receipts yet — write ForgeBench JSON to ` +
+        `<code>${esc(data.receipt_dir || "<state_dir>/receipts")}</code>.`;
+    } else {
+      meta.innerHTML = `${esc(fmtNum(summary.eligible_runs || 0))} eligible run${summary.eligible_runs === 1 ? "" : "s"} · ` +
+        `${esc(fmtNum(summary.excluded_runs || 0))} excluded · measured live Class-A only`;
+    }
+    const entries = data.entries || [];
+    body.innerHTML = entries.length
+      ? entries.map((entry) => `<tr>
+          <td class="num">${esc(fmtNum(entry.rank))}</td>
+          <td>${esc(entry.label)}</td>
+          <td class="muted">${esc(entry.suite)}</td>
+          <td class="num">${esc(fmtNum(entry.accepted_count))}</td>
+          <td class="num">${esc(fmtUsd(entry.cost_per_accepted_usd))}</td>
+          <td class="num">${esc(fmtNum(entry.gate_passed_runs))}/${esc(fmtNum(entry.runs))}</td>
+        </tr>`).join("")
+      : `<tr class="empty-row"><td colspan="6">No eligible measured runs to rank.</td></tr>`;
+  }
+
   // Same "don't rebuild what hasn't changed" reasoning as the jobs table --
   // this rail is its own scroll region, and a full innerHTML replace resets
   // scrollTop to 0, which would yank an operator mid-read every 2 seconds.
@@ -1665,6 +1717,11 @@
     renderActivity();
   }
 
+  async function loadLeaderboard() {
+    state.leaderboard = await api("/api/leaderboard");
+    renderLeaderboard(state.leaderboard);
+  }
+
   async function loadProviders() {
     renderProviders(await api("/api/providers"));
   }
@@ -1750,6 +1807,9 @@
   document.getElementById("providers-refresh").addEventListener("click", () => {
     loadProviders().catch(showError);
   });
+  document.getElementById("leaderboard-refresh").addEventListener("click", () => {
+    loadLeaderboard().catch(showError);
+  });
 
   function syncRailHeight() {
     const rail = document.getElementById("top-rail");
@@ -1759,7 +1819,7 @@
   async function init() {
     try {
       await Promise.all([
-        loadSummary(), loadQueueStatus(), loadJobs(), loadEconomy(), loadWorkers(), loadProviders(), loadActivity(),
+        loadSummary(), loadQueueStatus(), loadJobs(), loadEconomy(), loadWorkers(), loadProviders(), loadActivity(), loadLeaderboard(),
       ]);
     } catch (e) {
       showError(e);
@@ -1776,6 +1836,7 @@
       loadEconomy();
       loadWorkers();
       loadQueueStatus();
+      loadLeaderboard();
     }, 10000);
   }
 
@@ -1807,6 +1868,7 @@
       { kind: "panel", label: "Jump to Jobs", hint: "jobs", run: () => scrollToPanel("jobs-panel") },
       { kind: "panel", label: "Jump to Economy", hint: "economy", run: () => scrollToPanel("economy-panel") },
       { kind: "panel", label: "Jump to Workers", hint: "workers", run: () => scrollToPanel("workers-panel") },
+      { kind: "panel", label: "Jump to Leaderboard", hint: "leaderboard", run: () => scrollToPanel("leaderboard-panel") },
       { kind: "panel", label: "Jump to Providers", hint: "providers", run: () => scrollToPanel("providers-panel") },
       { kind: "panel", label: "Jump to Activity", hint: "rail", run: () => scrollToPanel("activity-rail") },
       { kind: "action", label: "Open settings", hint: "⚙", run: () => { closePalette(); setDrawer(true); } },

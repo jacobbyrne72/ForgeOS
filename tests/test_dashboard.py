@@ -454,6 +454,16 @@ def test_index_html_has_balanced_tags():
     assert checker.stack == [], f"unclosed tags: {checker.stack}"
 
 
+def test_index_html_surfaces_the_measured_leaderboard_panel():
+    html = STATIC_DIR.joinpath("index.html").read_text(encoding="utf-8")
+    assert 'id="leaderboard-panel"' in html
+    assert 'id="leaderboard-body"' in html
+    assert 'id="leaderboard-refresh"' in html
+    assert 'api("/api/leaderboard")' in html
+    assert "Jump to Leaderboard" in html
+    assert "measured live Class-A only" in html
+
+
 # ===================== event feed cost is bounded by what it returns
 
 
