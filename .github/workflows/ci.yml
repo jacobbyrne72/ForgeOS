@@ -28,6 +28,23 @@ jobs:
       # slow integration tests have spent their minutes.
       - run: python -m pytest tests -q -m "not slow"
       # API-only dashboard contract: starts an isolated fixture and never
-      # needs Playwright, credentials, or a provider call on CI.
-      - run: python tools/dashboard_smoke.py --no-browser --port 8894
+      # needs Playwright, credentials, or a provider call on CI. Preserve the
+      # compact JSON/error output even when this gate fails, so a red matrix
+      # leg carries its diagnosis instead of only an exit code.
+      - name: Dashboard smoke (API-only)
+        shell: bash
+        run: |
+          python -c "from pathlib import Path; Path('artifacts').mkdir(exist_ok=True)"
+          set +e
+          python tools/dashboard_smoke.py --no-browser --port 8894 > artifacts/dashboard-smoke.json 2>&1
+          status=$?
+          python -c "from pathlib import Path; print(Path('artifacts/dashboard-smoke.json').read_text())"
+          exit $status
+      - name: Upload dashboard smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-smoke-${{ matrix.os }}-py${{ matrix.python }}
+          path: artifacts/dashboard-smoke.json
+          if-no-files-found: error
       - run: python -m pytest tests -q -m "slow"
