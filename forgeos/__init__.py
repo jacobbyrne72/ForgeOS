@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.6.1"
+__version__ = "0.6.2"
 from .compiler import CompilerError, Mission, compile_mission
 from .circuit_breaker import BreakerState, CircuitBreaker
 from .prompt_cache import CacheEntry, PromptCache
@@ -157,3 +157,5 @@ from .model_ranker import ModelRanker
 from .response_truncator import truncate_response
 
 from .batch_projection import BatchProjection
+
+from .cost_replay import CostReplayer
