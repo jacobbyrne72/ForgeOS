@@ -204,6 +204,13 @@ def _apply_turn_usage(prev: WorkerUsage, turn_usage: Any) -> WorkerUsage:
     )
 
 
+def _supports_resume_session(init: Any) -> bool:
+    """Return whether the agent advertises ACP's state-only session resume."""
+    capabilities = getattr(init, "agent_capabilities", None)
+    session_capabilities = getattr(capabilities, "session_capabilities", None)
+    return getattr(session_capabilities, "resume", None) is not None
+
+
 class _HiveClient:
     """forgeos's ACP `Client` half of the connection.
 
@@ -293,6 +300,7 @@ class _Session:
     exit_stack: contextlib.AsyncExitStack
     acp_session_id: str
     supports_load_session: bool
+    supports_resume_session: bool
     queue: "asyncio.Queue[WorkerEvent]"
     last_usage: WorkerUsage = field(default_factory=WorkerUsage)
 
@@ -361,6 +369,7 @@ class ACPAdapter(WorkerAdapter):
             client_info=acp.schema.Implementation(name="forgeos", title="forgeos", version="0.1.0"),
         )
         supports_load_session = bool(getattr(getattr(init, "agent_capabilities", None), "load_session", False))
+        supports_resume_session = _supports_resume_session(init)
 
         meta: dict[str, Any] = {"hiveTaskId": task_id}
         if model_profile:
@@ -379,6 +388,7 @@ class ACPAdapter(WorkerAdapter):
             exit_stack=stack,
             acp_session_id=acp_session_id,
             supports_load_session=supports_load_session,
+            supports_resume_session=supports_resume_session,
             queue=queue,
         )
         return acp_session_id
@@ -431,6 +441,7 @@ class ACPAdapter(WorkerAdapter):
             "model_profile": sess.model_profile,
             "acp_session_id": sess.acp_session_id,
             "supports_load_session": sess.supports_load_session,
+            "supports_resume_session": sess.supports_resume_session,
         }
 
     async def resume(self, checkpoint: dict) -> str:
@@ -452,6 +463,7 @@ class ACPAdapter(WorkerAdapter):
             client_info=acp.schema.Implementation(name="forgeos", title="forgeos", version="0.1.0"),
         )
         agent_supports_load = bool(getattr(getattr(init, "agent_capabilities", None), "load_session", False))
+        agent_supports_resume = _supports_resume_session(init)
 
         # A replacement worker resumes from canonical state, never from a
         # transcript. `session/load` is the one case where the *original*
@@ -462,6 +474,9 @@ class ACPAdapter(WorkerAdapter):
         # continuity it cannot actually provide.
         if agent_supports_load and old_acp_session_id:
             await conn.load_session(cwd=cwd, session_id=old_acp_session_id, mcp_servers=[])
+            acp_session_id = old_acp_session_id
+        elif agent_supports_resume and old_acp_session_id and callable(getattr(conn, "resume_session", None)):
+            await conn.resume_session(cwd=cwd, session_id=old_acp_session_id, mcp_servers=[])
             acp_session_id = old_acp_session_id
         else:
             meta: dict[str, Any] = {"hiveTaskId": task_id}
@@ -481,6 +496,7 @@ class ACPAdapter(WorkerAdapter):
             exit_stack=stack,
             acp_session_id=acp_session_id,
             supports_load_session=agent_supports_load,
+            supports_resume_session=agent_supports_resume,
             queue=queue,
         )
         return acp_session_id

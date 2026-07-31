@@ -8,10 +8,6 @@ MODEL failure buys exactly one rung of escalation on the next attempt.
 
 from __future__ import annotations
 
-import asyncio
-
-import pytest
-
 from forgeos.adapters import routed
 from forgeos.adapters.base import (
     EventKind,

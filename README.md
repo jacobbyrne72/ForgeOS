@@ -20,24 +20,41 @@ and per-call metrics score that as a win.
 
 Most harnesses optimise the model call. The bigger wins are around it:
 
-| Lever | Saving | Why |
-|---|---|---|
-| Don't call a model | 100% | Finding imports across 20k files is a tree-sitter query, not an LLM task |
-| Deterministic scheduling | 100% of what it replaces | Queue, retry and routing decisions in plain code cost zero tokens |
-| Byte-stable prefix caching | ~90% off cached input | Providers serve a cache hit only when the prefix is byte-identical |
-| Smaller payloads | 65–82% | Ranked context capsule instead of a repository dump |
-| Cheapest capable worker | up to 100% | A local binary or flat-rate seat should never lose work to a metered model |
-| Compact supervision | 10×+ | The manager reads a ~90-byte heartbeat, never a transcript |
+The **unit** column is not decoration. A token figure and a cost figure are
+different claims, and mixing them in one column is how a harness talks itself
+into a saving it never made — see the note below.
+
+| Lever | Saving | Unit | Why |
+|---|---|---|---|
+| Don't call a model | 100% | cost | Finding imports across 20k files is a tree-sitter query, not an LLM task |
+| Deterministic scheduling | 100% of what it replaces | cost | Queue, retry and routing decisions in plain code cost zero tokens |
+| Byte-stable prefix caching | ~90% off cached input | cost | Providers serve a cache hit only when the prefix is byte-identical |
+| Smaller payloads | 65–82% | **tokens, not cost** | Ranked context capsule instead of a repository dump |
+| Cheapest capable worker | up to 100% | cost | A local binary or flat-rate seat should never lose work to a metered model |
+| Compact supervision | 10×+ | tokens read | The manager reads a ~90-byte heartbeat, never a transcript |
 
 These multiply. A smaller payload, on a cache hit, on a free-tier model, for a
 call deterministic code decided didn't need making, isn't 89% cheaper — it never
 happened.
 
+**Why the unit matters.** A 2,908-run study of provider-billed agent traffic
+(arXiv 2607.12161) found prompt-cache traffic was ~87% of cost composition, and
+that cutting 38% of tool-output tokens *raised* billed cost by 6.8% while
+dropping task success from 27/40 to 15/40 — the removed tokens were the verbatim
+anchors the model needed to locate its edit. **Token reduction is not a cost
+proxy, and optimising for it can make a system both dearer and worse.** So the
+only headline ForgeOS reports is billed cost per accepted task; every
+token-derived figure is labelled `modelled`, never `measured`.
+
 **A note on claims:** narrow operations can genuinely improve by orders of
 magnitude when an LLM loop is replaced by a query. End-to-end, a realistic target
-is 2–10×, with receipts. ForgeOS is built to *prove* savings rather than assert
-them — `SavingsProof` marks every figure as measured, replayed or modelled, and
-a saving is only ever as strong as its weakest input.
+is 2–10×, with receipts. One measured A/B on this repo — same question, same
+model, same pricing code — came out 2.1× cheaper and 39% faster with both answers
+correct (11.1× on a cold call, narrowing to ~2× once the provider cached the
+large prompt too). That is the context lever alone; it does not exercise routing,
+retries or the merge gate. ForgeOS is built to *prove* savings rather than assert
+them — `SavingsProof` marks every figure as measured, replayed or modelled, and a
+saving is only ever as strong as its weakest input.
 
 ## Install
 

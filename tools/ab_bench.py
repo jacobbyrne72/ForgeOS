@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -243,12 +242,13 @@ def main() -> int:
     # block after the calls run for the number that actually gates a claim
     # of savings — token reduction alone can raise billed cost and lower
     # correctness at the same time (arXiv:2607.12161v2).
-    print(f"\nprompt size (context only — not a cost proxy; see HEADLINE below)")
+    print("\nprompt size (context only — not a cost proxy; see HEADLINE below)")
     print(f"  baseline  {b_tok:>7,} tokens  ({len(CANDIDATES)} whole files)")
     print(f"  forgeos      {h_tok:>7,} tokens  ({cap_stats['blocks_sent']} of "
           f"{cap_stats['blocks_found']} ranked blocks, {cap_stats['blocks_dropped']} over budget)")
     if b_tok:
-        print(f"  reduction {100 * (1 - h_tok / b_tok):>6.1f}%  (smaller prompt — not the same as cheaper or more correct)")
+        print(f"  reduction {100 * (1 - h_tok / b_tok):>6.1f}%  "
+              "(smaller prompt — not the same as cheaper or more correct)")
 
     ledger = open_ledger(":memory:")
     job_id = ledger.open_job(JobSpec(objective="a/b bench", cwd=str(root),
@@ -343,7 +343,8 @@ def main() -> int:
         print(f"\nraw $     forgeos is {saved * 100:.1f}% cheaper overall, ungated by correctness "
               f"({baseline.usd_micros / 1e6:.6f} -> {forgeos.usd_micros / 1e6:.6f})")
         if baseline.usd_micros > forgeos.usd_micros:
-            print(f"          {baseline.usd_micros / max(forgeos.usd_micros, 1):.1f}x — see HEADLINE above for the correctness-gated figure")
+            print(f"          {baseline.usd_micros / max(forgeos.usd_micros, 1):.1f}x"
+                  " — see HEADLINE above for the correctness-gated figure")
     if baseline.seconds and forgeos.seconds:
         print(f"latency   {baseline.seconds:.1f}s -> {forgeos.seconds:.1f}s "
               f"({(1 - forgeos.seconds / baseline.seconds) * 100:+.1f}%)")
