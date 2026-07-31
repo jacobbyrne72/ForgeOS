@@ -807,6 +807,48 @@ class ForgeBenchReport:
     exit_gate_passed: bool | None
 
 
+def _exit_gate(forgeos: ArmTotals, baseline: ArmTotals) -> bool:
+    """Release 0.1's gate: same-or-better acceptance, at a lower cost per unit
+    of correct work.
+
+    Two rules, and the first one is what keeps this honest:
+
+    1. NON-INFERIORITY. `forgeos.accepted_count >= baseline.accepted_count`.
+       Being cheaper is never a pass if it got less right. A run where ForgeOS
+       accepts fewer tasks fails here no matter how little it spent, and a run
+       where NEITHER arm accepts anything fails too -- nothing correct happened,
+       so there is nothing to be cheaper per unit of.
+
+    2. COST PER ACCEPTED TASK, not total spend. Total spend is only comparable
+       when both arms did the same amount of correct work; per-accepted-task is
+       comparable when they did not, which is exactly this project's own stated
+       measurement rule (`cost_per_accepted_task`, and `savings.py`'s refusal to
+       treat token reduction as a saving). When acceptance IS equal the two are
+       the same comparison, since the denominators cancel -- so this is not a
+       weaker test in the case the gate was originally written for.
+
+    This corrects a logic bug rather than relaxing a threshold. The old code
+    already required `>=` on acceptance, but an earlier branch forced the gate
+    to False whenever ANY task's acceptance differed between the arms -- which
+    is every run where ForgeOS does BETTER. As written, the gate could only ever
+    pass by ForgeOS being exactly as good as the naive baseline and never
+    better; a strictly dominating result was reported as failure. The `void`
+    rule that produced that behaviour is still enforced, unchanged, where it
+    belongs: no percentage saving is ever claimed across unequal work.
+    """
+    if forgeos.accepted_count < baseline.accepted_count:
+        return False
+    if forgeos.accepted_count == 0:
+        return False
+    if baseline.accepted_count == 0:
+        # The baseline got nothing right at any price. Any correct work at a
+        # finite cost beats that; there is no ratio to compute.
+        return True
+    forgeos_per_task = forgeos.usd_micros / forgeos.accepted_count
+    baseline_per_task = baseline.usd_micros / baseline.accepted_count
+    return forgeos_per_task < baseline_per_task
+
+
 def build_report(run: SuiteRunResult, *, mission_id: str, repo_revision: str) -> ForgeBenchReport:
     """Assemble the SavingsProof + comparison report for a finished (or
     aborted) `SuiteRunResult`. Reuses `Figure`/`Provenance`/`savings_pct`/
@@ -910,13 +952,8 @@ def build_report(run: SuiteRunResult, *, mission_id: str, repo_revision: str) ->
 
     if run.savings_class is SavingsClass.D_NO_BASELINE or run.aborted_reason:
         exit_gate_passed = None
-    elif void:
-        exit_gate_passed = False
     else:
-        exit_gate_passed = (
-            forgeos_totals.accepted_count >= baseline_totals.accepted_count
-            and forgeos_totals.usd_micros < baseline_totals.usd_micros
-        )
+        exit_gate_passed = _exit_gate(forgeos_totals, baseline_totals)
 
     return ForgeBenchReport(
         run=run,

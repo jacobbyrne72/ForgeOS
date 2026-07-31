@@ -286,3 +286,49 @@ def test_objective_terms_are_not_the_answer_key():
     terms = objective_terms(task.objective)
     assert "record_spend" not in terms
     assert "inflight" not in terms
+
+
+# ------------------------------------------------------------------ exit gate
+
+
+def _totals(accepted: int, usd_micros: int):
+    from forgeos.forgebench import ArmTotals
+
+    return ArmTotals(attempted_count=6, accepted_count=accepted, tokens_in=0,
+                     tokens_out=0, tokens_cached_in=0, usd_micros=usd_micros,
+                     seconds=0.0)
+
+
+def test_gate_fails_when_forgeos_gets_less_right_however_cheap():
+    """Non-inferiority. The gate must never be purchasable with quality."""
+    assert forgebench._exit_gate(_totals(2, 1), _totals(4, 10_000)) is False
+
+
+def test_gate_fails_when_nothing_was_accepted_by_either_arm():
+    """No correct work happened, so there is nothing to be cheaper per unit of.
+    Spending almost nothing to achieve nothing is not a pass."""
+    assert forgebench._exit_gate(_totals(0, 1), _totals(0, 10_000)) is False
+
+
+def test_gate_passes_on_equal_acceptance_at_lower_cost():
+    """The original case, unchanged: equal denominators cancel, so this is the
+    same comparison the gate always made."""
+    assert forgebench._exit_gate(_totals(4, 2_000), _totals(4, 7_000)) is True
+    assert forgebench._exit_gate(_totals(4, 7_000), _totals(4, 2_000)) is False
+
+
+def test_gate_passes_when_forgeos_is_both_better_and_cheaper():
+    """The measured result that exposed the bug: 4/6 vs 2/6 at a third of the
+    cost was being reported as FAIL because acceptance differed at all."""
+    assert forgebench._exit_gate(_totals(4, 2_179), _totals(2, 7_121)) is True
+
+
+def test_gate_fails_when_extra_acceptance_cost_more_per_task():
+    """Accepting more does not excuse spending more per accepted task -- that
+    is the whole reason the metric is per-task rather than a raw count."""
+    assert forgebench._exit_gate(_totals(3, 90_000), _totals(2, 10_000)) is False
+
+
+def test_gate_passes_when_the_baseline_got_nothing_right():
+    """No ratio exists against zero correct work; any correct work wins."""
+    assert forgebench._exit_gate(_totals(1, 5_000), _totals(0, 100)) is True
