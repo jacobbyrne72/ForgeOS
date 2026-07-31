@@ -39,12 +39,14 @@ import httpx
 from pydantic import BaseModel, Field
 
 from ..catalog import Catalog, ModelCard
+from ..core.quota import QuotaTracker
 from ..economy.avoidance import AvoidanceLog, AvoidanceMethod
 from ..economy.preflight import check, count_tokens, estimate_call
 from ..ledger import Ledger
 from ..settings import ProviderKind, Settings, default_settings
 from .dead_models import DeadModelStore
 from .health import HealthTracker
+from .signals import extract_retry_after
 
 
 def assemble_prompt(prefix: str, tail: str) -> str:
@@ -124,6 +126,17 @@ class GatewayResponse(BaseModel):
     # not every provider reports it and a missing value must not be read as
     # "completed normally".
     finish_reason: str = ""
+    # True only when a job-scoped affinity pin (see `complete`'s `affinity_key`)
+    # actually moved this transport ahead of where health/dead-model ordering
+    # would have placed it, AND this transport is the one that answered. False
+    # on a job's first call for a key (there is nothing yet to prefer), and
+    # false whenever the preferred seat was released this call (dead/cooling,
+    # quota-exhausted -- see `Gateway._affinity_preferred_transport`)
+    # even if that same transport happened to answer anyway. This is the
+    # honest signal for attributing a cache hit to affinity: it never asserts
+    # that affinity caused a saving, only that it changed which transport was
+    # tried first.
+    affinity_applied: bool = False
 
     @property
     def truncated(self) -> bool:
@@ -441,7 +454,15 @@ class HttpTransport:
             raise TransportError(f"{self.name} unreachable: {e}") from e
 
         if resp.status_code == 429:
-            retry_after = float(resp.headers.get("Retry-After", 30))
+            header_retry_after = resp.headers.get("Retry-After")
+            if header_retry_after is not None:
+                retry_after = float(header_retry_after)
+            else:
+                # No header -- some providers embed the same hint in the body
+                # instead (Google's RetryInfo, OpenAI-style "retry in Ns"
+                # text). Falls back to the flat default only when neither
+                # source has anything, never inventing a number of its own.
+                retry_after = extract_retry_after(resp.text or "") or 30.0
             raise RateLimitError(f"{self.name} rate limited", retry_after=retry_after)
         if resp.status_code >= 400:
             # The body says *why* — unknown model, no credits, bad key. A bare
@@ -640,6 +661,64 @@ def _dedup_key(request: GatewayRequest) -> str:
 
 
 # --------------------------------------------------------------------------
+# job-scoped cache affinity
+# --------------------------------------------------------------------------
+#
+# `assemble_prompt`'s prefix-then-tail split and `_content_blocks`'s
+# `cache_control` breakpoint exist to make a provider serve a call from
+# cache instead of paying full price for it -- but a provider only ever
+# caches a prefix on the specific seat (transport/account) that saw it
+# first. Every call in this module resolves its transport independently, so
+# a multi-turn job's later calls can land on a seat that never held the
+# warm prefix and the cache investment above goes unused. This section pins
+# a job's calls to the seat its first successful call actually used, as a
+# PREFERENCE only -- it never adds a candidate that health/dead-model
+# filtering already excluded (see `_call_transports`'s comment at the
+# promotion site), and the release rules below drop the preference outright
+# rather than force a call onto a seat that has stopped being a good idea.
+
+# How long an affinity pin stays eligible to be preferred. Bounded by the
+# longest cache TTL any provider this codebase models actually offers --
+# Anthropic's opt-in extended TTL, `extended_ttl_seconds=3600` in
+# `PROVIDER_CACHE_RULES` (forgeos/prompts/prefix.py). Past that, the warm
+# prefix the pin exists to protect is provably no longer cached anywhere,
+# so continuing to prefer that seat would only be withholding a possibly
+# cheaper or healthier candidate from the job for a discount that can no
+# longer land.
+AFFINITY_TTL_SECONDS = 3600.0
+
+# A pin should not consume the final fraction of a job's budget merely to keep
+# a warm seat. The baseline is reconstructed from the ledger at decision time.
+AFFINITY_MIN_HEADROOM_PCT = 0.15
+
+# Bounds the affinity map's memory the same way `_MAX_INFLIGHT` bounds the
+# dedup map above: a long-lived daemon must not grow this map without limit
+# just because many distinct jobs have passed through it. `_affinity_record`
+# re-inserts an existing key rather than updating it in place, which moves
+# it to the end of the dict's iteration order on every touch -- so eviction
+# below (oldest-first) always drops the least-recently-*used* pin, never an
+# actively-running job's, even though the job that created it may be long
+# finished by the time it is evicted for real inactivity.
+_MAX_AFFINITY_ENTRIES = 1000
+
+
+class _AffinityPin:
+    """The (transport, model) pair that last answered for one affinity key.
+
+    Not a pydantic model: purely in-process, mutable scheduling state, same
+    convention as `_InFlightCall` above -- nothing here is ever serialized
+    or crosses a process boundary.
+    """
+
+    __slots__ = ("transport_name", "model_ref", "recorded_at")
+
+    def __init__(self, transport_name: str, model_ref: str, recorded_at: float) -> None:
+        self.transport_name = transport_name
+        self.model_ref = model_ref
+        self.recorded_at = recorded_at
+
+
+# --------------------------------------------------------------------------
 # gateway
 # --------------------------------------------------------------------------
 
@@ -693,6 +772,15 @@ class Gateway:
         self._dedup_wait_timeout = dedup_wait_timeout
         self._inflight: dict[str, _InFlightCall] = {}
         self._inflight_lock = threading.Lock()
+        # Job-scoped seat pins for cache affinity (see the module section
+        # above `class _AffinityPin`). Keyed by whatever `affinity_key` a
+        # caller passes to `complete` -- typically its own `job_id`, but
+        # deliberately not assumed to be one, since a caller may want several
+        # independent affinity lineages within one job or to share one across
+        # several. Bounded and least-recently-used-evicted the same way
+        # `_inflight` is bounded, for the same reason.
+        self._affinity: dict[str, _AffinityPin] = {}
+        self._affinity_lock = threading.Lock()
 
     def resolve_model_refs(
         self,
@@ -752,7 +840,21 @@ class Gateway:
         task_id: str | None,
         worker_id: str,
         remaining_micros: int,
+        affinity_key: str | None = None,
+        quota: QuotaTracker | None = None,
     ) -> GatewayResponse:
+        """See the module docstring for invariants (1)-(4).
+
+        `affinity_key` is opt-in, default `None` -- omitting it makes this
+        call behave exactly as it did before cache affinity existed. When
+        given (typically the caller's own `job_id`), the transport that most
+        recently answered successfully for that key is PREFERRED, not
+        required, for this call: see the "job-scoped cache affinity" module
+        section above `class _AffinityPin` for what preserves the pin and
+        what releases it. `quota`, also optional, feeds one of those release
+        rules (an exhausted provider quota drops the pin) and is otherwise
+        inert -- omitting it just means that one release rule never fires.
+        """
         card = self._catalog.get(request.model_ref)
         if card is None:
             raise LookupError(f"unknown model_ref: {request.model_ref!r} (not in catalog)")
@@ -773,11 +875,15 @@ class Gateway:
         if not request.dedup:
             return self._call_and_record(
                 card, prompt, request,
-                job_id=job_id, task_id=task_id, worker_id=worker_id, estimate=estimate,
+                job_id=job_id, task_id=task_id, worker_id=worker_id,
+                remaining_micros=remaining_micros, estimate=estimate,
+                affinity_key=affinity_key, quota=quota,
             )
         return self._complete_deduped(
             card, prompt, request,
-            job_id=job_id, task_id=task_id, worker_id=worker_id, estimate=estimate,
+            job_id=job_id, task_id=task_id, worker_id=worker_id,
+            remaining_micros=remaining_micros, estimate=estimate,
+            affinity_key=affinity_key, quota=quota,
         )
 
     # ---------------------------------------------------------------- internals
@@ -791,7 +897,10 @@ class Gateway:
         job_id: str,
         task_id: str | None,
         worker_id: str,
+        remaining_micros: int,
         estimate,
+        affinity_key: str | None = None,
+        quota: QuotaTracker | None = None,
     ) -> GatewayResponse:
         """Steps (3) and (4): make the call, then record before returning.
 
@@ -804,8 +913,14 @@ class Gateway:
         ledger, which is the one thing invariant (4) exists to prevent.
         """
         try:
-            raw, provider_used = self._call_transports(card, prompt, request)
-            response = self._to_response(card, raw, provider_used, prompt)
+            raw, provider_used, affinity_applied = self._call_transports(
+                card, prompt, request,
+                job_id=job_id, remaining_micros=remaining_micros,
+                affinity_key=affinity_key, quota=quota,
+            )
+            response = self._to_response(
+                card, raw, provider_used, prompt, affinity_applied=affinity_applied
+            )
         except Exception:
             # The call was attempted even though it produced no usable result.
             # That still cost something the governor must be able to see.
@@ -842,7 +957,10 @@ class Gateway:
         job_id: str,
         task_id: str | None,
         worker_id: str,
+        remaining_micros: int,
         estimate,
+        affinity_key: str | None = None,
+        quota: QuotaTracker | None = None,
     ) -> GatewayResponse:
         """Coalesce concurrent identical requests into one `_call_and_record`.
 
@@ -882,13 +1000,17 @@ class Gateway:
             # independent attempt so this request is not silently lost.
             return self._call_and_record(
                 card, prompt, request,
-                job_id=job_id, task_id=task_id, worker_id=worker_id, estimate=estimate,
+                job_id=job_id, task_id=task_id, worker_id=worker_id,
+                remaining_micros=remaining_micros, estimate=estimate,
+                affinity_key=affinity_key, quota=quota,
             )
 
         try:
             response = self._call_and_record(
                 card, prompt, request,
-                job_id=job_id, task_id=task_id, worker_id=worker_id, estimate=estimate,
+                job_id=job_id, task_id=task_id, worker_id=worker_id,
+                remaining_micros=remaining_micros, estimate=estimate,
+                affinity_key=affinity_key, quota=quota,
             )
         except Exception as e:
             leader_call.error = e
@@ -925,15 +1047,109 @@ class Gateway:
             task_id=task_id,
         )
 
+    def _affinity_preferred_transport(
+        self,
+        affinity_key: str | None,
+        card: ModelCard,
+        *,
+        job_id: str,
+        remaining_micros: int,
+        quota: QuotaTracker | None,
+        now: float,
+    ) -> str | None:
+        """The transport a job's affinity pin currently prefers, or `None`.
+
+        `None` is the answer for every release case at once -- no key was
+        given, no pin exists yet, the pin expired (`AFFINITY_TTL_SECONDS`),
+        it names a different `model_ref` than this call, the pinned model's
+        provider quota is exhausted, or the job's remaining budget headroom
+        has fallen under `AFFINITY_MIN_HEADROOM_PCT`. This method only ever
+        narrows toward "prefer nothing" -- it never manufactures a candidate,
+        so the caller (`_call_transports`) still has to confirm the name
+        returned is actually a legal one (present, not dead, not health-
+        excluded) before treating it as a preference.
+
+        Headroom is reconstructed from the ledger rather than requiring the
+        caller to track a job's original budget separately: `remaining_micros`
+        plus what the job has already spent (`Ledger.job_spend_micros`) is
+        the total, and `remaining_micros / total` is the fraction left. A
+        job with nothing spent and nothing remaining has no ratio to compute
+        -- treated as full headroom (1.0) rather than dividing by zero, since
+        there is no evidence here that the job is actually running low.
+        """
+        if not affinity_key:
+            return None
+        with self._affinity_lock:
+            pin = self._affinity.get(affinity_key)
+        if pin is None:
+            return None
+        if now - pin.recorded_at > AFFINITY_TTL_SECONDS:
+            with self._affinity_lock:
+                self._affinity.pop(affinity_key, None)
+            return None
+        if pin.model_ref != card.ref:
+            with self._affinity_lock:
+                self._affinity.pop(affinity_key, None)
+            return None
+        if quota is not None:
+            state = (
+                quota.state(card.provider, model=card.model_id)
+                or quota.state(card.provider, model=card.ref)
+                or quota.state(card.provider)
+            )
+            if state is not None and not state.available(now):
+                with self._affinity_lock:
+                    self._affinity.pop(affinity_key, None)
+                return None
+        spent = self._ledger.job_spend_micros(job_id)
+        total = spent + remaining_micros
+        headroom = (remaining_micros / total) if total > 0 else 1.0
+        if headroom < AFFINITY_MIN_HEADROOM_PCT:
+            return None
+        return pin.transport_name
+
+    def _affinity_record(
+        self, affinity_key: str | None, transport_name: str, model_ref: str, now: float
+    ) -> None:
+        """Record (or refresh) the warm seat for a job's affinity key.
+
+        A no-op when no key was given -- the common case, since affinity is
+        opt-in. Re-inserts rather than updates an existing key so the dict's
+        iteration order tracks recency of use, which is what the bounded
+        eviction in `_MAX_AFFINITY_ENTRIES`'s comment above relies on.
+        """
+        if not affinity_key:
+            return
+        with self._affinity_lock:
+            self._affinity.pop(affinity_key, None)
+            if len(self._affinity) >= _MAX_AFFINITY_ENTRIES:
+                oldest_key = next(iter(self._affinity), None)
+                if oldest_key is not None:
+                    del self._affinity[oldest_key]
+            self._affinity[affinity_key] = _AffinityPin(transport_name, model_ref, now)
+
     def _call_transports(
-        self, card: ModelCard, prompt: str, request: GatewayRequest
-    ) -> tuple[RawCallResult, str]:
+        self,
+        card: ModelCard,
+        prompt: str,
+        request: GatewayRequest,
+        *,
+        job_id: str,
+        remaining_micros: int,
+        affinity_key: str | None = None,
+        quota: QuotaTracker | None = None,
+    ) -> tuple[RawCallResult, str, bool]:
         """Try transports in health-filtered order. A rate-limited transport
         is skipped without being invoked at all — that is what keeps a 429
         from turning into a retry storm. A transport remembered dead for this
         exact model_ref (see `forgeos.gateway.dead_models`) is skipped the same
         way, for the same reason: a retired free-tier slug should not cost a
         network round trip to rediscover on every call.
+
+        Returns the raw result, which transport answered, and whether an
+        affinity pin (see the "job-scoped cache affinity" module section)
+        is what put that transport first -- the third element of the tuple
+        `_to_response` forwards onto `GatewayResponse.affinity_applied`.
         """
         # Only transports that can actually answer for this model's provider. A
         # transport bound to one vendor must never be handed another vendor's
@@ -992,6 +1208,26 @@ class Gateway:
                 probing.add(name)
                 probe_slot_used = True
             # else: another caller already owns this HALF_OPEN trial.
+
+        # Cache affinity: prefer the seat this job's key last answered from,
+        # but only by REORDERING `candidates` -- never by adding one back.
+        # Everything above this line (health, dead-model, HALF_OPEN gating)
+        # has already decided which transports are legal candidates at all;
+        # affinity is strictly downstream of that and can only move a
+        # transport already on the list, never resurrect one it excluded.
+        # `affinity_promoted` stays the name only when the pin actually
+        # changed the order -- a pin that already matches `candidates[0]`
+        # (the common steady-state case once a job has warmed up) changed
+        # nothing, so it must not be reported as having applied.
+        affinity_promoted: str | None = None
+        preferred = self._affinity_preferred_transport(
+            affinity_key, card,
+            job_id=job_id, remaining_micros=remaining_micros, quota=quota, now=now,
+        )
+        if preferred is not None and preferred in candidates and candidates[0] != preferred:
+            candidates.remove(preferred)
+            candidates.insert(0, preferred)
+            affinity_promoted = preferred
 
         if not candidates and ordered:
             raise ModelUnavailableError(
@@ -1076,7 +1312,13 @@ class Gateway:
                 self._dead_models.report_probe(name, card.ref, True, now)
             self._health.record_success(name, latency_ms=(time.monotonic() - start) * 1000)
             self._health.record_saturation(name, raw.rate_limit_saturation)
-            return raw, name
+            # Every success refreshes the pin, not just the first -- if a
+            # release rule dropped the preference this call and a different
+            # transport won, that transport is now the one actually holding
+            # this job's warm prefix, so it (not the old pin) is what a later
+            # call in this job should prefer next.
+            self._affinity_record(affinity_key, name, card.ref, now)
+            return raw, name, (affinity_promoted is not None and name == affinity_promoted)
 
         if last_err is not None:
             detail = " | ".join(errors)
@@ -1084,7 +1326,13 @@ class Gateway:
         raise TransportError(f"no healthy transport available for {card.ref}")
 
     def _to_response(
-        self, card: ModelCard, raw: RawCallResult, provider_used: str, prompt: str
+        self,
+        card: ModelCard,
+        raw: RawCallResult,
+        provider_used: str,
+        prompt: str,
+        *,
+        affinity_applied: bool = False,
     ) -> GatewayResponse:
         exact_usage = raw.tokens_in is not None and raw.tokens_out is not None
 
@@ -1117,6 +1365,7 @@ class Gateway:
             exact_usage=exact_usage,
             cache_hit=tokens_cached_in > 0,
             finish_reason=raw.finish_reason,
+            affinity_applied=affinity_applied,
         )
 
 

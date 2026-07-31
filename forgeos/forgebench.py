@@ -587,6 +587,7 @@ class GatewayExecutor:
             resp = self._gateway.complete(
                 req, job_id=self._job_id, task_id=task.id, worker_id=f"forgebench.{arm.value}",
                 remaining_micros=self._remaining_micros_fn(),
+                affinity_key=self._job_id,
             )
         except CallRefused as e:
             raise BudgetExhausted(f"{task.id}/{arm.value}: {e}") from e

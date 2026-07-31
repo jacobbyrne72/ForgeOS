@@ -240,6 +240,7 @@ class GatewayWorkerAdapter(WorkerAdapter):
                     task_id=sess.task_id,
                     worker_id=self._worker_id,
                     remaining_micros=self._remaining(),
+                    affinity_key=self._job_id,
                 )
             except ModelUnavailableError as exc:
                 # A retired free slug is a property of this model, not of the
