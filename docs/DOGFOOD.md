@@ -15,6 +15,14 @@ the same hour. This is the receipts culture applied to ForgeOS itself.
 | 4 | Refused: no tests (security now clean) | `_looks_like_pytest` demanded pytest's `=====` ruler; a bare "3 passed in 0.52s" never parsed | Bare-summary grammar (count clauses + timing), prose still never matches |
 | 5–6 | Refused: no tests | The worker **couldn't run pytest at all**: headless permission gate blocked Bash, and the worker refused to invent a summary — "No summary line exists to quote" | Scoped project allowlist for exactly the acceptance command |
 | 7 | Refused: no tests | The operator's own token-saver hook rewrote pytest *inside the worker* and replaced the summary with "Pytest: 5 passed" — no timing, unparseable; the worker proved counts via `--junitxml` and reported the interference honestly | Wrapped-summary grammar (`pytest:`-prefixed counts) |
+| 10 | **ACCEPTED — merged** | The full loop held: routed seat, machine-verified counts through the wrapper, independent review, $0.0030 billed | One warning left: reviewer and implementer shared a provider family |
+| 16 | **ACCEPTED — merged, zero warnings** | Cross-family review (deepseek reviewing anthropic's work, picked automatically by the router's new family preference) + acceptance-derived per-task permissions | The clean receipt: `merge: [] warn: []` |
+
+Between runs, crash-killed processes left orphaned path leases that
+correctly deferred later jobs until their TTL reaped them — the safety
+mechanism working, at the cost of wall-clock. Owner-liveness on leases
+(reap instantly when the holder is provably dead) is the next measured
+improvement this log demands.
 
 Also found along the way, by the same method: the worktree merge commit
 relied on the operator's git identity (fails on every identity-less
