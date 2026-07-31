@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 from .compiler import CompilerError, Mission, compile_mission
 from .circuit_breaker import BreakerState, CircuitBreaker
 from .prompt_cache import CacheEntry, PromptCache
