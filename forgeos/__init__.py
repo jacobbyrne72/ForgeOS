@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.2.0"
+__version__ = "0.4.1"
 from .compiler import CompilerError, Mission, compile_mission
 from .circuit_breaker import BreakerState, CircuitBreaker
 from .prompt_cache import CacheEntry, PromptCache
@@ -92,3 +92,6 @@ __all__ = [
     "AutoOptimizer",
     "AutoOptimizeResult",
 ]
+
+from .adaptive_batch import AdaptiveBatch
+from .smart_batch import SmartBatchPredictor
