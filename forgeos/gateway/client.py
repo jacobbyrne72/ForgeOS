@@ -292,6 +292,7 @@ class HttpTransport:
         max_output_tokens: int,
         reasoning_effort: str,
         tools_schema: list | dict | None,
+        prompt_prefix: str = "",
     ) -> RawCallResult:
         headers = {"Content-Type": "application/json"}
         if self._api_key_env:
@@ -302,7 +303,10 @@ class HttpTransport:
 
         payload: dict = {
             "model": model_id,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": _content_blocks(
+                prompt, prompt_prefix,
+                mark_cache=self.supports_cache_control,
+            )}],
             "max_tokens": max_output_tokens,
         }
         if reasoning_effort and reasoning_effort != "none":
