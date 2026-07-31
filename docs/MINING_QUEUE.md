@@ -89,6 +89,25 @@ justified" is done.
 | 67 | `SillyTavern/SillyTavern` | | queued |
 | 68 | `onyx-dot-app/onyx` | | queued |
 | 69 | `iOfficeAI/AionUi` | "bingo" — 24/7 cowork UI | queued |
+| 70 | `labring/FastGPT` | | queued |
+| 71 | `e2b-dev/awesome-ai-agents` | index | queued |
+| 72 | `Jakedismo/codegraph-rust` | | queued |
+| 73 | `GlitterKill/sdl-mcp` | | queued |
+| 74 | `affaan-m/ECC` | | queued |
+| 75 | `n8n-io/n8n` | ranked #8 by tree triage | queued |
+| 76 | `multica-ai/andrej-karpathy-skills` | already an overlay in global CLAUDE.md | queued |
+| 77 | `garrytan/gstack` | | queued |
+| 78 | `Graphify-Labs/graphify` | | queued |
+| 79 | `zed-industries/zed` | | queued |
+| 80 | `earendil-works/pi` | | queued |
+| 81 | `Egonex-AI/Understand-Anything` | "bingo" — already the codebase-map tool per global CLAUDE.md | queued |
+| 82 | `cline/cline` | | queued |
+| 83 | `shanraisshan/claude-code-best-practice` | "gold" | queued |
+| 84 | `upstash/context7` | live docs lookup — DEPENDENCY candidate | queued |
+| 85 | `astral-sh/ruff` | already a dev dependency | SKIP-as-port, in use |
+| 86 | `tmux/tmux` | runtime for cli_team; not a port | SKIP-as-port, in use |
+| 87 | `Alishahryar1/free-claude-code` | **NOT on disk.** Name implies subscription-seat routing — read before any port; if it presents another product's first-party OAuth client id, that is client impersonation and ForgeOS will not ship it (see note on #9) | queued, read-first |
+| 88 | `DeusData/codebase-memory-mcp` | already an MCP in use per global CLAUDE.md | queued |
 
 ## Use directly vs port
 
