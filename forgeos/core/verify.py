@@ -38,6 +38,12 @@ reports a verdict without the evidence behind it is indistinguishable from a gue
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # annotations only
+    from .effort import Difficulty
+    from .router import Tier
+
 import json
 import subprocess
 from enum import Enum, IntEnum
@@ -455,6 +461,11 @@ class MergeGate:
         implementer_family: str = "",
         files_touched: list[str] | None = None,
         tamper_reviewed: bool = False,
+        reviewer_tier: "Tier | None" = None,
+        implementer_tier: "Tier | None" = None,
+        difficulty: "Difficulty | None" = None,
+        implementer_win_rate: float | None = None,
+        capabilities: frozenset[str] | set[str] | None = None,
     ) -> MergeVerdict:
         reasons: list[str] = []
         warnings: list[str] = []
@@ -527,6 +538,34 @@ class MergeGate:
                     f"reviewer id {reviewer_worker!r} is derived from implementer "
                     f"{implementer_worker!r} — that is the same worker relabelled"
                 )
+
+        # Tier. The checks above ask WHO reviewed; this asks whether they COULD
+        # have. A different worker at a weaker tier passes every test above and
+        # carries no information: a model that could not have written the change
+        # is in no position to find what is wrong with it, and "two workers
+        # agreed" reads in a receipt exactly like real corroboration.
+        #
+        # Optional by design -- a caller that does not know its tiers gets the
+        # previous behaviour rather than a spurious block. See
+        # `core/review_policy.py` for why escalation is selective: reviewing is
+        # cheap next to implementing (the reviewer needs the diff, not the repo),
+        # but spending the scarcest tier on every task re-buys what the
+        # mechanical gates above already did for nothing.
+        if reviewer_tier is not None and implementer_tier is not None:
+            from .review_policy import required_review, review_is_adequate
+
+            requirement = required_review(
+                implementer_tier=implementer_tier,
+                difficulty=difficulty or Difficulty.STANDARD,
+                win_rate=implementer_win_rate,
+                gate_warnings=len(warnings),
+                capabilities=capabilities,
+            )
+            _ok, tier_blocking, _tier_warnings = review_is_adequate(
+                requirement, reviewer_tier=reviewer_tier,
+                implementer_tier=implementer_tier,
+            )
+            reasons.extend(tier_blocking)
 
         # Different worker is not the same as different blind spot. LLM evaluators
         # recognize and favor their own generations (Panickssery et al., NeurIPS
