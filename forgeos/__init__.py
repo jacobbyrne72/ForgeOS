@@ -115,6 +115,8 @@ __all__ = [
     "estimate_output_tokens",
     "LocalFormatter",
     "CachePurge",
+    "shrink_prompt",
+    "estimate_prompt_tokens",
 ]
 
 from .adaptive_batch import AdaptiveBatch
@@ -146,3 +148,5 @@ from .local_formatter import LocalFormatter
 from .cache_purge import CachePurge
 
 from .prompt_shrinker import shrink_prompt, estimate_prompt_tokens
+
+from .model_ranker import ModelRanker

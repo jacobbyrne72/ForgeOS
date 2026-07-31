@@ -414,6 +414,9 @@ def main() -> int:
     sub.add_parser("dashboard", help="Show the ForgeOS cost dashboard")
     p_purge = sub.add_parser("purge", help="Purge expensive prompt-cache entries")
     p_shrink = sub.add_parser("shrink", help="Shrink prompts to save tokens")
+    p_rank = sub.add_parser("model-rank", help="Rank models by cost-effectiveness")
+    p_rank.add_argument("--complexity", type=str, default="simple", dest="complexity")
+    p_rank.add_argument("--max-cost", type=float, default=0.01, dest="max_cost")
     p_shrink.add_argument("--tokens", type=int, default=2048, dest="max_tokens")
     p_purge.add_argument("--cost-limit", type=float, default=0.01, dest="cost_limit")
     p_format = sub.add_parser("format", help="Show local formatting capability")
@@ -455,6 +458,7 @@ def main() -> int:
         "format": cmd_format,
         "purge": cmd_purge,
         "shrink": cmd_shrink,
+        "model-rank": cmd_model_rank,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -752,6 +756,25 @@ def cmd_output_compress(args):
     print("Savings:", str(info["savings_pct"]) + "%")
     print()
     print("Preview:", result[:300])
+    return 0
+
+
+def cmd_model_rank(args):
+    from forgeos.model_ranker import ModelRanker
+    ranker = ModelRanker()
+    print("=== Model Ranker ===")
+    print()
+    print("Top 5 models by quality-per-dollar:")
+    for m in ranker.rank()[:5]:
+                print("  " + m["model"] + " (" + m["provider"] + "): $" + str(m["cost_per_1k_tokens"]) + "/1k tokens, quality=" + str(m["quality_score"]) + ", value=" + str(m["quality_per_dollar"]))
+    print()
+    best = ranker.recommend(max_cost=args.max_cost)
+    if best:
+        print("Recommendation:", best["recommendation"])
+        print("Reason:", best["reason"])
+        print("Est. cost/task: ${:.6f}".format(best["estimated_cost_per_task"]))
+    else:
+        print("No model found within budget")
     return 0
 
 
