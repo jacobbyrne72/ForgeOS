@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.5.4"
+__version__ = "0.5.5"
 from .compiler import CompilerError, Mission, compile_mission
 from .circuit_breaker import BreakerState, CircuitBreaker
 from .prompt_cache import CacheEntry, PromptCache
@@ -103,6 +103,14 @@ __all__ = [
     "CostRouter",
     "Route",
     "CostTracker",
+    "optimize_prompt",
+    "estimate_tokens",
+    "LocalExecutor",
+    "CostRetry",
+    "CostScheduler",
+    "CostGuard",
+    "CostForecast",
+    "CostEfficiency",
 ]
 
 from .adaptive_batch import AdaptiveBatch
