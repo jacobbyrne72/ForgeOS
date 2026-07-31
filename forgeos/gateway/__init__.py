@@ -22,6 +22,7 @@ from .client import (
 )
 from .dead_models import DeadModel, DeadModelStore
 from .health import HealthTracker, ProviderHealth
+from .keyring import KeyRecord, KeyRing, KeyState
 
 __all__ = [
     "DeadModel",
@@ -31,6 +32,9 @@ __all__ = [
     "GatewayResponse",
     "HealthTracker",
     "HttpTransport",
+    "KeyRecord",
+    "KeyRing",
+    "KeyState",
     "LiteLLMTransport",
     "ModelUnavailableError",
     "ProviderHealth",
