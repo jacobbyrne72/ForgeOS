@@ -13,7 +13,6 @@ one product whose stated claim is that a dollar figure carries its provenance.
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 
@@ -106,3 +105,50 @@ def test_the_default_is_unchanged_so_no_budget_check_silently_moves(ledger):
     _spend(ledger, job, kind="call", micros=100)
     _spend(ledger, job, kind="estimate", micros=900)
     assert ledger.job_spend_micros(job) == 1_000
+
+
+# ============ repeat-work is scoped to the repo it was settled in
+
+
+def _task_in(ledger, cwd, subject, paths):
+    """Settle one task in a job rooted at `cwd`, return its fingerprint."""
+    from forgeos.contracts import Scope, TaskSpec, TaskState
+    from forgeos.economy.preflight import task_fingerprint
+
+    job = ledger.open_job(JobSpec(objective="o", cwd=cwd, budget=Budget(max_usd=5.0)))
+    spec = TaskSpec(job_id=job, subject=subject, description="d",
+                    scope=Scope(paths=paths), capabilities=["edit"],
+                    acceptance=["it works"], budget=Budget(max_usd=1.0))
+    ledger.add_task(spec)
+    ledger.set_task_state(spec.id, TaskState.DONE)
+    return job, task_fingerprint(spec)
+
+
+def test_a_prior_task_in_another_repo_does_not_refuse_new_work(ledger):
+    """THE finding. A fingerprint hashes subject + scope + capabilities +
+    acceptance; `TaskSpec` has no repo. "Add retry logic to the client" over
+    `src/client.py` is plausible in any number of checkouts, and refusing on a
+    cross-repo match shows a receipt for work never done to this code."""
+    from forgeos.economy.preflight import matching_tasks
+
+    _job_a, fp = _task_in(ledger, "/repo/alpha", "add retry logic", ["src/client.py"])
+
+    assert matching_tasks(ledger, fp), "sanity: the cross-repo scan still sees it"
+    assert matching_tasks(ledger, fp, repo="/repo/beta") == [], (
+        "a task settled in another repo was treated as prior work here"
+    )
+
+
+def test_a_prior_task_in_the_same_repo_is_still_found(ledger):
+    """Scoping must not disable the check where it genuinely applies."""
+    from forgeos.economy.preflight import matching_tasks
+
+    _job, fp = _task_in(ledger, "/repo/alpha", "add retry logic", ["src/client.py"])
+    assert len(matching_tasks(ledger, fp, repo="/repo/alpha")) == 1
+
+
+def test_recent_tasks_for_repo_only_returns_that_repos_tasks(ledger):
+    _task_in(ledger, "/repo/alpha", "one", ["a.py"])
+    _task_in(ledger, "/repo/beta", "two", ["b.py"])
+    alpha = ledger.recent_tasks_for_repo("/repo/alpha")
+    assert len(alpha) == 1 and alpha[0]["subject"] == "one"
