@@ -258,7 +258,8 @@ python -m pytest tests
 # CLI:
 forge doctor          # check readiness
 forge compile "Add X"  # dry-run a mission
-forge run "Add X"     # compile and execute
+forge run "Add X" --budget-usd 0.50  # compile and execute under a hard cap
+forge run "Add X" --dry-run          # inspect the graph without spending
 forge init            # bootstrap a new repo
 forge report <job-id> # cost breakdown
 ```

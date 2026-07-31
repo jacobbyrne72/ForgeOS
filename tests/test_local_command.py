@@ -18,8 +18,9 @@ def test_local_command_adapter_delivers_prompt_and_cleans_up():
     session_id = _run(adapter.start("task-1", ".", "local"))
     events = _run(_collect(adapter.send(session_id, "hello")))
 
-    assert [event.kind.value for event in events] == ["message", "done"]
-    assert events[0].text == "HELLO"
+    assert [event.kind.value for event in events] == ["tool_call", "tool_update", "done"]
+    assert events[0].tool_kind == "execute"
+    assert events[1].text == "HELLO"
     _run(adapter.close(session_id))
 
 

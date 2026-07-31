@@ -145,6 +145,54 @@ def test_run_defines_the_budget_flag_it_reads():
         )
 
 
+def test_run_delegates_to_guarded_team_runner(monkeypatch):
+    """The public ``run`` verb must execute the same budget/review path as
+    ``python -m forgeos team`` rather than merely printing a projection."""
+    from forgeos import __main__ as runtime_cli
+
+    captured = {}
+
+    def fake_run_team(objective, **kwargs):
+        captured["objective"] = objective
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(runtime_cli, "_run_team", fake_run_team)
+    assert cli.main([
+        "run", "add a retry helper", "--cwd", "repo", "--budget-usd", "2.5",
+        "--state-dir", "state", "--dry-run",
+    ]) == 0
+    assert captured == {
+        "objective": "add a retry helper",
+        "cwd": "repo",
+        "budget_usd": 2.5,
+        "state_dir": "state",
+        "dry_run": True,
+    }
+
+
+def test_fleet_is_safe_on_windows_cp1252_console(monkeypatch, capsys):
+    """The fleet screenshot must not crash on the default Windows console."""
+    from types import SimpleNamespace
+
+    from forgeos.settings import AuthMode, ProviderKind, Settings
+
+    fake = SimpleNamespace(providers={
+        "ollama": SimpleNamespace(
+            name="ollama", kind=ProviderKind.LOCAL, auth=AuthMode.NONE, enabled=True,
+        ),
+        "claude": SimpleNamespace(
+            name="claude", kind=ProviderKind.CLI, auth=AuthMode.SUBSCRIPTION, enabled=True,
+        ),
+    })
+    monkeypatch.setattr(Settings, "load", classmethod(lambda cls: fake))
+
+    assert cli.main(["fleet"]) == 0
+    output = capsys.readouterr().out
+    output.encode("cp1252")
+    assert "->" in output
+
+
 def test_unknown_command_fails_loudly():
     """An unhandled command must not exit 0. Silence reading as success is the
     whole bug."""

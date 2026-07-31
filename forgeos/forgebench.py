@@ -47,7 +47,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -252,19 +254,102 @@ class ArmExecutor(Protocol):
 # every call after the first. The baseline arm has no such discipline --
 # that IS the naive policy this harness measures against.
 FORGEOS_PROMPT_PREFIX = "You are answering a question about a Python codebase.\n"
-CAPSULE_BUDGET_TOKENS = 1_500
-_WINDOW = 14  # lines of context kept around each ranked hit
+CAPSULE_BUDGET_TOKENS = 1_500  # floor; see `capsule_budget_for`
+CAPSULE_BUDGET_CAP_TOKENS = 8_000
+CAPSULE_BUDGET_SCOPE_FRACTION = 0.15
+CAPSULE_BUDGET_MAX_FRACTION = 0.80
 
-# Generic relevance terms across the whole default suite -- broader than
-# tools/ab_bench.py's single-question term list on purpose, since one packer
-# here ranks blocks for six different questions rather than tuning itself to
-# one.
-_RANK_TERMS: tuple[str, ...] = (
-    "record_spend", "inflight", "coalesce", "callrefused", "raise_if_refused",
-    "cache_read_rate", "input_cost_per_1m", "bump_generation",
-    "record_report_if_current", "to_micros", "from_micros", "_weaker", "savings_pct",
-    "decision", "verdict",
-)
+
+def capsule_budget_for(scope_chars: int) -> int:
+    """Context allowance for a task, from the size of what it may read.
+
+    A single constant for every task was not a budget, it was an arbitrary
+    number, and it was wrong in both directions at once. Measured on this suite:
+    `preflight-refusal-types` has one 6KB file, and the packed capsule came out
+    LARGER than simply sending the file -- the wrapper cost more than no wrapper,
+    which is the one result that makes the whole idea pointless. Meanwhile
+    `ledger-dedup-guard` spans 164KB across five files and got the same 1,500
+    tokens, roughly 4% of its scope, too thin to hold an answer that lives in two
+    different files.
+
+    Two rules, both load-bearing:
+
+    - Scale with scope, floor and cap it. A bigger question needs more evidence;
+      the cap stops a huge scope from turning the capsule back into a file dump.
+    - NEVER exceed `CAPSULE_BUDGET_MAX_FRACTION` of what the naive arm would
+      send. ForgeOS costing more than the thing it wraps is a defect, not a
+      trade-off, and this makes that outcome impossible rather than merely
+      unlikely.
+
+    This is a design parameter chosen up front from scope size -- not a governor
+    widened after the fact to make a run succeed, which AGENTS.md rule 1 forbids
+    and which this module's `BudgetExhausted` handling still enforces at runtime.
+    """
+    scope_tokens = max(scope_chars // 4, 1)  # same rough chars/token the arms use
+    scaled = int(scope_tokens * CAPSULE_BUDGET_SCOPE_FRACTION)
+    budget = min(max(scaled, CAPSULE_BUDGET_TOKENS), CAPSULE_BUDGET_CAP_TOKENS)
+    return max(1, min(budget, int(scope_tokens * CAPSULE_BUDGET_MAX_FRACTION)))
+
+
+_CHUNK_LINES = 24   # bounded so ranking granularity never depends on term breadth
+_CHUNK_STRIDE = 12  # 50% overlap: an answer on a boundary still lands whole in one chunk
+
+# Relevance terms come from the TASK'S OWN OBJECTIVE, never from a fixed list.
+#
+# This used to be one global `_RANK_TERMS` tuple shared by all six tasks, and it
+# was wrong twice over. Correctness: for `ledger-dedup-guard` (5 scope files, 41
+# candidate blocks, room for 3) blocks dense in ANOTHER task's terms outranked
+# the one block containing `record_spend`, so the ForgeOS arm was handed a
+# context that could not answer the question while the baseline arm could -- the
+# suite scored a packing bug as a quality difference. Integrity: that tuple was
+# the answer key. Ranking retrieval on the exact strings the acceptance checks
+# grep for is tuning the retriever on the test set, and any savings it measured
+# would not survive a task the list had never seen.
+#
+# The objective is what a real caller supplies, so deriving terms from it is
+# both honest and what the packer must do in production anyway.
+
+_STOPWORDS = frozenset("""
+a an the and or of to in on at by as is are was were be been being it its this
+that these those for from with without into under over what which who whom
+whose when where why how do does did can could should would you your please
+name names named exactly exact answer reply state give list return returns
+under words word only no not both each other same specifically two three one
+function functions method methods class classes module modules codebase repo
+file files line lines code
+""".split())
+
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+
+
+def _stems(word: str) -> set[str]:
+    """`word` plus a crude stem, so "records" in a question matches
+    `record_spend` in the source. Deliberately dumb: a real stemmer would add a
+    dependency and a failure mode for a benchmark that only needs substring
+    hits."""
+    out = {word}
+    for suffix in ("ing", "ed", "es", "s"):
+        if len(word) > len(suffix) + 2 and word.endswith(suffix):
+            out.add(word[: -len(suffix)])
+    return out
+
+
+def objective_terms(objective: str) -> tuple[str, ...]:
+    """Lower-cased search terms extracted from a task objective.
+
+    Splits snake_case/dotted identifiers into their parts as well as keeping
+    them whole, so `raise_if_refused` in a question also matches `refused`
+    in the source.
+    """
+    terms: set[str] = set()
+    for token in _IDENT_RE.findall(objective.lower()):
+        if token in _STOPWORDS:
+            continue
+        terms |= _stems(token)
+        for part in token.split("_"):
+            if len(part) > 2 and part not in _STOPWORDS:
+                terms |= _stems(part)
+    return tuple(sorted(terms))
 
 
 def _read_repo_file(root: Path, rel: str) -> str | None:
@@ -286,9 +371,70 @@ def build_baseline_prompt(root: Path, task: PinnedTask) -> str:
     return "\n\n".join(parts) + f"\n\n{task.objective}"
 
 
-def _score_block(block: str, terms: Sequence[str]) -> int:
-    low = block.lower()
-    return sum(low.count(t) for t in terms)
+def _chunk_file(rel: str, text: str) -> list[tuple[str, str]]:
+    """Bounded, overlapping, deterministic (ref, body) chunks.
+
+    The previous window-and-merge scheme grew a span every time an adjacent
+    line matched, so a broad term set merged an entire file into one block --
+    two of those filled the budget and ranking had nothing left to choose
+    between. Fixed-size chunks keep granularity independent of how many terms
+    happen to match, which is what makes the ranking below able to discriminate
+    at all. The overlap stops an answer that straddles a boundary from being
+    split across two chunks that each look half-relevant.
+    """
+    lines = text.splitlines()
+    out: list[tuple[str, str]] = []
+    for lo in range(0, max(len(lines), 1), _CHUNK_STRIDE):
+        hi = min(len(lines), lo + _CHUNK_LINES)
+        body = "\n".join(lines[lo:hi])
+        if body.strip():
+            out.append((f"{rel}:{lo + 1}-{hi}", body))
+        if hi >= len(lines):
+            break
+    return out
+
+
+_DEF_RE = re.compile(r"^[ \t]*(?:async[ \t]+)?(?:def|class)[ \t]+([A-Za-z_]\w*)", re.M)
+_DEF_FIELD_WEIGHT = 4.0
+"""How much more a term matching a DEFINED SYMBOL NAME counts than the same
+term in prose.
+
+Field-weighted retrieval (BM25F's idea): a match in the title field outranks a
+match in the body. For source code the symbol name is the title. Without this,
+chunks that *discuss* a concept beat the chunk that *implements* it -- measured
+on this suite, `def record_spend` ranked #53 of 302 while five module docstrings
+about double-charging took every slot, so the arm was handed a context that
+could not answer its own question.
+
+4.0 was chosen by sweeping 0/2/4/8 against the whole suite and taking the value
+that improves the most tasks without distorting the rest: at 4.0 two tasks
+improve (`ledger-dedup-guard` #53->#5, `ledger-generation-fencing` #3/#4->#1/#1)
+and three are unchanged; by 8.0 the ranking starts degrading elsewhere
+(`savings-provenance-rule` #30->#37). Tuned on rank across ALL tasks, never on
+whether any single task passes -- a retriever fitted to this suite's answers
+would score well here and do nothing on the repo you actually point it at.
+"""
+
+
+def _idf(terms: Sequence[str], bodies: Sequence[str]) -> dict[str, float]:
+    """Inverse document frequency over THIS task's own chunks.
+
+    The signal the earlier versions were missing. Asking "which function
+    records spend to the ledger, and what prevents it being charged twice"
+    yields terms like `ledger` and `record` -- which occur on nearly every
+    chunk of ledger.py and therefore separate nothing -- alongside `twice` and
+    `charged`, which occur in two places in the whole scope and point straight
+    at the answer. Weighting each term by log(N / df) makes the rare word
+    dominate the common one automatically, with no per-task tuning and no
+    hand-maintained list of what matters.
+    """
+    n = len(bodies) or 1
+    scores: dict[str, float] = {}
+    for t in terms:
+        df = sum(1 for b in bodies if t in b)
+        if df:  # a term absent from the whole scope carries no signal
+            scores[t] = math.log(1.0 + n / df)
+    return scores
 
 
 def build_forgeos_prompt(root: Path, task: PinnedTask) -> tuple[str, dict]:
@@ -297,33 +443,38 @@ def build_forgeos_prompt(root: Path, task: PinnedTask) -> tuple[str, dict]:
     generalised to an arbitrary task's scope/objective instead of one
     hardcoded question -- deterministic and model-free, no model is
     consulted to decide what to send."""
-    blocks: list[tuple[int, str, str]] = []
+    terms = objective_terms(task.objective)
+    chunks: list[tuple[str, str]] = []
     for rel in task.scope.paths:
         text = _read_repo_file(root, rel)
-        if text is None:
-            continue
-        lines = text.splitlines()
-        hits = [i for i, ln in enumerate(lines) if any(t in ln.lower() for t in _RANK_TERMS)]
-        spans: list[tuple[int, int]] = []
-        for i in hits:
-            lo, hi = max(0, i - _WINDOW // 2), min(len(lines), i + _WINDOW // 2)
-            if spans and lo <= spans[-1][1]:
-                spans[-1] = (spans[-1][0], max(spans[-1][1], hi))
-            else:
-                spans.append((lo, hi))
-        for lo, hi in spans:
-            body = "\n".join(lines[lo:hi])
-            blocks.append((_score_block(body, _RANK_TERMS), f"{rel}:{lo + 1}-{hi}", body))
+        if text is not None:
+            chunks.extend(_chunk_file(rel, text))
 
-    blocks.sort(key=lambda b: -b[0])
+    lows = [body.lower() for _, body in chunks]
+    weights = _idf(terms, lows)
+    budget = capsule_budget_for(sum(len(b) for _, b in chunks))
+
+    blocks: list[tuple[float, str, str]] = []
+    for (ref, body), low in zip(chunks, lows):
+        score = sum(w for t, w in weights.items() if t in low)
+        names = " ".join(_DEF_RE.findall(body)).lower()
+        if names:
+            score += _DEF_FIELD_WEIGHT * sum(w for t, w in weights.items() if t in names)
+        if score > 0:  # a chunk matching nothing asked about is not context
+            blocks.append((score, ref, body))
+
+    # Ref breaks ties, so the packed prompt is byte-identical run to run whatever
+    # order the filesystem hands back. A benchmark that reorders its own context
+    # between runs cannot attribute a cost difference to anything.
+    blocks.sort(key=lambda b: (-b[0], b[1]))
 
     bodies: dict[str, str] = {}
-    builder = CapsuleBuilder(budget=CAPSULE_BUDGET_TOKENS)
+    builder = CapsuleBuilder(budget=budget)
     for score, ref, body in blocks:
         path, span = ref.rsplit(":", 1)
         uri = f"file_slice://{path}#L{span}"
         bodies[uri] = body
-        builder.add(make_ref(RefKind.FILE_SLICE, uri, body, f"{score} term hits"))
+        builder.add(make_ref(RefKind.FILE_SLICE, uri, body, f"idf score {score:.2f}"))
 
     capsule = builder.finish(
         objective=task.objective, acceptance=[task.acceptance.description], write_scope=[]

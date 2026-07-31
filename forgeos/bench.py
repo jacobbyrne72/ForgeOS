@@ -74,12 +74,15 @@ def bench(objective: str, *, cwd: str = ".", iterations: int = 3) -> list[Benchm
             else:  # full
                 CircuitBreaker()
                 pc = PromptCache()
-                miss = pc.get("openrouter", "sonnet", objective)
-                if miss is None:
-                    pc.put("openrouter", "sonnet", objective, "response", tokens_in=100)
-                compile_mission(objective, cwd=cwd)
-                saved_tokens = int(len(objective.split()) * 0.95)
-                saved_usd = int(saved_tokens * 0.000015 * 1_000_000)
+                try:
+                    miss = pc.lookup("openrouter", "sonnet", objective)
+                    if miss is None:
+                        pc.store("openrouter", "sonnet", objective, "response", tokens_out=100)
+                    compile_mission(objective, cwd=cwd)
+                    saved_tokens = int(len(objective.split()) * 0.95)
+                    saved_usd = int(saved_tokens * 0.000015 * 1_000_000)
+                finally:
+                    pc.close()
 
             t1 = time.perf_counter()
             times.append((t1 - t0) * 1000)

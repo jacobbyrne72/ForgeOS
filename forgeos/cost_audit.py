@@ -28,6 +28,14 @@ WASTE_PATTERNS = [
     },
 ]
 
+_SKIP_DIRS = frozenset(
+    {
+        ".git", ".forgeos", ".forgeos-live", "__pycache__", ".venv", "venv",
+        "site-packages", "node_modules", "vendor", "dist", "build",
+        ".pytest_cache", ".ruff_cache", "coverage", ".tox",
+    }
+)
+
 class CostAuditor:
     def __init__(self):
         self.issues = []
@@ -37,7 +45,12 @@ class CostAuditor:
         path = Path(filepath)
         if not path.exists():
             return []
-        text = path.read_text()
+        # ForgeOS runs on Windows as well as POSIX.  `Path.read_text()` uses
+        # the process locale there (often cp1252), so a perfectly valid UTF-8
+        # source file could crash the audit before it reported anything.  An
+        # audit should be best-effort over source text: decode explicitly and
+        # preserve the scan with replacement characters if a file is malformed.
+        text = path.read_text(encoding="utf-8", errors="replace")
         file_issues = []
         for wp in WASTE_PATTERNS:
             for m in re.finditer(wp["regex"], text):
@@ -62,9 +75,7 @@ class CostAuditor:
         self.total_savings = 0.0
         files = 0
         for path in Path(directory).rglob("*.py"):
-            if "__pycache__" in str(path):
-                continue
-            if ".forgeos" in str(path):
+            if any(part in _SKIP_DIRS for part in path.parts):
                 continue
             files += 1
             self.audit_file(str(path))

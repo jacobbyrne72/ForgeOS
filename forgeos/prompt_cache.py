@@ -117,9 +117,25 @@ class PromptCache:
             "entries": len(rows),
         }
 
+    def stats(self) -> dict:
+        """Return the stable operator-facing cache summary used by the CLI.
+
+        Keep this derived from ``total_saved`` so the cache's accounting has one
+        source of truth.  ``utilization_pct`` is capacity utilization, not a
+        hit-rate claim; a cache with no request history cannot honestly report
+        one.
+        """
+        info = self.total_saved()
+        info["utilization_pct"] = round(info["entries"] / MAX_CACHE * 100, 1)
+        return info
+
     def clear(self) -> int:
         with self._lock:
             conn = self._conn._conn if hasattr(self._conn, '_conn') else self._conn
             cur = conn.execute("DELETE FROM prompt_cache")
             conn.commit()
             return cur.rowcount
+
+    def close(self) -> None:
+        """Release the cache connection for short-lived CLI invocations."""
+        self._conn.close()

@@ -11,29 +11,23 @@ from forgeos.prompt_cache import PromptCache
 
 
 def cmd_run(args) -> int:
-    from forgeos import Forge
-    from forgeos.optimizer import CostOptimizer
-    from forgeos.auto_optimize import AutoOptimizer
+    """Run an objective through the same guarded team path as the main CLI.
 
-    Forge()
-    mission = compile_mission(args.objective, cwd=args.cwd or ".")
-    print(f"Mission compiled: {len(mission.tasks)} tasks")
-    for t in mission.tasks:
-        print(f"  [{t.id[:12]}] {t.subject}")
-    # Show cost savings projection
-    auto = AutoOptimizer()
-    planner = CostOptimizer()
-    total_saved = 0.0
-    plan = planner.plan_for("code_gen")
-    for t in mission.tasks:
-        opt = auto.apply("code_gen", t.subject)
-        total_saved += opt.saved_usd
-    print()
-    print(f"Estimated savings per task: ${plan.estimated_savings_usd:.4f}")
-    print(f"Estimated savings for this mission: ${total_saved:.4f}")
-    print("Optimization plan: " + ", ".join(plan.steps))
-    print("Use forge resume <job-id> to track progress.")
-    return 0
+    The old handler only compiled a mission and printed an *estimated* saving,
+    then returned success without creating a job or invoking a worker. That was
+    especially dangerous for a command named ``run``: a green exit code looked
+    like completed work. Reuse ``python -m forgeos``'s tested runner so budget,
+    review, ledger, and refusal semantics stay single-sourced.
+    """
+    from forgeos.__main__ import _run_team
+
+    return _run_team(
+        args.objective,
+        cwd=args.cwd or ".",
+        budget_usd=args.budget,
+        state_dir=args.state_dir,
+        dry_run=args.dry_run,
+    )
 
 
 def cmd_resume(args) -> int:
@@ -87,10 +81,12 @@ def cmd_doctor(args) -> int:
     for p in sorted(settings.providers.values(), key=lambda x: x.name):
         status = "ready" if p.usable else f"unavailable ({p.status()})"
         print(f"  {p.name:<12} {p.kind.value:<10} {status}")
-    cache = PromptCache(home=Path.home() / ".forgeos")
-    cs = cache.stats()
-    print(f"\nPrompt cache: {cs['entries']} entries ({cs['utilization_pct']}% full)")
-    cache.close()
+    cache = PromptCache()
+    try:
+        cs = cache.stats()
+        print(f"\nPrompt cache: {cs['entries']} entries ({cs['utilization_pct']}% full)")
+    finally:
+        cache.close()
     return 0
 
 
@@ -102,7 +98,7 @@ def cmd_init(args) -> int:
     live_dir.mkdir(exist_ok=True)
     claude = cwd / "CLAUDE.md"
     if not claude.exists():
-        claude.write_text(f"# CLAUDE.md — {cwd.name}\n\nCodebase overview.\n", encoding="utf-8")
+        claude.write_text(f"# CLAUDE.md - {cwd.name}\n\nCodebase overview.\n", encoding="utf-8")
     settings_path = forgeos_dir / "settings.json"
     if not settings_path.exists():
         from forgeos.settings import default_settings
@@ -143,15 +139,17 @@ def cmd_breaker(args) -> int:
 
 def cmd_cache(args) -> int:
     cache = PromptCache()
-    if args.cache_action == "clear":
-        cache.clear()
-        print("Cache cleared.")
-    elif args.cache_action == "stats":
-        print(json.dumps(cache.stats(), indent=2))
-    elif args.cache_action == "prune":
-        cache._purge_expired()
-        print("Pruned expired entries.")
-    cache.close()
+    try:
+        if args.cache_action == "clear":
+            cache.clear()
+            print("Cache cleared.")
+        elif args.cache_action == "stats":
+            print(json.dumps(cache.stats(), indent=2))
+        elif args.cache_action == "prune":
+            cache._purge()
+            print("Pruned expired entries.")
+    finally:
+        cache.close()
     return 0
 
 
@@ -258,10 +256,10 @@ def cmd_fleet(args) -> int:
 
     settings = Settings.load()
 
-    print("forgeos fleet — your AI capacity, ranked by cost")
+    print("forgeos fleet - your AI capacity, ranked by cost")
     print("=" * 62)
 
-    # Group by cost tier — the ordering IS the product
+    # Group by cost tier - the ordering IS the product
     free, subscription, metered = [], [], []
     for p in sorted(settings.providers.values(), key=lambda x: x.name):
         if not p.enabled:
@@ -290,20 +288,20 @@ def cmd_fleet(args) -> int:
                 cost_label = "pay-per-token (multi-provider)"
             else:
                 cost_label = "pay-per-token"
-            print(f"  • {e['name']:<14} {cost_label}")
+            print(f"  - {e['name']:<14} {cost_label}")
 
     print_group(
-        "FREE / LOCAL — burn these first, they cost nothing",
+        "FREE / LOCAL - burn these first, they cost nothing",
         free,
         "Ollama, local models. Unlimited. No quota. No meter.",
     )
     print_group(
-        "SUBSCRIPTION — you already paid, use every drop",
+        "SUBSCRIPTION - you already paid, use every drop",
         subscription,
         "Claude, Codex, Copilot. Flat-rate seat. Every task = $0 extra.",
     )
     print_group(
-        "METERED — last resort, every token costs real money",
+        "METERED - last resort, every token costs real money",
         metered,
         "DeepSeek, OpenRouter. Only when subscriptions are exhausted.",
     )
@@ -316,14 +314,14 @@ def cmd_fleet(args) -> int:
     for label, group in [("free/local", free), ("subscription", subscription), ("metered", metered)]:
         if group:
             names = ", ".join(e["name"] for e in group)
-            print(f"  {rung}. {label:<14} → {names}")
+            print(f"  {rung}. {label:<14} -> {names}")
             rung += 1
     if rung == 1:
-        print("  (nothing configured — run 'forge init' then add providers)")
+        print("  (nothing configured - run 'forge init' then add providers)")
 
     if subscription:
         names = ", ".join(e["name"] for e in subscription)
-        print(f"\n  → forgeos routes through {names} BEFORE touching metered API.")
+        print(f"\n  -> forgeos routes through {names} BEFORE touching metered API.")
         print("    Every task your subscription handles = $0 extra cost.")
         print("    Same subscription. 5x more tasks. That's the product.")
     print()
@@ -354,8 +352,8 @@ def cmd_replace(args):
     return 0
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(prog="forge", description="ForgeOS — cost-governed AI coding")
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="forge", description="ForgeOS - cost-governed AI coding")
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("doctor", help="What can this machine do right now")
     sub.add_parser("fleet", help="What you have, what's alive, what's cheapest TODAY")
@@ -364,6 +362,12 @@ def main() -> int:
     p_run = sub.add_parser("run", help="Compile and run objective")
     p_run.add_argument("objective")
     p_run.add_argument("--cwd", default=".")
+    p_run.add_argument(
+        "--budget-usd", "--budget", type=float, default=None, dest="budget",
+        help="Hard USD cap for the whole job (required unless --dry-run)",
+    )
+    p_run.add_argument("--state-dir", default=None)
+    p_run.add_argument("--dry-run", action="store_true")
     p_resume = sub.add_parser("resume", help="Resume a crashed job")
     p_resume.add_argument("job_id")
     p_resume.add_argument("--state-dir", default=None)
@@ -449,7 +453,7 @@ def main() -> int:
     p_format = sub.add_parser("format", help="Show local formatting capability")
     p_format.add_argument("--formatter-tool", default="ruff", dest="formatter_tool")
     p_audit.add_argument("--dir", default=".", dest="audit_dir")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
         return 0
@@ -1041,11 +1045,6 @@ def cmd_profile(args):
 
 
 
-if __name__ == "__main__":
-    sys.exit(main())
-
-
-
 def cmd_prompt_cache(args):
     """Show prompt cache stats and clear if requested."""
     from forgeos.prompt_cache import PromptCache
@@ -1066,7 +1065,7 @@ def cmd_prompt_cache(args):
 
 def cmd_adaptive_batch(args):
     # NOTE: this handler is not registered in main()'s dispatch dict (no
-    # "forge <cmd>" reaches it) — that was true before this consolidation
+    # "forge <cmd>" reaches it) - that was true before this consolidation
     # too; see tests/test_cli_dispatch.py's reachability tests, which only
     # check registered commands. Left as-is rather than wiring a new CLI
     # verb, which would be a scope change beyond de-duplication. Only the
@@ -1082,4 +1081,8 @@ def cmd_adaptive_batch(args):
     trend = opt.get_savings_trend()
     print("Trend:", trend["trend"], "-", trend["total_optimized_tasks"], "tasks optimized")
     return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
 

@@ -32,6 +32,9 @@ from forgeos.forgebench import (
     ArmCallResult,
     ArmKind,
     BudgetExhausted,
+    build_baseline_prompt,
+    build_forgeos_prompt,
+    capsule_budget_for,
     DEFAULT_SUITE,
     GatewayExecutor,
     PinnedTask,
@@ -39,6 +42,7 @@ from forgeos.forgebench import (
     build_parser,
     build_report,
     keyword_groups,
+    objective_terms,
     run_suite,
 )
 
@@ -513,3 +517,31 @@ def test_main_reports_no_usable_model_when_none_resolvable(capsys):
     )
     assert rc == 1
     assert "no usable model" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------- prompt packer
+
+
+def test_capsule_budget_scales_without_beating_naive_scope():
+    assert capsule_budget_for(1_000) <= (1_000 // 4) * 0.80
+    assert capsule_budget_for(1_000_000) == 8_000
+    assert capsule_budget_for(0) >= 1
+
+
+def test_objective_terms_are_task_derived_and_drop_prose_stopwords():
+    terms = objective_terms("Which function records spend in the ledger and prevents double charging?")
+    assert {"record", "records", "spend", "ledger", "charg", "charging"}.issubset(terms)
+    assert "the" not in terms
+    assert "and" not in terms
+
+
+def test_forgeos_prompt_is_deterministic_and_smaller_than_baseline():
+    task = next(t for t in DEFAULT_SUITE if t.id == "ledger-dedup-guard")
+    baseline = build_baseline_prompt(REPO_ROOT, task)
+    packed_one, stats_one = build_forgeos_prompt(REPO_ROOT, task)
+    packed_two, stats_two = build_forgeos_prompt(REPO_ROOT, task)
+
+    assert packed_one == packed_two
+    assert stats_one == stats_two
+    assert len(packed_one) < len(baseline)
+    assert stats_one["blocks_found"] >= stats_one["blocks_sent"]
