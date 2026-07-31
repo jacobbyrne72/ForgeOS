@@ -255,11 +255,11 @@ class SpanStore:
         ends = [s.ended_at if s.ended_at is not None else reference_now for s in spans]
         wall_clock = max(0.0, max(ends) - min(s.started_at for s in spans))
 
-        durations = [max(0.0, end - s.started_at) for s, end in zip(spans, ends)]
+        durations = [max(0.0, end - s.started_at) for s, end in zip(spans, ends, strict=True)]
         measured = sum(durations)
 
         phase_totals: dict[Phase, float] = {}
-        for span, dur in zip(spans, durations):
+        for span, dur in zip(spans, durations, strict=True):
             phase_totals[span.phase] = phase_totals.get(span.phase, 0.0) + dur
 
         by_phase = [

@@ -390,9 +390,9 @@ def main() -> int:
     p_budget = sub.add_parser("budget", help="Token budget enforcer")
     p_budget.add_argument("--max-tokens", type=int, default=4096, dest="max_tokens")
     p_budget.add_argument("--warn-at", type=float, default=0.8, dest="warn_at")
-    p_replace = sub.add_parser("replace", help="Replace expensive calls with cheap equivalents")
-    p_adbatch = sub.add_parser("adaptbatch", help="Auto-select cheapest batch strategy for any workload")
-    p_smart = sub.add_parser("smartbatch", help="ML-inspired batch cost predictor using history")
+    sub.add_parser("replace", help="Replace expensive calls with cheap equivalents")
+    sub.add_parser("adaptbatch", help="Auto-select cheapest batch strategy for any workload")
+    sub.add_parser("smartbatch", help="ML-inspired batch cost predictor using history")
     p_audit = sub.add_parser("audit", help="Scan project for AI cost waste")
     p_audit.add_argument("--dir", default=".", dest="audit_dir")
     args = parser.parse_args()
@@ -424,6 +424,11 @@ def main() -> int:
         "breaker": cmd_breaker,
         "fleet": cmd_fleet,
     }
+    handler = dispatch.get(args.command)
+    if handler is None:
+        print(f"Unknown command: {args.command}", file=sys.stderr)
+        return 2
+    return handler(args)
 
 
 def cmd_batch(args):
@@ -444,7 +449,7 @@ def cmd_batch(args):
 
 
 def cmd_budget(args):
-    from forgeos.token_budget import TokenBudget, BudgetExceeded
+    from forgeos.token_budget import TokenBudget
     print("=== Token Budget Enforcer ===")
     print("Max tokens:", args.max_tokens)
     print("Warn at:", args.warn_at)
@@ -473,8 +478,10 @@ def cmd_smartbatch(args):
     from forgeos.smart_batch import SmartBatchPredictor
     p = SmartBatchPredictor()
     # Seed with history demo
-    for _ in range(5): p.record("code_gen", 0.018, 200)
-    for _ in range(3): p.record("review", 0.015, 600)
+    for _ in range(5):
+        p.record("code_gen", 0.018, 200)
+    for _ in range(3):
+        p.record("review", 0.015, 600)
     # Predict for a mixed workload
     result = p.predict_batch([
         {"type": "code_gen"}, {"type": "code_gen"},
@@ -602,7 +609,7 @@ def cmd_profile(args):
         rows = ledger._conn.execute(
             "SELECT task_id FROM tasks WHERE job_id IS NOT NULL LIMIT 100"
         ).fetchall()
-        for r in rows[:5]:
+        for _r in rows[:5]:
             prof.record("unknown-model", "unknown", 100, 200, 3000, 100.0, True)
     except Exception:
         pass
