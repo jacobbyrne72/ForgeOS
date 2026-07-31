@@ -21,7 +21,6 @@ from forgeos.core.manager import (
     Manager,
     ManagerDecision,
     ManagerVerdict,
-    SafetyVerdict,
     parallel_safety,
     wake_triggers,
 )

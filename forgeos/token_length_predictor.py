@@ -1,6 +1,5 @@
 """Predict token count before API call to avoid overpaying for oversized inputs."""
 from __future__ import annotations
-import re
 
 
 class TokenLengthPredictor:

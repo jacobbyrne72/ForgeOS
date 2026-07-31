@@ -118,6 +118,7 @@ __all__ = [
     "CachePurge",
     "shrink_prompt",
     "estimate_prompt_tokens",
+    "remove_filler_words",
     "ModelRanker",
     "truncate_response",
     "BatchProjection",
@@ -131,7 +132,13 @@ from .cost_audit import CostAuditor
 from .cost_router import CostRouter, Route
 from .cost_tracker import CostTracker
 
-from .prompt_optimizer import optimize_prompt, estimate_tokens
+from .prompt_optimizer import (
+    estimate_prompt_tokens,
+    estimate_tokens,
+    optimize_prompt,
+    remove_filler_words,
+    shrink_prompt,
+)
 
 from .local_exec import LocalExecutor
 
@@ -158,4 +165,3 @@ from .batch_projection import BatchProjection
 
 from .cost_replay import CostReplayer
 
-from .prompt_cache import CacheEntry, PromptCache

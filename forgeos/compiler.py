@@ -75,6 +75,13 @@ class Mission:
     tasks: list[TaskSpec] = field(default_factory=list)
     dependencies: dict[str, list[str]] = field(default_factory=dict)
     task_map: dict[str, str] = field(default_factory=dict)
+    # Parallel-safety violations found during decomposition that could NOT be
+    # turned into a `depends_on` edge because doing so would have created a
+    # dependency cycle. Never silently dropped -- see `_sequence_unsafe_pairs`.
+    # A non-empty list here means the decomposition itself is suspect (its own
+    # pre-existing dependencies already disagree with what parallel-safety
+    # would require), which is a human's call, not something to auto-resolve.
+    dependency_conflicts: list[str] = field(default_factory=list)
 
     def verify(self) -> list[str]:
         w = []
@@ -344,35 +351,106 @@ def analyze_codebase(cwd: str) -> list[FileAnalysis]:
     return analyses
 
 
-def _sequence_unsafe_pairs(tasks: list[TaskSpec], deps: dict[str, list[str]]) -> None:
-    """Post-flight over every produced task pair: a `manager.parallel_safety`
-    violation becomes a `depends_on` edge, never a silent drop.
+def _reaches(by_id: dict[str, TaskSpec], start_id: str, target_id: str) -> bool:
+    """Whether `start_id` already depends on `target_id`, directly or
+    transitively, by following `depends_on` edges forward from `start_id`.
 
-    Pairs already sequenced (either direction) are skipped -- the two-task
-    bugfix/refactor branches above already declare `diagnose -> fix` as a hard
-    dependency, and re-running the check on top of a decision already made
-    would be pure overhead, not a second opinion.
-
-    Direction: `verdict.introduces_before` names the introducer when the
-    violation is a contract conflict. A pure scope overlap has no natural
-    direction (either order sequences the pair correctly), so it falls back
-    to a deterministic tiebreak on task id -- sorting, not insertion order or
-    dict iteration, so the same pair always sequences the same way run to run.
+    Plain iterative DFS over a small graph (missions are a handful of tasks,
+    never a corpus) -- no need for anything more than a visited-set to stay
+    correct if a `depends_on` list somehow already contained a loop.
     """
+    seen: set[str] = set()
+    stack = [start_id]
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        task = by_id.get(current)
+        if task is None:
+            continue
+        for dep_id in task.depends_on:
+            if dep_id == target_id:
+                return True
+            stack.append(dep_id)
+    return False
+
+
+def _sequence_unsafe_pairs(tasks: list[TaskSpec], deps: dict[str, list[str]]) -> list[str]:
+    """Post-flight over every produced task pair: a `manager.parallel_safety`
+    violation becomes a `depends_on` edge, never a silent drop. Returns any
+    conflicts found (see below) for the caller to surface.
+
+    **Already-ordered pairs are skipped, transitively, not just directly.**
+    `_reaches` is re-evaluated against the CURRENT graph on every pair, which
+    is what "transitively" means in practice: the two-task bugfix/refactor
+    branches above already declare `diagnose -> fix` as a hard dependency
+    (skipped as directly-ordered), and an edge THIS function itself added two
+    iterations ago is just as good a reason to skip a later pair as one that
+    was there from the start -- re-running parallel_safety on top of an
+    ordering already implied would be pure overhead, not a second opinion.
+
+    **Direction.** `verdict.introduces_before` names the introducer when the
+    violation is a contract conflict. A pure scope overlap has no natural
+    direction -- either order sequences the pair correctly -- so it falls
+    back to a deterministic tiebreak on COMPILED ORDER: the earlier task in
+    `tasks` (list position, not `TaskSpec.id`) becomes the prerequisite. The
+    choice of "earlier wins" is arbitrary; what is not arbitrary is that it
+    must be deterministic, because `TaskSpec.id` is a fresh `uuid4` on every
+    compile (see `contracts.new_id`) and would make the SAME mission compile
+    to a DIFFERENT dependency graph on every run if used as the tiebreak --
+    id order is not planning-stable, list order is.
+
+    **Cycles are never created.** Because the ordered-pair check above is
+    re-evaluated live against the current graph (including edges this same
+    pass already added) before a new edge is even considered, a single new
+    edge between a pair with no existing path in EITHER direction cannot
+    itself close a loop -- that is a basic property of DAGs, not a hope. The
+    explicit `_reaches` check just before mutation is kept anyway as a named,
+    tested invariant rather than a silent assumption: if a future caller ever
+    feeds this function tasks whose `depends_on` already contains something
+    this pass didn't see coming, skip-and-record is what happens instead of
+    a corrupted graph. A conflict here means the decomposition's OWN
+    pre-existing dependencies already disagree with what parallel-safety
+    would require -- not something to auto-resolve by picking a direction
+    anyway, so it is reported, never silently reordered.
+
+    O(n^2) pairs, each with an O(n) reachability walk -- O(n^3) worst case.
+    Fine: `compile_mission` caps at `max_tasks` and a mission is a handful of
+    tasks, never a corpus.
+    """
+    conflicts: list[str] = []
+    by_id = {t.id: t for t in tasks}
     for i, a in enumerate(tasks):
         for b in tasks[i + 1:]:
-            if a.id in b.depends_on or b.id in a.depends_on:
-                continue
+            if _reaches(by_id, a.id, b.id) or _reaches(by_id, b.id, a.id):
+                continue  # already ordered, directly or transitively
+
             verdict: SafetyVerdict = parallel_safety(a, b)
             if verdict.safe:
                 continue
-            first_id, second_id = verdict.introduces_before or sorted((a.id, b.id))
-            dependent = b if second_id == b.id else a
+
+            first_id, second_id = verdict.introduces_before or (a.id, b.id)
+
+            if _reaches(by_id, first_id, second_id):
+                # See the docstring: unreachable given a correct live check
+                # above, kept as a tested guard rather than a silent
+                # assumption.
+                conflicts.append(
+                    f'"{by_id[second_id].subject}" cannot be made to depend on '
+                    f'"{by_id[first_id].subject}" without creating a dependency '
+                    f"cycle -- skipped, not auto-resolved; the decomposition's "
+                    f"existing dependencies conflict with parallel-safety here"
+                )
+                continue
+
+            dependent = by_id[second_id]
             if first_id not in dependent.depends_on:
                 dependent.depends_on.append(first_id)
             deps.setdefault(second_id, [])
             if first_id not in deps[second_id]:
                 deps[second_id].append(first_id)
+    return conflicts
 
 
 def compile_mission(objective: str, *, cwd: str = ".", max_tasks: int = 6) -> Mission:
@@ -449,7 +527,8 @@ def compile_mission(objective: str, *, cwd: str = ".", max_tasks: int = 6) -> Mi
                 capabilities=_caps_for(kind),
             )
         )
-    _sequence_unsafe_pairs(tasks, deps)
+    conflicts = _sequence_unsafe_pairs(tasks, deps)
     mission = Mission(objective=objective, tasks=tasks, dependencies=deps)
     mission.task_map = {t.id: t.subject for t in tasks}
+    mission.dependency_conflicts = conflicts
     return mission
