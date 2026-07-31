@@ -24,9 +24,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+from functools import lru_cache
 from dataclasses import dataclass
 
-import tiktoken
 from pydantic import BaseModel, field_validator
 
 from forgeos.settings import Role
@@ -159,7 +159,19 @@ PROVIDER_CACHE_RULES: dict[str, ProviderCacheRules] = {
 # exposed through tiktoken at all, and OpenAI's varies by model. cl100k_base
 # is a stable, local encoding close enough to gate a hard threshold like "at
 # least 1024 tokens" without depending on a live provider call.
-_CACHE_FLOOR_ENCODING = tiktoken.get_encoding("cl100k_base")
+#
+# Built on first USE, not at import. This module is reachable from
+# `forgeos.prompts.__init__`, so loading the encoding at module scope charged
+# 0.5-1.5s to every process that imported anything under `forgeos.prompts` --
+# including `--help`, which never checks a cache floor. `lru_cache` keeps it a
+# once-per-process cost for the callers that do.
+@lru_cache(maxsize=1)
+def _cache_floor_encoding():
+    # `import tiktoken` is itself ~1s; deferring the module import as well as
+    # the encoding build keeps that off any process that never counts tokens.
+    import tiktoken
+
+    return tiktoken.get_encoding("cl100k_base")
 
 # 4+ consecutive digits reads as a year, an epoch value, or a generated id --
 # the same heuristic the role-prefix test suite already checks by hand.
@@ -183,7 +195,7 @@ def meets_cache_floor(text: str, provider: str) -> bool:
     refusing to answer.
     """
     rules = PROVIDER_CACHE_RULES[provider]
-    tokens = len(_CACHE_FLOOR_ENCODING.encode(text, disallowed_special=()))
+    tokens = len(_cache_floor_encoding().encode(text, disallowed_special=()))
     return tokens >= rules.min_cacheable_tokens
 
 

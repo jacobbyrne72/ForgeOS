@@ -123,7 +123,7 @@ measurement is the gate above.
 | Context capsule | Ranked, budgeted context with graduated trimming |
 | Deterministic lowerer | Asks whether the task needs a model at all |
 | Model selector / profiler | Routes on measured cost and latency per model |
-| Free-tier pool | Resolves 748 catalogued free models, skipping known-dead |
+| Free-tier pool | Resolves every free model in the live price catalog, skipping known-dead |
 | Generation fencing | A reclaimed task's zombie worker cannot write results |
 | Path leases | Two workers can never hold the same write path |
 | Merge gate | Tests + security + evidence + a genuinely different reviewer |
@@ -213,7 +213,7 @@ The result: your subscription handles the ambiguous middle, free tiers handle
 the routine, and metered API is the last resort. The multiplier depends on
 your workload; ForgeBench is how you find yours rather than trusting ours.
 
-## What's new in v0.2.0
+## What's new in v0.6.10
 
 | Feature | What it does | Cost impact |
 |---|---|---|
@@ -228,30 +228,26 @@ your workload; ForgeBench is how you find yours rather than trusting ours.
 
 ## Benchmarks
 
-**One measured A/B**, run by `tools/ab_bench.py` against a real DeepSeek key.
-Same question, same model, same pricing code; the only difference is what
-happens around the call. Both answers were checked and both were correct.
+Two benchmarks, both paired, both run against a real DeepSeek key with the same
+model and the same pricing code on both arms:
 
-```
-prompt size   baseline  25,924 tokens  (5 whole files — the naive approach)
-              ForgeOS    1,549 tokens  (3 of 31 ranked blocks)
+| | what it measures | scope | result |
+|---|---|---|---|
+| [`tools/ab_bench.py`](tools/ab_bench.py) | the context lever alone | **one** question | table at the top of this README |
+| [`forge forgebench`](forgeos/forgebench.py) | the Release 0.1 exit gate | **six** pinned tasks | [above](#the-benchmark-gate) |
 
-round 1 (cold)    baseline $0.000140    ForgeOS $0.000073     1.9x cheaper
-round 2 (cached)  baseline $0.000192    ForgeOS $0.000075     2.6x cheaper
-overall                                                        2.1x cheaper
-                                        14.7s -> 9.0s          39% faster
-```
+An earlier edition of this section quoted a *different* ab_bench run (25,924
+baseline tokens, $0.000140 cold) alongside the top table's 38,403 tokens /
+$0.004990, both described as "one measured A/B". Two contradictory numbers for
+one claim is worse than no number, so the stale run is gone rather than
+reconciled after the fact — the reproduce command below is the authority.
 
-On a genuinely cold first call the gap was **11.1×**; it narrows to ~2× once the
-provider caches the large prompt too. Real tasks vary their prompt, so most calls
-land nearer the cold number — but reporting only the 11.1× would be picking the
-flattering half.
-
-**What this does not show.** It exercises the context lever alone: not routing,
-not retries, not escalation, not the merge gate. One question is one data point.
-There is no measured before/after for the CLI, the mission compiler or the prefix
-cache — those are built and tested, not benchmarked. A number that has not been
-run is not a benchmark, and this section will only ever carry numbers that were.
+**What these do not show.** Together they exercise the context lever and the
+paired-costing machinery. They do not measure routing, retries, escalation, the
+merge gate, the mission compiler or the prefix cache — those are built and
+tested, not benchmarked. Both run one model against one repo. A number that has
+not been run is not a benchmark, and this section will only ever carry numbers
+that were.
 
 Reproduce it live: `python tools/ab_bench.py --live --env ~/.hermes/.env --repeat 3`
 
