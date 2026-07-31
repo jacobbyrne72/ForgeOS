@@ -16,11 +16,17 @@ not a saving):
 |  | naive (dump the files) | ForgeOS (capsule + stable prefix) | ratio |
 |---|---|---|---|
 | prompt | 38,403 tokens | 1,582 tokens | **95.9% smaller** |
-| cold call | $0.004990 | $0.000263 | **19.0× cheaper** |
+| cold call | $0.004990 | $0.000263 | 19.0× cheaper |
 | cache-warm call | $0.000244 | $0.000091 | **2.7× cheaper** |
 | latency | 9.8–10.4 s | 3.0–4.5 s | **~3× faster** |
 
 Reproduce: `python tools/ab_bench.py --model deepseek/deepseek-chat --repeat 2`
+
+**Read the warm row, not the cold one.** 19× is the first, uncached call on
+one question. Once the provider caches the large naive prompt too, the gap
+narrows to 2.7×. Real tasks vary their prompt so most calls land between —
+the honest single number is ~2×, and quoting 19× alone would be picking the
+flattering half of our own measurement.
 
 ## Team mode — N agents, zero interruptions
 
@@ -44,28 +50,55 @@ spending anything. Full mechanism-by-mechanism breakdown (merged vs. still
 landing) in [docs/TEAM.md](docs/TEAM.md); a runnable walkthrough in
 [examples/README.md](examples/README.md).
 
-## The layers (verified by module execution; savings vary by workload)
+## The benchmark gate — currently FAILING, on purpose
 
-| Layer | Savings | Proof |
-|---|---|---|
-| Mission compiler | $0.02/task | Eliminates model call for task decomposition |
-| Circuit breaker | 100% on dead workers | Trips after 3 failures, auto-recovers |
-| Prompt prefix cache | 60-90% off repeats | SQLite LRU, byte-identical prefix matching |
-| Diff-aware scanning | 90%+ scan cost | semgrep+gitleaks on git diff only |
-| Context compression | 60% fewer tokens | AST-aware source filtering |
-| Model selector | 60x cheaper model | Picks cheapest capable model per task |
-| Model profiler | Data-driven routing | Tracks cost/latency per model over time |
-| Cost optimizer | Per-task plans | Picks cheapest layer combo per task type |
-| Auto-optimizer | Pipeline applied | Automatically runs cheapest layers |
-| Batch optimizer | Aggregate savings | Projections for any task batch |
-| SQLite WAL + indexes | 3-5x writes | 12 query-pattern indexes, journal_mode=WAL |
-| Adapter auto-discovery | Zero-config | Scans PATH/plugins/entry_points |
-| Adaptive routing | Cheapest worker | Per-task cost/performance profiling |
-| Fleet CLI | Routing ladder | Shows cheapest order for your providers |
+`forge forgebench` runs a pinned 6-task suite through two arms and applies the
+blueprint's savings classes. First real run, deepseek-chat, both arms on the
+same ledger:
 
-**Modelled projection (not a measurement): ~$8,000/yr at 100 tasks/day if
-every layer fires at its observed rate. Your ledger is the real number —
-`python -m forgeos receipts` prints it.**
+```
+              attempted  accepted    tok in   tok out         USD
+baseline              6         2    61,098       687    0.003917
+ForgeOS               6         3     8,279       649    0.001340
+
+COST COMPARISON VOID -- acceptance differs between arms.
+RELEASE 0.1 EXIT GATE: FAIL
+```
+
+ForgeOS used **86% fewer input tokens**, cost **66% less**, and accepted **more**
+tasks — and the harness still refused to print a saving, because the two arms did
+not do the same amount of correct work. That refusal is the feature. A "66%
+cheaper" headline sitting on 3-vs-2 acceptance is not a measurement, and class D
+(no baseline) is structurally forbidden from printing a percentage at all.
+
+The second finding is that 3/6 and 2/6 acceptance means most of the suite is
+failing. That is now a measured fact to fix, not an assumption.
+
+Reproduce: `forge forgebench --dry-run` prices the suite without spending.
+
+## The layers — built and tested, NOT individually benchmarked
+
+Each of these exists and has tests. What none of them has is a measured
+before/after in isolation, so this table deliberately carries no savings column:
+a number that has not been run is not a saving, and the only end-to-end
+measurement is the gate above.
+
+| Layer | What it does |
+|---|---|
+| Mission compiler | Turns an objective into TaskSpecs without a model call |
+| Circuit breaker | Trips a dead worker after repeated failure, auto-recovers |
+| Prompt prefix cache | SQLite LRU keyed on byte-identical prefixes |
+| Anthropic cache breakpoints | Emits `cache_control` so Claude actually caches |
+| Diff-aware scanning | semgrep + gitleaks over the git diff, not whole files |
+| Context capsule | Ranked, budgeted context with graduated trimming |
+| Deterministic lowerer | Asks whether the task needs a model at all |
+| Model selector / profiler | Routes on measured cost and latency per model |
+| Free-tier pool | Resolves 748 catalogued free models, skipping known-dead |
+| Generation fencing | A reclaimed task's zombie worker cannot write results |
+| Path leases | Two workers can never hold the same write path |
+| Merge gate | Tests + security + evidence + a genuinely different reviewer |
+
+Your ledger is the real number — `python -m forgeos receipts` prints it.
 
 
 ```
@@ -77,7 +110,7 @@ $ forge fleet
 
   → forgeos routes through claude, codex, copilot BEFORE touching metered API.
     Every task your subscription handles = $0 extra cost.
-    Same subscription. 5x more tasks. That's the product.
+    Every task a flat-rate seat absorbs is a task you do not meter.
 ```
 
 The kernel is deterministic code: scheduling, budgets, file leases, verification.
@@ -127,7 +160,9 @@ ForgeOS attacks all three:
 1. **Byte-stable prefixes.** The system prompt is split into a stable prefix
    (role contract, tool protocol, safety policy) and a volatile tail (the task).
    The prefix is byte-identical across calls, so the provider serves it from
-   cache at ~90% discount. Your quota lasts 10x longer on the prefix alone.
+   cache at the provider's cached-input rate (~90% off that portion). How
+   much longer your quota lasts is unmeasured — it depends on your prefix
+   share, and we have not run that experiment.
    (`forgeos/prompts/prefix.py` — with a CI test that asserts byte identity.)
 
 2. **Compact role prompts.** Claude Code's default prompt is ~4,000 tokens of
@@ -144,7 +179,8 @@ ForgeOS attacks all three:
    reopens. (`forgeos/core/quota.py` — wired into `forge.py`'s routing loop.)
 
 The result: your subscription handles the ambiguous middle, free tiers handle
-the routine, and metered API is the last resort. Same $20/month, 5x more tasks.
+the routine, and metered API is the last resort. The multiplier depends on
+your workload; ForgeBench is how you find yours rather than trusting ours.
 
 ## What's new in v0.2.0
 
