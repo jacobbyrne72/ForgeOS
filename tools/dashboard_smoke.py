@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -46,6 +47,12 @@ def _write_fixture(receipt_dir: Path) -> None:
         (receipt_dir / name).write_text(
             json.dumps(_receipt(model, cost)), encoding="utf-8"
         )
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
 
 
 def _wait_for_server(base_url: str, process: subprocess.Popen[str], timeout: float) -> None:
@@ -137,7 +144,10 @@ async def _inspect(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", help="inspect an existing dashboard instead of starting a fixture")
-    parser.add_argument("--port", type=int, default=8899, help="local fixture port (default: 8899)")
+    parser.add_argument(
+        "--port", type=int, default=0,
+        help="local fixture port (default: 0, select a free port; CI/Make pin theirs)",
+    )
     parser.add_argument("--timeout", type=float, default=45.0, help="startup/browser timeout in seconds")
     parser.add_argument("--screenshot", type=Path, help="write a full-page verification screenshot")
     parser.add_argument(
@@ -146,8 +156,8 @@ def main(argv: list[str] | None = None) -> int:
         help="run the API-only contract check (used by CI without Playwright)",
     )
     args = parser.parse_args(argv)
-    if not 1 <= args.port <= 65535:
-        parser.error("--port must be between 1 and 65535")
+    if not 0 <= args.port <= 65535:
+        parser.error("--port must be between 0 and 65535")
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
     if args.no_browser and args.screenshot:
@@ -158,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.url:
             base_url = args.url.rstrip("/")
         else:
+            port = args.port or _free_port()
             root = Path(tempfile.mkdtemp(prefix="forgeos-dashboard-smoke-"))
             state_dir = root / "state"
             receipt_dir = root / "receipts"
@@ -171,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
                 "import os, uvicorn; "
                 "from forgeos.dashboard.app import create_app; "
                 f"uvicorn.run(create_app(os.environ['FORGEOS_STATE_DIR']), "
-                f"host='127.0.0.1', port={args.port})"
+                f"host='127.0.0.1', port={port})"
             )
             process = subprocess.Popen(
                 [sys.executable, "-c", server_code],
@@ -181,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
                 stderr=subprocess.STDOUT,
                 text=True,
             )
-            base_url = f"http://127.0.0.1:{args.port}"
+            base_url = f"http://127.0.0.1:{port}"
             _wait_for_server(base_url, process, args.timeout)
 
         if args.no_browser:

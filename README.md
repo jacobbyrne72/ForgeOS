@@ -404,8 +404,8 @@ board rather than being created.
 Run a deterministic browser/API smoke without provider calls:
 `python tools/dashboard_smoke.py --port 8894 --screenshot artifacts/dashboard-smoke.png`.
 It starts an isolated fixture dashboard, verifies the ranked rows and fleet
-rollup, and exits with machine-readable JSON; use `--url` to inspect an
-already-running dashboard instead.
+rollup, and exits with machine-readable JSON; it chooses a free local port by
+default. Use `--url` to inspect an already-running dashboard instead.
 
 ## How it fits together
 
