@@ -22,7 +22,7 @@ from pathlib import Path
 
 from ..contracts import FailureClass, TaskSpec, TaskState
 from ..registry import Adapter
-from .executor import adapter_executor
+from .executor import CheckpointStore, adapter_executor
 from .factory import build_adapter
 
 # Runner tokens that make an acceptance line shell-shaped enough to derive a
@@ -70,6 +70,7 @@ def routed_executor(
     gateway: object | None = None,
     cwd: str = ".",
     timeout_seconds: float = 900.0,
+    checkpoint_store: CheckpointStore | None = None,
 ):
     """An `Executor` that runs whichever worker the router picked.
 
@@ -82,6 +83,12 @@ def routed_executor(
     session lifecycle (start → send → close) per task, and a stale cached
     backend whose binary or key vanished mid-job would fail every later task
     with a reason recorded at the wrong time.
+
+    `checkpoint_store`, when given, is forwarded to `adapter_executor`
+    unchanged. That is what lets a task's checkpoint survive across attempts
+    even though a fresh adapter is built per call above — the continuity
+    lives in the store, never in the (deliberately never cached) adapter
+    instance.
     """
     from ..forge import ExecutionResult  # local: forge imports this module's caller
 
@@ -137,7 +144,7 @@ def routed_executor(
             )
         run = adapter_executor(
             adapter, cwd=cwd, model_profile=profile.model or "",
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=timeout_seconds, checkpoint_store=checkpoint_store,
         )
         return run(spec, worker_id)
 

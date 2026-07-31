@@ -305,7 +305,13 @@ def test_doctor_includes_the_capacity_market_when_priced(tmp_path):
 def test_quota_telemetry_survives_forge_restart(tmp_path):
     home = tmp_path / "quota-home"
     first = Forge(home=home, registry=_fleet())
-    first.quota.record_exhaustion("premium", resets_at=1_800_003_600, at=1_800_000_000)
+    from forgeos.core.quota_ingest import QuotaIngestor
+
+    first.ingest_quota(QuotaIngestor.from_headers(
+        "premium",
+        {"x-ratelimit-status": "rejected", "x-ratelimit-reset": "3600"},
+        at=1_800_000_000,
+    ))
     first.close()
 
     second = Forge(home=home, registry=_fleet())
@@ -328,6 +334,39 @@ def test_corrupt_quota_snapshot_does_not_block_forge_startup(tmp_path):
         assert f.quota.states() == []
     finally:
         f.close()
+
+
+def test_forge_route_uses_expiring_subscription_before_paid_api(tmp_path):
+    fleet = Registry([
+        WorkerProfile(
+            worker_id="paid.api", adapter=Adapter.GATEWAY, tier=CostTier.CHEAP,
+            capabilities={"edit", "python"}, can_edit_files=True,
+            market_resource="openrouter", prior_win_rate=0.9,
+        ),
+        WorkerProfile(
+            worker_id="sub.cli", adapter=Adapter.CLI_TEAM, tier=CostTier.STANDARD,
+            capabilities={"edit", "python"}, can_edit_files=True,
+            market_resource="claude.sub", prior_win_rate=0.9,
+        ),
+    ])
+    market = CapacityMarket()
+    market.record(Entitlement(
+        resource_id="claude.sub", remaining=0.8, resets_at=1_800_003_600,
+        source=TelemetrySource.OFFICIAL_CLI, measured_at=1_800_000_000,
+    ))
+    market.record(Entitlement(
+        resource_id="openrouter", remaining=1.0,
+        source=TelemetrySource.OFFICIAL_API, cash_cost=0.5,
+    ))
+    market.forecast(Forecast(resource_id="claude.sub", expected_demand=0.05, confidence=0.9))
+    forge = Forge(home=tmp_path / "market-home", registry=fleet, market=market)
+    forge.scheduler.max_parallel = 1
+    try:
+        result = forge.run("use the expiring seat", [_task()], executor=lambda s, w: _green(), reviewer=_pass_review)
+    finally:
+        forge.close()
+
+    assert result.outcomes[0].worker_id == "sub.cli"
 
 
 def test_max_parallel_is_sized_to_this_machine(forge):
@@ -728,3 +767,123 @@ def test_isolate_worktrees_retry_reuses_the_same_worktree(forge, tmp_path, passi
     assert calls["n"] == 2
     assert seen_cwds[0] == seen_cwds[1]  # same worktree reused across the retry
     assert (repo / "shared.txt").read_text(encoding="utf-8") == "second attempt\n"
+
+
+# =============================================== checkpoint/resume threading
+# `Forge.run(executor=None)` must thread ONE per-job checkpoint store through
+# every rebuild of the routed default executor (`Forge.default_executor`),
+# even though `routed_executor` builds a brand-new adapter per attempt. These
+# prove the wiring reaches the real default path, not just the bridge tested
+# in isolation in test_executor_bridge.py.
+
+
+def test_default_executor_resumes_a_model_failure_via_the_shared_checkpoint_store(
+    forge, monkeypatch,
+):
+    from forgeos.adapters import routed
+    from forgeos.adapters.base import (
+        EventKind,
+        WorkerAdapter,
+        WorkerCapabilities,
+        WorkerEvent,
+        WorkerUsage,
+    )
+
+    class ResumableFake(WorkerAdapter):
+        def __init__(self, events: list[WorkerEvent]) -> None:
+            self._events = events
+            self.calls: list[str] = []
+
+        def health(self) -> tuple[bool, str]:
+            return True, "fake"
+
+        def capabilities(self) -> WorkerCapabilities:
+            return WorkerCapabilities(resumable_sessions=True)
+
+        async def start(self, task_id, cwd, model_profile):  # noqa: ARG002
+            self.calls.append("start")
+            return "s1"
+
+        async def send(self, session_id, prompt):  # noqa: ARG002
+            self.calls.append("send")
+            for event in self._events:
+                yield event
+
+        async def cancel(self, session_id) -> None:  # noqa: ARG002
+            self.calls.append("cancel")
+
+        async def checkpoint(self, session_id) -> dict:  # noqa: ARG002
+            self.calls.append("checkpoint")
+            return {"resumed": True}
+
+        async def resume(self, checkpoint) -> str:  # noqa: ARG002
+            self.calls.append("resume")
+            return "s2"
+
+        async def usage(self, session_id) -> WorkerUsage:  # noqa: ARG002
+            self.calls.append("usage")
+            return WorkerUsage()
+
+        async def close(self, session_id) -> None:  # noqa: ARG002
+            self.calls.append("close")
+
+    built: list[ResumableFake] = []
+
+    def build(profile, **kwargs):  # noqa: ARG001
+        events = (
+            [WorkerEvent(kind=EventKind.ERROR, text="model produced a broken patch"),
+             WorkerEvent(kind=EventKind.DONE, status="failed")]
+            if not built else
+            [WorkerEvent(kind=EventKind.MESSAGE, text="fixed it"),
+             WorkerEvent(kind=EventKind.TOOL_CALL, text="python -m pytest -q"),
+             WorkerEvent(kind=EventKind.TOOL_UPDATE, text="1 passed in 0.10s"),
+             WorkerEvent(kind=EventKind.FILE_DIFF, path="src/retry.py"),
+             WorkerEvent(kind=EventKind.DONE, status="ok")]
+        )
+        adapter = ResumableFake(events)
+        built.append(adapter)
+        return adapter, "built"
+
+    monkeypatch.setattr(routed, "build_adapter", build)
+
+    result = forge.run("resume across a retry", [_task()], reviewer=_pass_review)
+
+    assert result.accepted == 1, result.outcomes
+    assert len(built) == 2, "one fresh adapter per attempt -- continuity must come from the store"
+    assert "checkpoint" in built[0].calls
+    assert built[1].calls[0] == "resume", \
+        "attempt 2 must resume attempt 1's checkpoint, not cold-start"
+
+
+# ================================================== receipt-aware preflight
+
+
+def test_an_already_merged_contract_is_refused_before_any_routing(forge):
+    """The wiring check_repeat_work's docstring specifies: an exact contract
+    the ledger already settled as merged is refused pre-submit — no routing,
+    no leases, no executor call, just the prior receipt as the reason."""
+    calls = {"n": 0}
+
+    def counting(spec, worker):  # noqa: ARG001
+        calls["n"] += 1
+        return _green()
+
+    first = forge.run("ship", [_task()], executor=counting, reviewer=_pass_review)
+    assert first.accepted == 1
+    ran_once = calls["n"]
+
+    second = forge.run("ship again", [_task()], executor=counting, reviewer=_pass_review)
+    assert second.accepted == 0
+    assert second.rejected == 1
+    assert calls["n"] == ran_once, "a refused duplicate must never reach the executor"
+    assert "already" in second.outcomes[0].reason.lower() or "duplicate" in second.outcomes[0].reason.lower()
+
+
+def test_allow_repeat_work_reruns_a_settled_contract(forge):
+    first = forge.run("ship", [_task()], executor=lambda s, w: _green(),
+                      reviewer=_pass_review)
+    assert first.accepted == 1
+
+    second = forge.run("deliberate rerun", [_task()], executor=lambda s, w: _green(),
+                       reviewer=_pass_review, allow_repeat_work=True)
+    assert second.accepted == 1, second.outcomes

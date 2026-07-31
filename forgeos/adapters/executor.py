@@ -57,6 +57,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from collections.abc import MutableMapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -315,6 +316,19 @@ def _build_prompt(spec: TaskSpec) -> str:
 
 # ---------------------------------------------------------------- session drive
 
+# A per-job, in-memory table keyed by task id (`TaskSpec.id`), holding the most
+# recent resumable checkpoint dict for that task. Deliberately just a dict-like
+# protocol -- no crash-survival, no disk persistence; a process restart loses
+# it exactly like every other in-memory Forge state does today. The measured
+# win this closes is a WARM RETRY: attempt 2 resumes attempt 1's session
+# instead of cold-starting, which is the common case (a task failing and
+# retrying inside the same `Forge.run`). Surviving a process crash is a
+# distinct, harder problem left for later -- building state files today for a
+# win nobody has asked to measure would be exactly the speculative
+# abstraction this codebase's rules forbid.
+CheckpointStore = MutableMapping[str, dict]
+
+
 @dataclass
 class _SessionOutcome:
     aggregate: _StreamAggregate
@@ -325,7 +339,7 @@ class _SessionOutcome:
 
 async def _run_session(
     adapter: WorkerAdapter, spec: TaskSpec, cwd: str, model_profile: str,
-    timeout_seconds: float,
+    timeout_seconds: float, checkpoint_store: CheckpointStore | None = None,
 ) -> _SessionOutcome:
     agg = _StreamAggregate()
     usage = WorkerUsage()  # zeros, exact=False — the honest default when nothing reports
@@ -342,7 +356,20 @@ async def _run_session(
         setter = getattr(adapter, "set_job_id", None)
         if callable(setter) and spec.job_id:
             setter(spec.job_id)
-        session_id = await adapter.start(spec.id, cwd, model_profile)
+        # A stored checkpoint is only ever consumed by a backend that declares
+        # itself resumable -- a non-resumable adapter cold-starts every attempt
+        # even when a checkpoint happens to be sitting in the store for this
+        # task (e.g. left there by a DIFFERENT, resumable adapter that was
+        # routed to on an earlier attempt).
+        checkpoint = (
+            checkpoint_store.get(spec.id)
+            if checkpoint_store is not None and adapter.capabilities().resumable_sessions
+            else None
+        )
+        session_id = (
+            await adapter.resume(checkpoint) if checkpoint is not None
+            else await adapter.start(spec.id, cwd, model_profile)
+        )
         async for event in adapter.send(session_id, _build_prompt(spec)):
             _fold(agg, event)
         # Authoritative spend, asked for exactly once, after the stream ends.
@@ -367,6 +394,22 @@ async def _run_session(
             stream_error = f"{type(exc).__name__}: {exc}"
     finally:
         if session_id is not None:
+            # Capture a resumable checkpoint BEFORE closing -- but only for an
+            # attempt actually heading to FAILED (same test the DONE/FAILED
+            # split in `_to_result` uses): a successful attempt has nothing to
+            # resume, so capturing on every green run would be a wasted round
+            # trip for the common case. Wrapped in suppress: a checkpoint()
+            # that raises must never mask the real outcome, which is decided
+            # entirely from `agg`/`timed_out`/`stream_error` above.
+            if checkpoint_store is not None and adapter.capabilities().resumable_sessions:
+                status = (agg.done_status or "").lower()
+                attempt_failed = (
+                    timed_out or bool(stream_error)
+                    or agg.done_status is None or status in _FAILURE_DONE_STATUSES
+                )
+                if attempt_failed:
+                    with suppress(Exception):
+                        checkpoint_store[spec.id] = await adapter.checkpoint(session_id)
             with suppress(Exception):
                 await adapter.close(session_id)
 
@@ -489,6 +532,7 @@ def adapter_executor(
     cwd: str,
     model_profile: str = "",
     timeout_seconds: float = 900.0,
+    checkpoint_store: CheckpointStore | None = None,
 ) -> Executor:
     """A synchronous `Executor` that drives `adapter` to completion per task.
 
@@ -501,6 +545,13 @@ def adapter_executor(
     limit is `min(timeout_seconds, spec.budget.max_seconds)` — the task's
     budget is a contract with the human, and a bridge default must never
     outlive it (it may only tighten it).
+
+    `checkpoint_store` (see `CheckpointStore`), when given, is a per-job table
+    keyed by task id. A FAILED-but-resumable attempt writes its checkpoint
+    here before its session closes; the next call for the SAME task id resumes
+    from it instead of cold-starting, provided the adapter handed to THAT call
+    also declares `capabilities().resumable_sessions`. Different tasks never
+    share an entry — the key is the task id, never the worker or the job.
     """
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be > 0")
@@ -508,10 +559,11 @@ def adapter_executor(
     def execute(spec: TaskSpec, worker_id: str) -> ExecutionResult:  # noqa: ARG001 - routing id; the adapter is already bound
         effective_timeout = min(float(timeout_seconds), float(spec.budget.max_seconds))
         started = time.monotonic()
-        outcome = _drive(_run_session(adapter, spec, cwd, model_profile, effective_timeout))
+        outcome = _drive(_run_session(adapter, spec, cwd, model_profile, effective_timeout,
+                                      checkpoint_store))
         return _to_result(outcome, effective_timeout, seconds=time.monotonic() - started)
 
     return execute
 
 
-__all__ = ["BridgedExecutionResult", "adapter_executor", "classify_failure"]
+__all__ = ["BridgedExecutionResult", "CheckpointStore", "adapter_executor", "classify_failure"]

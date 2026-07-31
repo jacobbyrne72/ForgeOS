@@ -453,6 +453,42 @@ def create_app(state_dir: str | Path) -> FastAPI:
         cache_health = ledger.cache_health(job_id)
         return {**totals, "cache": cache, "cache_health": cache_health}
 
+    def _activity_feed(limit: int = 60) -> dict[str, Any]:
+        """Most recent operator-visible events across every job, newest first.
+
+        This is the cross-job counterpart to `_event_feed` above: same two
+        stores, same merge-and-normalise shape, just without a job filter.
+        `event_log.replay()` with no `job_id` is not a new query shape --
+        `_summary()` already replays every event across every job to count
+        `TASK_ACCEPTED`, so this reads nothing the dashboard doesn't already read.
+        """
+        combined: list[dict[str, Any]] = []
+        for ev in event_log.replay():
+            combined.append(
+                {
+                    "source": "kernel",
+                    "job_id": ev.job_id,
+                    "task_id": ev.task_id,
+                    "kind": ev.type.value,
+                    "detail": json.dumps(ev.payload) if ev.payload else "",
+                    "created_at": ev.created_at,
+                }
+            )
+        for job in _all_jobs():
+            for row in ledger.events_for_job(job["id"], limit=limit):
+                combined.append(
+                    {
+                        "source": "ledger",
+                        "job_id": job["id"],
+                        "task_id": row["task_id"],
+                        "kind": row["kind"],
+                        "detail": row["detail"],
+                        "created_at": row["created_at"],
+                    }
+                )
+        combined.sort(key=lambda e: e["created_at"], reverse=True)
+        return {"events": combined[:limit]}
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         try:
@@ -531,6 +567,10 @@ def create_app(state_dir: str | Path) -> FastAPI:
     @app.get("/api/economy")
     def get_economy(job_id: str | None = None) -> dict[str, Any]:
         return _economy(job_id)
+
+    @app.get("/api/activity")
+    def get_activity(limit: int = 60) -> dict[str, Any]:
+        return _activity_feed(limit)
 
     @app.get("/api/workers")
     def get_workers() -> dict[str, Any]:
@@ -615,6 +655,7 @@ def create_app(state_dir: str | Path) -> FastAPI:
             while True:
                 await websocket.send_json({"type": "summary", "data": _summary()})
                 await websocket.send_json({"type": "jobs", "data": _jobs_list()})
+                await websocket.send_json({"type": "activity", "data": _activity_feed(30)})
                 await asyncio.sleep(WS_POLL_SECONDS)
         except WebSocketDisconnect:
             return

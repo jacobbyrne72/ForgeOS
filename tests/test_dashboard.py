@@ -255,6 +255,32 @@ def test_active_leases_are_scoped_to_the_jobs_own_tasks(state_dir: Path):
     assert detail["active_leases"][0]["task_id"] == task_id
 
 
+def test_activity_on_fresh_empty_db_is_an_empty_list(client: TestClient):
+    res = client.get("/api/activity")
+    assert res.status_code == 200
+    assert res.json() == {"events": []}
+
+
+def test_activity_reflects_seeded_events_across_jobs_newest_first(state_dir: Path):
+    job_id, task_id = _seed_job(state_dir)
+    client = TestClient(create_app(state_dir))
+
+    body = client.get("/api/activity").json()
+    events = body["events"]
+    assert len(events) >= 2  # TASK_CREATED + TASK_ACCEPTED from the seed
+    assert all(e["created_at"] >= events[i + 1]["created_at"] for i, e in enumerate(events[:-1]))
+    assert {e["job_id"] for e in events} == {job_id}
+    assert any(e["kind"] == "task_accepted" for e in events)
+
+    # A halt is an operator action -- it must show up in the same feed, not
+    # only in the per-job detail view, since the activity rail is meant to be
+    # the one place an operator sees everything happening across every job.
+    client.post(f"/api/jobs/{job_id}/halt", params={"reason": "operator says stop"})
+    events_after = client.get("/api/activity").json()["events"]
+    assert events_after[0]["kind"] == "operator_halt_requested"
+    assert events_after[0]["job_id"] == job_id
+
+
 def test_economy_reports_avoidance_and_cache_totals(state_dir: Path):
     avoidance = AvoidanceLog(state_dir / AVOIDANCE_DB)
     try:
@@ -300,3 +326,53 @@ def test_websocket_pushes_a_summary_snapshot_on_connect(client: TestClient):
         msg = ws.receive_json()
         assert msg["type"] == "summary"
         assert "cost_per_accepted_task" in msg["data"]
+
+
+def test_websocket_pushes_jobs_then_activity_after_summary(client: TestClient):
+    with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()["type"] == "summary"
+        assert ws.receive_json()["type"] == "jobs"
+        msg = ws.receive_json()
+        assert msg["type"] == "activity"
+        assert "events" in msg["data"]
+
+
+# ------------------------------------------------------------------ honesty
+
+
+def test_index_html_has_balanced_tags():
+    """A structural sanity check for the hand-authored single-file dashboard:
+    every opening tag this parser sees must have a matching close. Void
+    elements are exempt; nothing else is, so a stray unclosed <div> anywhere
+    in a ~1000-line hand-edited file fails loudly instead of silently
+    shipping a broken layout.
+    """
+    from html.parser import HTMLParser
+
+    void_elements = {
+        "area", "base", "br", "col", "embed", "hr", "img", "input",
+        "link", "meta", "param", "source", "track", "wbr",
+    }
+
+    class TagBalanceChecker(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.stack: list[str] = []
+
+        def handle_starttag(self, tag: str, attrs) -> None:
+            if tag not in void_elements:
+                self.stack.append(tag)
+
+        def handle_startendtag(self, tag: str, attrs) -> None:
+            pass  # self-closed, e.g. <br/>, never pushed
+
+        def handle_endtag(self, tag: str) -> None:
+            assert self.stack, f"</{tag}> with no open tag on the stack"
+            assert self.stack[-1] == tag, f"expected </{self.stack[-1]}>, got </{tag}>"
+            self.stack.pop()
+
+    html = STATIC_DIR.joinpath("index.html").read_text(encoding="utf-8")
+    checker = TagBalanceChecker()
+    checker.feed(html)
+    checker.close()
+    assert checker.stack == [], f"unclosed tags: {checker.stack}"

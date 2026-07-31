@@ -63,9 +63,11 @@ Ranked by (novelty × demand ÷ effort):
 1. **Subscription orchestration** 🚧 — treat Claude Code / Codex / Gemini CLI
    *subscription seats* as capacity-priced workers alongside API keys. The
    quota state machine now persists typed provider facts across restarts and
-   exposes them read-only at `/api/quota`; live vendor usage adapters and
-   seat-vs-API arbitration remain. Nobody arbitrages subscriptions vs API —
-   everyone just complains about caps.
+   exposes them read-only at `/api/quota` and `forge quota`; the pure
+   `QuotaIngestor` normalizes headers/CLI reports, while live vendor adapters
+   remain. Capacity-market routing now arbitrates mapped seats vs API by
+   effective cost. Nobody else arbitrages subscriptions vs API — everyone just
+   complains about caps.
 2. **Byte-stable prefix compiler** — a prompt assembler whose contract is byte
    identity of the prefix across calls (provider cache hits ≈ 90% off input).
    Assert with a CI test: same fleet, same day → identical prefix bytes.

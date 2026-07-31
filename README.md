@@ -51,29 +51,50 @@ spending anything. Full mechanism-by-mechanism breakdown (merged vs. still
 landing) in [docs/TEAM.md](docs/TEAM.md); a runnable walkthrough in
 [examples/README.md](examples/README.md).
 
-## The benchmark gate — currently FAILING, on purpose
+## The benchmark gate
 
 `forge forgebench` runs a pinned 6-task suite through two arms and applies the
-blueprint's savings classes. First real run, deepseek-chat, both arms on the
-same ledger:
+blueprint's savings classes. Latest run, deepseek-chat, both arms on the same
+ledger, same prompt settings, class A paired:
 
 ```
-              attempted  accepted    tok in   tok out         USD
-baseline              6         2    61,098       687    0.003917
-ForgeOS               6         3     8,279       649    0.001340
+           attempted accepted    tok in  tok out         USD
+baseline           6        5    70,510      233    0.009935
+forgeos            6        5    14,595      211    0.002104
 
-COST COMPARISON VOID -- acceptance differs between arms.
-RELEASE 0.1 EXIT GATE: FAIL
+RELEASE 0.1 EXIT GATE: PASS
 ```
 
-ForgeOS used **86% fewer input tokens**, cost **66% less**, and accepted **more**
-tasks — and the harness still refused to print a saving, because the two arms did
-not do the same amount of correct work. That refusal is the feature. A "66%
-cheaper" headline sitting on 3-vs-2 acceptance is not a measurement, and class D
-(no baseline) is structurally forbidden from printing a percentage at all.
+Acceptance is equal, so the cost comparison is valid and the harness prints a
+figure: **cash cost −78.8%, input tokens −79.3%, wall time −51.6%.** Zero proof
+complaints. The provenance on those figures reads `replayed`, not `measured`,
+because the baseline is a separate paired execution rather than a direct
+observation of the same run — that distinction is enforced in code
+([`savings.py`](forgeos/economy/savings.py)), not left to the writer.
 
-The second finding is that 3/6 and 2/6 acceptance means most of the suite is
-failing. That is now a measured fact to fix, not an assumption.
+Caveats, stated because they are the ones that matter:
+
+- **Six tasks is small.** Acceptance moved run-to-run at this size before the
+  suite was stable. Treat the direction as the result and the exact percentage
+  as one sample.
+- **One model, one repo.** Measured with deepseek-chat against this codebase.
+  Nothing here establishes what it does on yours.
+- **`ledger-dedup-guard` fails in both arms** — its answer spans two files. Both
+  arms fail it equally, so it is not tilting the comparison.
+
+Two findings from getting here are worth more than the percentage:
+
+1. Three of six tasks had been returning **empty or truncated text while billing
+   a full quota of output tokens**, and the suite scored each as the model
+   getting the question wrong. The cause was `reasoning_effort` defaulting to
+   `medium`: the model spent its entire output budget on chain-of-thought before
+   writing anything. Turning it off on both arms cut output tokens ~66% and
+   raised acceptance from 3/6 to 5/6. The harness now prints `empty!` and
+   `cut off!` distinctly from `fail`, because they are its own failures.
+2. The retriever was previously ranked against a hardcoded term list that
+   **contained the answers to the six benchmark questions**. That is tuning on
+   the test set, and any saving it measured would say nothing about a repo it
+   had not seen. Ranking now derives from each task's own objective.
 
 Reproduce without spending: `forge forgebench --dry-run --json-out artifacts/forgebench.json`.
 The receipt contains all six pinned task contracts, per-task acceptance slots,
@@ -127,9 +148,9 @@ The kernel is deterministic code: scheduling, budgets, file leases, verification
 A model is called only for genuinely ambiguous work. Nothing merges without
 tests, a security scan, evidence, and review by a *different* worker.
 
-> **Status: v0.2.0 — pre-1.0, not production-hardened.** A `forge` CLI, mission
+> **Status: v0.6.10 — pre-1.0, not production-hardened.** A `forge` CLI, mission
 > compiler, circuit breakers, prompt prefix caching, diff-aware scanning, adapter
-> auto-discovery and SQLite WAL tuning are all present and tested. **1124 tests
+> auto-discovery and SQLite WAL tuning are all present and tested. **1863 tests
 > collected.** It runs end to end against real providers.
 >
 > It is not production-hardened, and saying so would be the exact
@@ -350,7 +371,8 @@ one that admits them:
 - **Quota telemetry is durable but still operator-fed.** Provider-reported quota
   facts persist in `.forgeos/quota.json` and appear at `/api/quota`; ForgeOS does
   not probe or invent subscription usage, so live source adapters remain future
-  work.
+  work. Inspect the same local snapshot from the terminal with
+  `forge quota --json`.
 - **Live CLI backends are young.** The omc team adapter is verified against a
   real install, but long-haul reliability (crashed sessions, orphaned
   worktrees) has not been proven over days of continuous use.

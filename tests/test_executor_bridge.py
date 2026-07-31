@@ -37,20 +37,25 @@ class FakeAdapter(WorkerAdapter):
         usage: WorkerUsage | None = None,
         send_exc: Exception | None = None,
         hang_seconds: float = 0.0,
+        resumable: bool = False,
+        checkpoint_exc: Exception | None = None,
     ) -> None:
         self._events = list(events or [])
         self._usage = usage or WorkerUsage()
         self._send_exc = send_exc
         self._hang_seconds = hang_seconds
+        self._resumable = resumable
+        self._checkpoint_exc = checkpoint_exc
         self.calls: list[str] = []
         self.prompts: list[str] = []
         self.started: list[tuple[str, str, str]] = []
+        self.resumed_from: list[dict] = []
 
     def health(self) -> tuple[bool, str]:
         return True, "fake adapter"
 
     def capabilities(self) -> WorkerCapabilities:
-        return WorkerCapabilities()
+        return WorkerCapabilities(resumable_sessions=self._resumable)
 
     async def start(self, task_id: str, cwd: str, model_profile: str) -> str:
         self.calls.append("start")
@@ -71,9 +76,14 @@ class FakeAdapter(WorkerAdapter):
         self.calls.append("cancel")
 
     async def checkpoint(self, session_id: str) -> dict:
-        return {"task_id": "t"}
+        self.calls.append("checkpoint")
+        if self._checkpoint_exc is not None:
+            raise self._checkpoint_exc
+        return {"task_id": "t", "session_id": session_id}
 
     async def resume(self, checkpoint: dict) -> str:
+        self.calls.append("resume")
+        self.resumed_from.append(checkpoint)
         return "sess-resumed"
 
     async def usage(self, session_id: str) -> WorkerUsage:
@@ -352,6 +362,123 @@ def test_a_raised_connection_error_still_classifies_from_its_text():
 def test_a_zero_timeout_is_rejected_at_construction():
     with pytest.raises(ValueError):
         adapter_executor(FakeAdapter(), cwd=".", timeout_seconds=0)
+
+
+# ==================================================== checkpoint and resume
+
+
+def test_a_resumable_failure_is_checkpointed_and_the_next_call_resumes_it():
+    """The whole point of the seam: a FAILED-but-resumable attempt leaves a
+    checkpoint behind, and the NEXT adapter built for the SAME task resumes
+    from it instead of cold-starting -- proving continuity lives in the store,
+    not in any one adapter instance (routed.py builds a fresh adapter per
+    attempt in production)."""
+    store: dict[str, dict] = {}
+    spec = _spec()
+    failing = FakeAdapter(
+        [WorkerEvent(kind=EventKind.ERROR,
+                     text="the proposed patch does not satisfy the acceptance criteria"),
+         WorkerEvent(kind=EventKind.DONE, status="failed")],
+        resumable=True,
+    )
+
+    result1 = adapter_executor(failing, cwd=".", checkpoint_store=store)(spec, "w")
+
+    assert result1.state is TaskState.FAILED
+    # usage() is asked for inside the same try block, before the finally that
+    # captures the checkpoint -- it only skips when send()/start() raises.
+    assert failing.calls == ["start", "send", "usage", "checkpoint", "close"]
+    assert store[spec.id] == {"task_id": "t", "session_id": "sess-1"}
+
+    resuming = FakeAdapter(_green_events(), resumable=True)
+    result2 = adapter_executor(resuming, cwd=".", checkpoint_store=store)(spec, "w")
+
+    assert result2.state is TaskState.DONE
+    assert resuming.calls[0] == "resume", "a stored checkpoint must be resumed, not cold-started"
+    assert "start" not in resuming.calls
+    assert resuming.resumed_from == [store[spec.id]]
+
+
+def test_a_non_resumable_adapter_cold_starts_even_with_a_checkpoint_on_file():
+    store: dict[str, dict] = {}
+    spec = _spec()
+    failing = FakeAdapter(
+        [WorkerEvent(kind=EventKind.ERROR, text="boom"),
+         WorkerEvent(kind=EventKind.DONE, status="failed")],
+        resumable=False,
+    )
+    adapter_executor(failing, cwd=".", checkpoint_store=store)(spec, "w")
+
+    assert "checkpoint" not in failing.calls, \
+        "a non-resumable adapter's checkpoint is never even asked for"
+    assert spec.id not in store
+
+    again = FakeAdapter(_green_events(), resumable=False)
+    result = adapter_executor(again, cwd=".", checkpoint_store=store)(spec, "w")
+
+    assert again.calls[0] == "start"
+    assert "resume" not in again.calls
+    assert result.state is TaskState.DONE
+
+
+def test_a_raising_checkpoint_never_masks_the_real_failure():
+    store: dict[str, dict] = {}
+    spec = _spec()
+    adapter = FakeAdapter(
+        [WorkerEvent(kind=EventKind.ERROR, text="ModuleNotFoundError: No module named 'pytest'"),
+         WorkerEvent(kind=EventKind.DONE, status="failed")],
+        resumable=True, checkpoint_exc=RuntimeError("checkpoint backend unreachable"),
+    )
+
+    result = adapter_executor(adapter, cwd=".", checkpoint_store=store)(spec, "w")
+
+    assert result.state is TaskState.FAILED
+    assert result.failure is FailureClass.ENVIRONMENT
+    assert "ModuleNotFoundError" in result.blocker
+    assert spec.id not in store, "a raising checkpoint() must leave nothing behind"
+    assert "close" in adapter.calls, "close must still run after a raising checkpoint()"
+
+
+def test_different_tasks_never_share_a_checkpoint_slot():
+    store: dict[str, dict] = {}
+    spec_a, spec_b = _spec(subject="task a"), _spec(subject="task b")
+    fail_events = [WorkerEvent(kind=EventKind.ERROR, text="boom"),
+                   WorkerEvent(kind=EventKind.DONE, status="failed")]
+
+    adapter_executor(FakeAdapter(fail_events, resumable=True),
+                     cwd=".", checkpoint_store=store)(spec_a, "w")
+
+    assert spec_a.id in store
+    assert spec_b.id not in store
+
+    resuming_b = FakeAdapter(_green_events(), resumable=True)
+    adapter_executor(resuming_b, cwd=".", checkpoint_store=store)(spec_b, "w")
+
+    assert "start" in resuming_b.calls
+    assert "resume" not in resuming_b.calls, \
+        "task b must cold-start; it has no checkpoint of its own"
+
+
+def test_a_green_attempt_never_bothers_calling_checkpoint():
+    store: dict[str, dict] = {}
+    adapter = FakeAdapter(_green_events(), resumable=True)
+    result = adapter_executor(adapter, cwd=".", checkpoint_store=store)(_spec(), "w")
+
+    assert result.state is TaskState.DONE
+    assert "checkpoint" not in adapter.calls, \
+        "a successful attempt has nothing to resume; capturing one would be a wasted call"
+
+
+def test_no_checkpoint_store_behaves_exactly_like_before():
+    adapter = FakeAdapter(
+        [WorkerEvent(kind=EventKind.ERROR, text="boom"),
+         WorkerEvent(kind=EventKind.DONE, status="failed")],
+        resumable=True,
+    )
+    result = adapter_executor(adapter, cwd=".")(_spec(), "w")
+    assert result.state is TaskState.FAILED
+    assert "checkpoint" not in adapter.calls
+    assert adapter.calls[0] == "start"
 
 
 # ===================================================== event-loop coexistence

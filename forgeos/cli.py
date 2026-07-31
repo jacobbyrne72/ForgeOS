@@ -94,6 +94,78 @@ def cmd_doctor(args) -> int:
         print(f"\nPrompt cache: {cs['entries']} entries ({cs['utilization_pct']}% full)")
     finally:
         cache.close()
+    print()
+    _print_quota(args.state_dir, as_json=False)
+    return 0
+
+
+def _quota_payload(state_dir: str | None) -> dict:
+    from forgeos.core.quota import QUOTA_SNAPSHOT_SCHEMA, QuotaTracker
+
+    root = Path(state_dir or Path.cwd() / ".forgeos")
+    path = root / "quota.json"
+    if not path.exists():
+        return {
+            "schema": QUOTA_SNAPSHOT_SCHEMA,
+            "path": str(path),
+            "available": False,
+            "error": None,
+            "states": [],
+        }
+    try:
+        tracker = QuotaTracker.load(path)
+    except ValueError as exc:
+        return {
+            "schema": QUOTA_SNAPSHOT_SCHEMA,
+            "path": str(path),
+            "available": False,
+            "error": str(exc),
+            "states": [],
+        }
+    return {
+        "schema": QUOTA_SNAPSHOT_SCHEMA,
+        "path": str(path),
+        "available": True,
+        "error": None,
+        "states": [
+            {
+                **state.model_dump(mode="json"),
+                "available_now": state.available(),
+                "seconds_until_reset": state.seconds_until_reset(),
+            }
+            for state in tracker.states()
+        ],
+        "parked_jobs": len(tracker.parked()),
+    }
+
+
+def _print_quota(state_dir: str | None, *, as_json: bool) -> None:
+    payload = _quota_payload(state_dir)
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    if not payload["available"]:
+        if payload["error"]:
+            print(f"Quota telemetry: invalid snapshot ({payload['error']})")
+        else:
+            print(f"Quota telemetry: no snapshot at {payload['path']}")
+        return
+    states = payload["states"]
+    print(f"Quota telemetry: {len(states)} provider/model snapshot(s)")
+    for state in states:
+        remaining = (
+            f"{state['pct_remaining']:.0f}% remaining"
+            if state["pct_remaining"] is not None else "remaining unknown"
+        )
+        print(
+            f"  {state['provider']:<14} {state['model'] or '*':<18} {remaining} "
+            f"available={state['available_now']} source={state['source']}"
+        )
+    print(f"  parked jobs: {payload['parked_jobs']}")
+
+
+def cmd_quota(args) -> int:
+    _print_quota(args.state_dir, as_json=args.json)
     return 0
 
 
@@ -373,7 +445,11 @@ def cmd_replace(args):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="forge", description="ForgeOS - cost-governed AI coding")
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("doctor", help="What can this machine do right now")
+    p_doctor = sub.add_parser("doctor", help="What can this machine do right now")
+    p_doctor.add_argument("--state-dir", default=None)
+    p_quota = sub.add_parser("quota", help="Read local subscription quota telemetry")
+    p_quota.add_argument("--state-dir", default=None)
+    p_quota.add_argument("--json", action="store_true")
     sub.add_parser("fleet", help="What you have, what's alive, what's cheapest TODAY")
     p_receipts = sub.add_parser("receipts", help="Read-only ledger spend and acceptance summary")
     p_receipts.add_argument("--state-dir", default=None)
@@ -522,6 +598,7 @@ def main(argv: list[str] | None = None) -> int:
         "truncate": cmd_truncate,
         "proj": cmd_project,
         "doctor": cmd_doctor,
+        "quota": cmd_quota,
         "init": cmd_init,
         "compile": cmd_compile,
         "cache": cmd_cache,

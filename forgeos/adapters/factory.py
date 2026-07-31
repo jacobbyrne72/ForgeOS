@@ -103,6 +103,19 @@ def _construct(
             return None, f"local command adapter unimportable: {exc}"
         return LocalCommandAdapter(profile.command, profile.args), "local command adapter built"
 
+    if profile.adapter is Adapter.ACP:
+        if not profile.command:
+            return None, f"{profile.worker_id} has no ACP vendor CLI command configured"
+        try:
+            from .acp import ACPAdapter
+        except Exception as exc:
+            return None, f"acp adapter unimportable: {exc}"
+        # Missing SDK / missing vendor CLI are both surfaced by `health()`
+        # (the caller runs it right after `_construct`, unless check_health is
+        # off) — that is the one place those reasons are worded, so they are
+        # not duplicated here.
+        return ACPAdapter(profile.command, profile.args), "acp adapter built"
+
     if profile.adapter is Adapter.CLI_TEAM:
         try:
             from .cli_team import OMCTeamAdapter

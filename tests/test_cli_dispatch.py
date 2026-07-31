@@ -223,6 +223,20 @@ def test_console_receipts_delegates_to_canonical_read_only_view(monkeypatch):
     assert captured == {"state_dir": "state"}
 
 
+def test_quota_cli_reads_local_snapshot_as_json(tmp_path, capsys):
+    from forgeos.core.quota import QuotaTracker
+
+    quota = QuotaTracker()
+    quota.record_report("claude", "Weekly: 75% remaining", at=1_800_000_000)
+    quota.save(tmp_path / "quota.json")
+
+    assert cli.main(["quota", "--state-dir", str(tmp_path), "--json"]) == 0
+    output = capsys.readouterr().out
+    assert '"schema": "forgeos.quota.v1"' in output
+    assert '"provider": "claude"' in output
+    assert '"pct_remaining": 75.0' in output
+
+
 def test_fleet_is_safe_on_windows_cp1252_console(monkeypatch, capsys):
     """The fleet screenshot must not crash on the default Windows console."""
     from types import SimpleNamespace

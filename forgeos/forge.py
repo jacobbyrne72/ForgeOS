@@ -30,7 +30,7 @@ import json
 import re
 import subprocess
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
@@ -59,7 +59,11 @@ from .core.timing import Phase, SpanStore
 from .core.verify import GateResult, MergeGate, run_security
 from .economy.avoidance import AvoidanceLog, AvoidanceMethod
 from .economy.lowerer import Operation, classify, savings_estimate
-from .economy.preflight import count_tokens
+from .economy.preflight import (
+    Decision as PreflightDecision,
+    check_repeat_work,
+    count_tokens,
+)
 from .economy.reducer import reduce_generic, reduce_pytest
 
 from .events import EventLog, EventType
@@ -471,7 +475,23 @@ class Forge:
         except OSError as exc:
             self.quota_persist_error = str(exc)
 
-    def default_executor(self, *, cwd: str = ".") -> Executor:
+    def ingest_quota(self, observation):
+        """Apply normalized provider telemetry and persist it immediately.
+
+        Adapters own how they receive headers or CLI text; Forge owns the
+        durable tracker and the routing decision. This seam keeps credentials
+        and network policy outside the core while making a provider observation
+        usable on the very next task.
+        """
+        from .core.quota_ingest import QuotaIngestor
+
+        with self._quota_lock:
+            state = QuotaIngestor.apply(self.quota, observation)
+            self._persist_quota_locked()
+            return state
+
+    def default_executor(self, *, cwd: str = ".",
+                         checkpoint_store: MutableMapping[str, dict] | None = None) -> Executor:
         """Build the standard routed executor with this Forge's ledger.
 
         The gateway is lazy so constructing a Forge for a dry-run or a purely
@@ -479,6 +499,11 @@ class Forge:
         Once a real default run needs it, the gateway shares this Forge's
         ledger, settings, and avoidance log; gateway spend therefore lands in
         the same receipt as every other worker.
+
+        `checkpoint_store`, when given, is threaded straight through to
+        `routed_executor` — see `run()` for the per-job store it creates once
+        and reuses across every attempt and every isolated-worktree rebuild of
+        this executor.
         """
         if self._gateway is None:
             from .catalog import default_catalog
@@ -499,6 +524,7 @@ class Forge:
             self.ledger,
             gateway=self._gateway,
             cwd=cwd,
+            checkpoint_store=checkpoint_store,
         )
 
     # ------------------------------------------------------------------ run
@@ -515,6 +541,7 @@ class Forge:
         reviewer: Executor | None = None,
         operations: dict[str, Operation] | None = None,
         isolate_worktrees: bool = False,
+        allow_repeat_work: bool = False,
     ) -> ForgeResult:
         """Run a job to completion.
 
@@ -538,8 +565,13 @@ class Forge:
         otherwise-accepted task into an honest refusal instead of a false green.
         """
         executor_is_default = executor is None
+        # Per-job, in-memory: see `adapters.executor.CheckpointStore`. Created
+        # unconditionally (a bare dict costs nothing) but only ever populated
+        # or read along the default routed path — a caller-supplied executor
+        # never sees it.
+        checkpoint_store: dict[str, dict] = {}
         if executor is None:
-            executor = self.default_executor(cwd=cwd)
+            executor = self.default_executor(cwd=cwd, checkpoint_store=checkpoint_store)
         self._operations = operations or {}
         self._trip.clear()
         self._trip_reason = ""
@@ -550,9 +582,26 @@ class Forge:
                                               max_iterations=60))
         for t in tasks:
             t.job_id = job.id
+
+        # Receipt-aware preflight: refuse to re-spend on a contract this exact
+        # ledger already settled, BEFORE routing/leases/execution ever run —
+        # the wiring `economy.preflight.check_repeat_work`'s docstring
+        # specifies. A refusal here is an outcome, not an error, and carries
+        # the prior receipt so the caller sees what it already paid.
+        outcomes: list[TaskOutcome] = []
+        submitted: list[TaskSpec] = []
+        for t in tasks:
+            verdict = check_repeat_work(self.ledger, t, skip=allow_repeat_work)
+            if verdict.decision is PreflightDecision.REFUSE_DUPLICATE:
+                outcomes.append(TaskOutcome(
+                    task_id=t.id, subject=t.subject, accepted=False,
+                    reason=verdict.reason,
+                ))
+                continue
+            submitted.append(t)
+        tasks = submitted
         self.scheduler.submit(job, tasks)
 
-        outcomes: list[TaskOutcome] = []
         halted = ""
         # `TaskSpec.depends_on` is the obvious place to declare a dependency, so it
         # must be honoured. Reading only the separate dict meant a caller who used
@@ -611,6 +660,7 @@ class Forge:
                         self._run_task_guarded, job, spec, executor, reviewer,
                         isolate_worktrees=isolate_worktrees, repo_root=repo_root,
                         executor_is_default=executor_is_default, job_base_ref=job_base_ref,
+                        checkpoint_store=checkpoint_store,
                     )))
 
                 # Collect in SUBMISSION order, not completion order. Completion
@@ -665,7 +715,9 @@ class Forge:
     def _run_task_guarded(self, job: JobSpec, spec: TaskSpec, executor: Executor,
                           reviewer: Executor | None, *, isolate_worktrees: bool = False,
                           repo_root: str | None = None, executor_is_default: bool = False,
-                          job_base_ref: str | None = None) -> TaskOutcome | None:
+                          job_base_ref: str | None = None,
+                          checkpoint_store: MutableMapping[str, dict] | None = None,
+                          ) -> TaskOutcome | None:
         """`_run_task` plus the two guarantees threading adds.
 
         An exception in a worker thread must surface as a FAILED outcome — a task
@@ -679,7 +731,8 @@ class Forge:
             return self._run_task(job, spec, executor, reviewer,
                                   isolate_worktrees=isolate_worktrees, repo_root=repo_root,
                                   executor_is_default=executor_is_default,
-                                  job_base_ref=job_base_ref)
+                                  job_base_ref=job_base_ref,
+                                  checkpoint_store=checkpoint_store)
         except Exception as exc:  # noqa: BLE001 — the alternative is a vanished task
             reason = f"worker thread raised {type(exc).__name__}: {exc}"
             try:
@@ -699,7 +752,9 @@ class Forge:
     def _run_task(self, job: JobSpec, spec: TaskSpec, executor: Executor,
                   reviewer: Executor | None, *, isolate_worktrees: bool = False,
                   repo_root: str | None = None, executor_is_default: bool = False,
-                  job_base_ref: str | None = None) -> TaskOutcome | None:
+                  job_base_ref: str | None = None,
+                  checkpoint_store: MutableMapping[str, dict] | None = None,
+                  ) -> TaskOutcome | None:
         attempts = 0
         tier_used: int | None = None
         worker_id = ""
@@ -775,6 +830,8 @@ class Forge:
             route = self.router.route(
                 spec.capabilities,
                 stats=stats,
+                market=self.market,
+                quota=self.quota,
                 needs_file_edits=bool(spec.scope.paths),
             )
             # A MODEL failure on the previous attempt asks the router for the
@@ -785,7 +842,10 @@ class Forge:
             if escalate_failure is not None and escalate_route is not None:
                 esc = self.router.escalate(
                     escalate_route, escalate_failure, spec.capabilities,
-                    stats=stats, needs_file_edits=bool(spec.scope.paths),
+                    stats=stats,
+                    market=self.market,
+                    quota=self.quota,
+                    needs_file_edits=bool(spec.scope.paths),
                 )
                 if esc is not None:
                     route = esc
@@ -923,7 +983,8 @@ class Forge:
             # chooses to ask, where this attempt's worktree lives.
             call_executor = executor
             if worktree_info is not None and executor_is_default:
-                call_executor = self.default_executor(cwd=task_cwd)
+                call_executor = self.default_executor(cwd=task_cwd,
+                                                       checkpoint_store=checkpoint_store)
             _task_cwd_local.value = task_cwd if worktree_info is not None else None
             try:
                 with self.spans.measure(job.id, Phase.MODEL_REASONING, task_id=spec.id):

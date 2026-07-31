@@ -13,7 +13,7 @@ a worker that never ran the task.
 from __future__ import annotations
 
 from forgeos.adapters.factory import build_adapter, runnable_workers
-from forgeos.registry import Adapter, CostTier, WorkerProfile, default_registry
+from forgeos.registry import Adapter, CostTier, WorkerProfile, acp_profiles, default_registry
 
 
 def _profile(adapter: Adapter, **kw) -> WorkerProfile:
@@ -114,6 +114,76 @@ def test_a_backend_whose_health_check_raises_is_unavailable_not_a_crash():
     assert adapter is None
     assert "RuntimeError" in reason
     assert "kaboom" in reason
+
+
+# ======================================================================= acp
+
+
+def test_an_acp_profile_refuses_to_build_without_a_command():
+    p = _profile(Adapter.ACP)
+    adapter, reason = build_adapter(p, check_health=False)
+    assert adapter is None
+    assert p.worker_id in reason
+
+
+def test_an_acp_profile_is_unavailable_when_the_sdk_is_not_installed(monkeypatch):
+    from forgeos.adapters import acp as acp_adapter
+
+    def boom():
+        raise ImportError("no module named acp")
+
+    monkeypatch.setattr(acp_adapter, "_import_acp", boom)
+    p = _profile(Adapter.ACP, command="claude-agent-acp")
+
+    adapter, reason = build_adapter(p)
+
+    assert adapter is None
+    assert "acp SDK not installed" in reason
+
+
+def test_an_acp_profile_is_unavailable_when_the_cli_is_not_on_path(monkeypatch):
+    from forgeos.adapters import acp as acp_adapter
+
+    monkeypatch.setattr(acp_adapter, "_import_acp", lambda: object())
+    monkeypatch.setattr(acp_adapter.shutil, "which", lambda cmd: None)
+    p = _profile(Adapter.ACP, command="nonexistent-cli")
+
+    adapter, reason = build_adapter(p)
+
+    assert adapter is None
+    assert "nonexistent-cli" in reason
+
+
+def test_an_acp_profile_builds_with_a_fake_sdk_and_cli_on_path(monkeypatch):
+    from forgeos.adapters import acp as acp_adapter
+
+    monkeypatch.setattr(acp_adapter, "_import_acp", lambda: object())
+    monkeypatch.setattr(acp_adapter.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+    p = _profile(Adapter.ACP, command="claude-agent-acp", args=["--flag"])
+
+    adapter, reason = build_adapter(p)
+
+    assert adapter is not None
+    assert adapter.__class__.__name__ == "ACPAdapter"
+    assert "importable" in reason
+
+
+def test_acp_example_profiles_are_valid_and_constructible():
+    """Not enabled by default (see registry.acp_profiles docstring), but each
+    one must still name a real, buildable adapter."""
+    profiles = acp_profiles()
+    assert len(profiles) == 2
+    for p in profiles:
+        assert p.adapter is Adapter.ACP
+        assert p.command
+        adapter, reason = build_adapter(p, check_health=False)
+        assert adapter is not None, reason
+        assert adapter.__class__.__name__ == "ACPAdapter"
+
+
+def test_acp_example_profiles_are_not_in_the_default_registry():
+    default_ids = {p.worker_id for p in default_registry().all()}
+    assert not default_ids & {p.worker_id for p in acp_profiles()}
 
 
 # ================================================================= coverage

@@ -17,6 +17,8 @@ from forgeos.core.router import (
     Router,
     Tier,
 )
+from forgeos.core.market import CapacityMarket, Entitlement, Forecast, TelemetrySource
+from forgeos.core.quota import QuotaTracker
 from forgeos.registry import Adapter, CostTier, Registry, WorkerProfile
 
 
@@ -220,3 +222,83 @@ def test_effort_policy_keys_are_not_required_to_be_worker_capabilities(ladder):
     assert ladder.effort_for(["trivial_edit"]) == ReasoningEffort.NONE
     # ...but a worker still has to declare the capability to be eligible.
     assert ladder.route(["trivial_edit"]) is None
+
+
+# ------------------------------------------------------ capacity arbitration
+
+
+def _market_ladder() -> Router:
+    return Router(
+        Registry(
+            [
+                _w(
+                    "paid.api",
+                    CostTier.CHEAP,
+                    {"mechanical"},
+                    market_resource="openrouter",
+                ),
+                _w(
+                    "sub.cli",
+                    CostTier.STANDARD,
+                    {"mechanical"},
+                    market_resource="claude.sub",
+                ),
+            ]
+        )
+    )
+
+
+def test_capacity_market_spends_expiring_subscription_before_paid_api():
+    market = CapacityMarket()
+    market.record(Entitlement(
+        resource_id="claude.sub", remaining=0.8, resets_at=1_800_003_600,
+        source=TelemetrySource.OFFICIAL_CLI, measured_at=1_800_000_000,
+    ))
+    market.record(Entitlement(
+        resource_id="openrouter", remaining=1.0,
+        source=TelemetrySource.OFFICIAL_API, cash_cost=0.5,
+    ))
+    market.forecast(Forecast(resource_id="claude.sub", expected_demand=0.05, confidence=0.9))
+
+    route = _market_ladder().route(["mechanical"], risk="low", market=market, at=1_800_000_000)
+
+    assert route.worker_id == "sub.cli"
+    assert "capacity market" in route.reason
+
+
+def test_capacity_market_conserves_scarce_subscription_for_paid_api():
+    market = CapacityMarket()
+    market.record(Entitlement(
+        resource_id="claude.sub", remaining=0.1, resets_at=1_800_100_000,
+        source=TelemetrySource.OFFICIAL_CLI, measured_at=1_800_000_000,
+    ))
+    market.record(Entitlement(
+        resource_id="openrouter", remaining=1.0,
+        source=TelemetrySource.OFFICIAL_API, cash_cost=0.5,
+    ))
+    market.forecast(Forecast(resource_id="claude.sub", expected_demand=0.9, confidence=0.9))
+
+    route = _market_ladder().route(["mechanical"], risk="low", market=market, at=1_800_000_000)
+
+    assert route.worker_id == "paid.api"
+
+
+def test_quota_exhaustion_removes_a_mapped_subscription_from_market_choice():
+    market = CapacityMarket()
+    market.record(Entitlement(
+        resource_id="claude.sub", remaining=0.8, resets_at=1_800_003_600,
+        source=TelemetrySource.OFFICIAL_CLI, measured_at=1_800_000_000,
+    ))
+    market.record(Entitlement(
+        resource_id="openrouter", remaining=1.0,
+        source=TelemetrySource.OFFICIAL_API, cash_cost=0.5,
+    ))
+    market.forecast(Forecast(resource_id="claude.sub", expected_demand=0.05, confidence=0.9))
+    quota = QuotaTracker()
+    quota.record_exhaustion("claude", resets_at=1_800_003_600, at=1_800_000_000)
+
+    route = _market_ladder().route(
+        ["mechanical"], risk="low", market=market, quota=quota, at=1_800_000_000
+    )
+
+    assert route.worker_id == "paid.api"

@@ -293,6 +293,22 @@ class Ledger:
             (job_id, TaskState.DONE.value, TaskState.FAILED.value),
         ).fetchall()
 
+    def recent_tasks(self, limit: int = 500) -> list[sqlite3.Row]:
+        """The `limit` most recently created tasks across ALL jobs, newest first.
+
+        Read-only, and deliberately not scoped to one job: `economy.preflight`'s
+        repeat-work check needs to catch a duplicate submitted from a different
+        job, not just a duplicate within the same one. `limit` bounds the cost
+        of every caller that scans this (a fingerprint has no stored column to
+        index on -- see `economy.preflight.task_fingerprint`'s docstring for
+        why) to a fixed number of row decodes regardless of how large the ledger
+        has grown, at the honest cost of not finding a match older than the
+        `limit`-th most recent task.
+        """
+        return self._conn.execute(
+            "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+
     # ---------------- generation fencing ----------------
     # A task's generation counter starts at 0 and only moves forward. It exists
     # to fence out a worker that outlived its assignment: `bump_generation` is

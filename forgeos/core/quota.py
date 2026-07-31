@@ -352,11 +352,10 @@ class QuotaTracker:
         """Ingest a provider's own usage output — the authoritative path."""
         at = at or now()
         facts = parse_usage_report(text, at=at)
-        state = QuotaState(
+        return self.record_facts(
             provider=provider,
             model=model,
             observed_at=at,
-            # Reported only if the text actually carried a reset time or a percentage.
             source=(
                 QuotaSource.REPORTED
                 if ("resets_at" in facts or "pct_remaining" in facts)
@@ -364,6 +363,34 @@ class QuotaTracker:
             ),
             detail=text.strip()[:300],
             **{k: v for k, v in facts.items() if k in QuotaState.model_fields},
+        )
+
+    def record_facts(
+        self,
+        provider: str,
+        *,
+        model: str = "",
+        pct_remaining: float | None = None,
+        resets_at: float | None = None,
+        window: QuotaWindow = QuotaWindow.UNKNOWN,
+        banked_resets: int = 0,
+        exhausted: bool = False,
+        source: QuotaSource = QuotaSource.REPORTED,
+        observed_at: float | None = None,
+        detail: str = "",
+    ) -> QuotaState:
+        """Record already-normalized provider facts from any ingestion adapter."""
+        state = QuotaState(
+            provider=provider,
+            model=model,
+            window=window,
+            pct_remaining=pct_remaining,
+            resets_at=resets_at,
+            banked_resets=banked_resets,
+            exhausted=exhausted,
+            source=source,
+            observed_at=observed_at or now(),
+            detail=detail[:300],
         )
         key = self._key(provider, model)
         self._states[key] = state

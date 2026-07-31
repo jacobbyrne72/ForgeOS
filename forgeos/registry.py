@@ -48,6 +48,7 @@ class Adapter(str, Enum):
     GATEWAY = "gateway"
     OLLAMA = "ollama"
     LOCAL_COMMAND = "local_command"
+    ACP = "acp"
 
 
 class WorkerProfile(BaseModel):
@@ -69,6 +70,9 @@ class WorkerProfile(BaseModel):
     # passing `agent_type` there fails at spawn time with a confusing error.
     agent_type: str = ""
     vendor: str = ""
+    # Optional CapacityMarket resource id. Empty means this worker is not
+    # arbitrated by quota telemetry, preserving the legacy router behavior.
+    market_resource: str = ""
     effort: str = "medium"
     tier: CostTier = CostTier.STANDARD
     capabilities: set[str] = Field(default_factory=set)
@@ -234,6 +238,7 @@ def default_registry() -> Registry:
                 worker_id="forgeos.executor",
                 adapter=_TEAM,
                 vendor="claude",
+                market_resource="claude.sub",
                 agent_type="executor",
                 tier=CostTier.STANDARD,
                 capabilities={"edit", "implement", "python", "typescript", "mechanical", "refactor"},
@@ -245,6 +250,7 @@ def default_registry() -> Registry:
                 worker_id="forgeos.explore",
                 adapter=_TEAM,
                 vendor="claude",
+                market_resource="claude.sub",
                 agent_type="explore",
                 tier=CostTier.CHEAP,
                 capabilities={"search", "locate", "map"},
@@ -255,6 +261,7 @@ def default_registry() -> Registry:
                 worker_id="forgeos.test-engineer",
                 adapter=_TEAM,
                 vendor="claude",
+                market_resource="claude.sub",
                 agent_type="test-engineer",
                 tier=CostTier.STANDARD,
                 capabilities={"test", "verify", "python", "typescript"},
@@ -266,6 +273,7 @@ def default_registry() -> Registry:
                 worker_id="forgeos.debugger",
                 adapter=_TEAM,
                 vendor="claude",
+                market_resource="claude.sub",
                 agent_type="debugger",
                 tier=CostTier.STANDARD,
                 capabilities={"debug", "diagnose", "test"},
@@ -277,6 +285,7 @@ def default_registry() -> Registry:
                 worker_id="forgeos.verifier",
                 adapter=_TEAM,
                 vendor="claude",
+                market_resource="claude.sub",
                 agent_type="verifier",
                 tier=CostTier.CHEAP,
                 capabilities={"verify", "review"},
@@ -287,6 +296,7 @@ def default_registry() -> Registry:
                 worker_id="forgeos.code-reviewer",
                 adapter=_TEAM,
                 vendor="claude",
+                market_resource="claude.sub",
                 agent_type="code-reviewer",
                 tier=CostTier.STANDARD,
                 capabilities={"review", "security"},
@@ -297,6 +307,7 @@ def default_registry() -> Registry:
                 worker_id="forgeos.architect",
                 adapter=_TEAM,
                 vendor="claude",
+                market_resource="claude.sub",
                 agent_type="architect",
                 effort="high",
                 tier=CostTier.PREMIUM,
@@ -309,6 +320,7 @@ def default_registry() -> Registry:
                 worker_id="forgeos.critic",
                 adapter=_TEAM,
                 vendor="claude",
+                market_resource="claude.sub",
                 agent_type="critic",
                 effort="high",
                 tier=CostTier.PREMIUM,
@@ -321,6 +333,58 @@ def default_registry() -> Registry:
     )
 
 
+def acp_profiles() -> list[WorkerProfile]:
+    """Example ACP-backed worker profiles: any ACP-speaking CLI as a worker.
+
+    One protocol (`forgeos/adapters/acp.py`) turns every ACP-compatible agent
+    CLI in the ecosystem into a routable worker — these two are examples, not
+    an exhaustive list.
+
+    Deliberately NOT part of `default_registry()`. A machine that hasn't
+    installed the ACP Python SDK or either vendor CLI must not grow phantom
+    workers it can never run — `ACPAdapter.health()` would report every one
+    of them unavailable, which is correct, but a fleet listing should not
+    carry entries nobody asked for.
+
+    To enable, on a machine with the vendor CLI installed and
+    `pip install agent-client-protocol` done:
+
+        registry = default_registry()
+        for profile in acp_profiles():
+            registry.add(profile)
+    """
+    return [
+        WorkerProfile(
+            worker_id="acp.claude-agent",
+            adapter=Adapter.ACP,
+            vendor="claude",
+            command="npx",
+            args=["-y", "@agentclientprotocol/claude-agent-acp"],
+            tier=CostTier.STANDARD,
+            capabilities={"edit", "implement", "review", "python", "typescript"},
+            can_edit_files=True,
+            prior_win_rate=0.75,
+            est_seconds=180.0,
+            notes="Requires: pip install agent-client-protocol, npx-reachable "
+                  "@agentclientprotocol/claude-agent-acp, and the CLI's own auth already set up.",
+        ),
+        WorkerProfile(
+            worker_id="acp.codex",
+            adapter=Adapter.ACP,
+            vendor="codex",
+            command="npx",
+            args=["-y", "@agentclientprotocol/codex-acp"],
+            tier=CostTier.STANDARD,
+            capabilities={"edit", "implement", "review", "python", "typescript"},
+            can_edit_files=True,
+            prior_win_rate=0.75,
+            est_seconds=180.0,
+            notes="Requires: pip install agent-client-protocol, npx-reachable "
+                  "@agentclientprotocol/codex-acp, and the CLI's own auth already set up.",
+        ),
+    ]
+
+
 __all__ = [
     "Adapter",
     "Candidate",
@@ -328,5 +392,6 @@ __all__ = [
     "MIN_ATTEMPTS_TO_TRUST",
     "Registry",
     "WorkerProfile",
+    "acp_profiles",
     "default_registry",
 ]

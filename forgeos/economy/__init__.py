@@ -54,15 +54,23 @@ from .packing import (
     spend,
 )
 from .preflight import (
+    DEFAULT_ENVIRONMENT_FAILURE_THRESHOLD,
+    DEFAULT_TASK_SCAN_LIMIT,
     ESTIMATE_ENCODING,
     CallEstimate,
     CallRefused,
     Decision,
     PreflightVerdict,
+    PriorTask,
+    ReceiptVerdict,
     TokenCount,
     check,
+    check_repeat_work,
     count_tokens,
     estimate_call,
+    matching_tasks,
+    prior_outcome,
+    task_fingerprint,
 )
 from .reducer import Failure, ReducedOutput, reduce_generic, reduce_pytest
 from .savings import (
@@ -85,6 +93,8 @@ from .testselect import Level, Selection, TestGraph, next_level
 
 __all__ = [
     "AVOIDANCE_SCHEMA",
+    "DEFAULT_ENVIRONMENT_FAILURE_THRESHOLD",
+    "DEFAULT_TASK_SCAN_LIMIT",
     "EXCEPTION_RATE_MAX",
     "ESTIMATE_ENCODING",
     "MAX_SOURCES",
@@ -116,7 +126,9 @@ __all__ = [
     "Overflow",
     "PackReport",
     "PreflightVerdict",
+    "PriorTask",
     "Provenance",
+    "ReceiptVerdict",
     "ReducedOutput",
     "RefKind",
     "SavingsProof",
@@ -129,6 +141,7 @@ __all__ = [
     "billed_cost_breakdown",
     "build_proof",
     "check",
+    "check_repeat_work",
     "classify",
     "cost_per_accepted_task",
     "count_tokens",
@@ -138,8 +151,10 @@ __all__ = [
     "expand_to_boundary",
     "find_tensions",
     "make_ref",
+    "matching_tasks",
     "next_level",
     "next_reads",
+    "prior_outcome",
     "record_lowering",
     "reduce_generic",
     "reduce_pytest",
@@ -148,5 +163,6 @@ __all__ = [
     "savings_estimate",
     "savings_pct",
     "spend",
+    "task_fingerprint",
     "verify_proof",
 ]

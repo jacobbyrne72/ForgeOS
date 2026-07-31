@@ -22,6 +22,8 @@ from pydantic import BaseModel
 
 from ..contracts import FailureClass
 from ..registry import Candidate, CostTier, Registry
+from .market import CapacityMarket
+from .quota import QuotaTracker
 
 
 class Tier(IntEnum):
@@ -145,6 +147,9 @@ class Router:
         capabilities: list[str],
         *,
         stats: dict[str, dict] | None = None,
+        market: CapacityMarket | None = None,
+        quota: QuotaTracker | None = None,
+        at: float | None = None,
         risk: str = DEFAULT_RISK,
         needs_file_edits: bool = False,
         deterministic_available: bool = False,
@@ -168,6 +173,23 @@ class Router:
         )
         if not ranked:
             return None
+
+        market_choice = self._market_choice(
+            ranked, threshold=threshold, market=market, quota=quota, at=at
+        )
+        if market_choice is not None:
+            candidate, effective_cost = market_choice
+            return Route(
+                tier=self.tier_of(candidate),
+                worker_id=candidate.worker.worker_id,
+                effort=effort,
+                max_output_tokens=MAX_OUTPUT_BY_EFFORT[effort],
+                measured=candidate.measured,
+                reason=(
+                    f"capacity market chose {candidate.worker.worker_id} at "
+                    f"effective cost ${effective_cost:.4f}"
+                ),
+            )
 
         # Cheapest rung first; take the first candidate clearing the threshold.
         by_tier = sorted(ranked, key=lambda c: (self.tier_of(c), c.usd_micros))
@@ -204,6 +226,57 @@ class Router:
     def tier_of(self, candidate: Candidate) -> Tier:
         return _TIER_BY_COST[candidate.worker.tier]
 
+    def _market_choice(
+        self,
+        ranked: list[Candidate],
+        *,
+        threshold: float,
+        market: CapacityMarket | None,
+        quota: QuotaTracker | None,
+        at: float | None,
+    ) -> tuple[Candidate, float] | None:
+        """Choose by effective cash + expiring-capacity price when telemetry exists.
+
+        No market resource is a deliberate opt-out: callers that have no
+        entitlement data retain the original tier ladder exactly. Once at least
+        one candidate is mapped, unpriced candidates remain eligible at their
+        declared prior cost so local/free workers are not accidentally hidden.
+        """
+        if market is None or not market.resources():
+            return None
+        relevant = [
+            candidate for candidate in ranked
+            if candidate.worker.market_resource in market.resources()
+        ]
+        if not relevant:
+            return None
+
+        choices: list[tuple[Candidate, float]] = []
+        for candidate in ranked:
+            if candidate.win_rate < threshold:
+                continue
+            resource = candidate.worker.market_resource
+            if resource and resource in market.resources():
+                if quota is not None:
+                    provider = resource.split(".", 1)[0]
+                    if not quota.available(provider, at):
+                        continue
+                cost = market.effective_cost(resource, at)
+            else:
+                cost = candidate.usd_micros / 1_000_000
+            choices.append((candidate, cost))
+        if not choices:
+            return None
+        return min(
+            choices,
+            key=lambda pair: (
+                pair[1],
+                self.tier_of(pair[0]),
+                -pair[0].win_rate,
+                pair[0].worker.worker_id,
+            ),
+        )
+
     # ----------------------------------------------------------- escalate
 
     def escalate(
@@ -213,6 +286,9 @@ class Router:
         capabilities: list[str],
         *,
         stats: dict[str, dict] | None = None,
+        market: CapacityMarket | None = None,
+        quota: QuotaTracker | None = None,
+        at: float | None = None,
         risk: str = DEFAULT_RISK,
         needs_file_edits: bool = False,
         at_phase_boundary: bool = True,
@@ -234,6 +310,9 @@ class Router:
         route = self.route(
             capabilities,
             stats=stats,
+            market=market,
+            quota=quota,
+            at=at,
             risk=risk,
             needs_file_edits=needs_file_edits,
             min_tier=next_tier,

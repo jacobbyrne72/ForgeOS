@@ -3,30 +3,36 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ForgeOS — operator dashboard</title>
+<title>ForgeOS — control centre</title>
 <style>
+  /* Palette: three signal colors, each with exactly one job. Amber is money
+     (and caution) -- the ledger's own color. Teal is "alive / interactive /
+     accepted". Crimson is "stop". Nothing decorative borrows a signal color;
+     if it isn't money, alive, or stopped, it stays steel-blue-grey. */
   :root {
-    --bg: #0a0c11;
-    --panel: #12151d;
-    --panel-2: #171b26;
-    --border: rgba(255,255,255,0.08);
-    --border-strong: rgba(255,255,255,0.16);
-    --text: #e8eaef;
-    --text-muted: #8b93a7;
-    --text-dim: #5b6274;
-    --accent: #6d97f2;
-    --accent-soft: rgba(109,151,242,0.14);
-    --good: #3ddc9a;
-    --good-soft: rgba(61,220,154,0.12);
-    --warn: #f0ac4b;
-    --warn-soft: rgba(240,172,75,0.12);
-    --bad: #f0616b;
-    --bad-soft: rgba(240,97,107,0.12);
-    --dim-soft: rgba(139,147,167,0.12);
-    --radius-sm: 8px;
-    --radius: 12px;
-    --radius-lg: 16px;
+    --bg: #05070a;
+    --panel: #0d131b;
+    --panel-2: #131b26;
+    --border: rgba(148,163,184,0.14);
+    --border-strong: rgba(148,163,184,0.30);
+    --text: #eaf0f7;
+    --text-muted: #8fa0b8;
+    --text-dim: #51607a;
+    --accent: #34e6b4;
+    --accent-soft: rgba(52,230,180,0.14);
+    --good: #34e6b4;
+    --good-soft: rgba(52,230,180,0.12);
+    --warn: #f0a83c;
+    --warn-soft: rgba(240,168,60,0.14);
+    --bad: #ff4d6a;
+    --bad-soft: rgba(255,77,106,0.12);
+    --dim-soft: rgba(143,160,184,0.10);
+    --radius-sm: 6px;
+    --radius: 10px;
+    --radius-lg: 14px;
     --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, "Liberation Mono", monospace;
+    --rail-h: 64px;
   }
 
   * { box-sizing: border-box; }
@@ -42,112 +48,262 @@
     max-width: 100%;
   }
 
-  .num { font-variant-numeric: tabular-nums; }
+  /* Every number on this page reads as telemetry, not prose: one deliberate
+     type-role split -- language in the system font, data in monospace. */
+  .num { font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
 
   a { color: var(--accent); }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   ::-webkit-scrollbar { height: 10px; width: 10px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 6px; }
 
-  header {
+  /* ------------------------------------------------------------- top rail */
+
+  header.rail {
     position: sticky;
     top: 0;
-    z-index: 10;
+    z-index: 20;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 14px 28px;
-    background: rgba(10,12,17,0.9);
+    gap: 24px;
+    padding: 12px 24px;
+    background: rgba(5,7,10,0.92);
     backdrop-filter: blur(8px);
     border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+    row-gap: 8px;
   }
 
-  header h1 {
+  .rail-id { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+
+  .rail-id h1 {
     font-size: 15px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    font-weight: 650;
+    letter-spacing: 0.01em;
     margin: 0;
     color: var(--text);
+    white-space: nowrap;
   }
 
-  header h1 span { color: var(--text-dim); font-weight: 400; }
+  .rail-id .rail-sub { color: var(--text-dim); font-weight: 400; }
 
-  .status {
+  .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
+    background: var(--text-dim);
+    flex: 0 0 auto;
+  }
+  .dot.live { background: var(--good); box-shadow: 0 0 0 3px var(--good-soft); }
+  .dot.down { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); }
+
+  .rail-instruments {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+  }
+
+  .instrument {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    padding: 2px 18px;
+    border-left: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .instrument:first-child { border-left: none; }
+
+  .instrument-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+  }
+
+  .instrument-value {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .instrument-value.mint { color: var(--good); }
+  .instrument-value.spend { color: var(--warn); }
+  .instrument-value.stop { color: var(--bad); }
+
+  .instrument-bar { min-width: 130px; }
+  .instrument-bar .bar-track { width: 100%; margin-top: 2px; }
+
+  .rail-actions {
     display: flex;
     align-items: center;
     gap: 8px;
+    flex: 0 0 auto;
     font-size: 12px;
     color: var(--text-muted);
   }
 
-  .dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--text-dim);
+  .gear-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+    font: inherit;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1;
+    padding: 6px 9px;
+  }
+  .gear-btn:hover, .gear-btn:focus-visible { color: var(--text); border-color: var(--border-strong); }
+
+  /* -------------------------------------------------------------- layout */
+
+  .deck {
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 24px 24px 80px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+    gap: 22px;
+    align-items: start;
   }
 
-  .dot.live { background: var(--good); box-shadow: 0 0 0 3px var(--good-soft); }
-  .dot.down { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); }
-
-  main {
-    max-width: 1180px;
-    margin: 0 auto;
-    padding: 28px 28px 80px;
+  .stage {
     display: flex;
     flex-direction: column;
-    gap: 28px;
+    gap: 22px;
+    min-width: 0;
   }
 
-  .hero {
-    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  aside.activity-rail {
+    position: sticky;
+    top: calc(var(--rail-h) + 22px);
+    max-height: calc(100vh - var(--rail-h) - 44px);
+    background: var(--panel);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
-    padding: 28px 32px;
+    padding: 16px 16px 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow: hidden;
   }
 
-  .hero-label {
+  .activity-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex: 0 0 auto;
+  }
+  .activity-head h2 { font-size: 13px; font-weight: 600; margin: 0; }
+  .activity-head .hint { font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); }
+
+  .activity-feed {
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-bottom: 12px;
+  }
+
+  .activity-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 4px;
+    border-bottom: 1px solid var(--border);
     font-size: 12px;
+  }
+  .activity-row:last-child { border-bottom: none; }
+  .activity-top { display: flex; align-items: baseline; gap: 8px; }
+  .activity-kind {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+  .activity-kind.mint { color: var(--good); }
+  .activity-kind.stop { color: var(--bad); }
+  .activity-ts { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+  .activity-detail { color: var(--text-muted); word-break: break-word; }
+  .activity-job { font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); }
+
+  @media (max-width: 1000px) {
+    .deck { grid-template-columns: 1fr; }
+    aside.activity-rail { position: static; max-height: 360px; }
+  }
+
+  /* ----------------------------------------------------------- the ledger */
+  /* Signature element: money is the hero, and it is dense, tabular, and
+     backed by real numbers -- no chart here has nothing behind it. */
+
+  .ledger-strip {
+    background: linear-gradient(160deg, var(--panel-2), var(--panel));
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 26px 28px;
+    display: grid;
+    grid-template-columns: minmax(220px, 300px) 1fr;
+    gap: 24px;
+  }
+
+  @media (max-width: 860px) {
+    .ledger-strip { grid-template-columns: 1fr; }
+  }
+
+  .ledger-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--text-muted);
     margin: 0 0 10px;
   }
 
-  .hero-value {
-    font-size: 56px;
+  .ledger-figure {
+    font-size: 52px;
     font-weight: 650;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.01em;
     line-height: 1;
     margin: 0;
+    color: var(--warn);
   }
 
-  .hero-value.muted { color: var(--text-dim); font-size: 42px; }
+  .ledger-figure.muted { color: var(--text-dim); font-size: 38px; }
 
-  .hero-caption {
+  .ledger-caption {
     margin: 12px 0 0;
     font-size: 13px;
     color: var(--text-muted);
   }
 
-  .hero-caption b { color: var(--text); font-weight: 600; }
+  .ledger-caption b { color: var(--text); font-weight: 600; }
 
-  .stat-grid {
+  .ledger-cells {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    align-content: start;
   }
 
   .stat-card {
-    background: var(--panel);
+    background: rgba(255,255,255,0.02);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 16px 18px;
+    padding: 13px 15px;
   }
 
   .stat-card .label {
-    font-size: 11px;
+    font-family: var(--font-mono);
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--text-muted);
@@ -155,14 +311,14 @@
   }
 
   .stat-card .value {
-    font-size: 26px;
+    font-size: 22px;
     font-weight: 600;
     margin: 0;
   }
 
   .stat-card .sub {
     margin: 6px 0 0;
-    font-size: 12px;
+    font-size: 11px;
     color: var(--text-dim);
   }
 
@@ -172,7 +328,7 @@
     background: repeating-linear-gradient(
       135deg, rgba(255,255,255,0.015), rgba(255,255,255,0.015) 8px,
       transparent 8px, transparent 16px
-    ), var(--panel);
+    ), rgba(255,255,255,0.02);
   }
 
   .badge {
@@ -181,9 +337,10 @@
     gap: 5px;
     padding: 2px 8px;
     border-radius: 999px;
+    font-family: var(--font-mono);
     font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.02em;
+    letter-spacing: 0.01em;
     white-space: nowrap;
   }
 
@@ -202,6 +359,7 @@
   .badge-regressed { background: var(--bad-soft); color: var(--bad); }
   .badge-no_cache_support { background: var(--dim-soft); color: var(--text-muted); }
   .badge-insufficient_data { background: var(--dim-soft); color: var(--text-muted); }
+  .badge-halted { background: var(--bad-soft); color: var(--bad); }
 
   .panel {
     background: var(--panel);
@@ -225,7 +383,8 @@
   }
 
   .panel-head .hint {
-    font-size: 12px;
+    font-family: var(--font-mono);
+    font-size: 11px;
     color: var(--text-dim);
   }
 
@@ -253,7 +412,8 @@
   td.wrap { white-space: normal; }
 
   th {
-    font-size: 11px;
+    font-family: var(--font-mono);
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--text-muted);
@@ -264,6 +424,8 @@
   tbody tr:last-child td { border-bottom: none; }
   tbody tr.clickable { cursor: pointer; }
   tbody tr.clickable:hover { background: rgba(255,255,255,0.02); }
+  tbody tr.row-selected { background: var(--accent-soft); }
+  tbody tr.row-selected:hover { background: var(--accent-soft); }
 
   .empty-row td {
     text-align: center;
@@ -271,9 +433,19 @@
     font-style: italic;
     padding: 22px;
   }
+  .empty-row code {
+    font-style: normal;
+    font-family: var(--font-mono);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 1px 6px;
+    color: var(--text-muted);
+  }
 
   .btn {
     font: inherit;
+    font-family: var(--font-mono);
     font-size: 12px;
     font-weight: 600;
     border: 1px solid var(--border-strong);
@@ -295,9 +467,9 @@
   }
 
   @media (max-width: 860px) {
-    main { padding: 20px 16px 60px; }
+    .deck { padding: 20px 16px 60px; }
     .grid-2 { grid-template-columns: 1fr; }
-    .hero-value { font-size: 42px; }
+    .ledger-figure { font-size: 40px; }
   }
 
   .bar-track {
@@ -308,10 +480,12 @@
     overflow: hidden;
   }
 
+  .bar-track.mini { height: 6px; }
+
   .bar-fill { height: 100%; background: var(--accent); }
   .bar-fill.warn { background: var(--warn); }
   .bar-fill.bad { background: var(--bad); }
-  td.ok, span.ok { color: var(--good, #4bd08b); }
+  td.ok, span.ok { color: var(--good); }
   td.warn, span.warn { color: var(--warn); }
   td.bad, span.bad { color: var(--bad); }
   td.muted, span.muted, div.muted { color: var(--text-dim); }
@@ -320,6 +494,7 @@
   .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
 
   .chip {
+    font-family: var(--font-mono);
     font-size: 11px;
     padding: 2px 8px;
     border-radius: 999px;
@@ -337,7 +512,7 @@
   }
 
   .job-detail-head h2 { font-size: 16px; margin: 0 0 4px; }
-  .job-detail-head .meta { font-size: 12px; color: var(--text-dim); }
+  .job-detail-head .meta { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); }
 
   .close-btn {
     background: none;
@@ -350,7 +525,8 @@
 
   .subsection { margin-top: 22px; }
   .subsection h3 {
-    font-size: 12px;
+    font-family: var(--font-mono);
+    font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--text-muted);
@@ -386,9 +562,9 @@
     border-bottom: 1px solid var(--border);
   }
   .event-row:last-child { border-bottom: none; }
-  .event-row .kind { color: var(--accent); font-weight: 600; white-space: nowrap; }
+  .event-row .kind { font-family: var(--font-mono); color: var(--accent); font-weight: 600; white-space: nowrap; }
   .event-row .detail { color: var(--text-muted); flex: 1; word-break: break-word; }
-  .event-row .ts { color: var(--text-dim); white-space: nowrap; }
+  .event-row .ts { font-family: var(--font-mono); color: var(--text-dim); white-space: nowrap; }
 
   .error-banner {
     background: var(--bad-soft);
@@ -413,41 +589,29 @@
   /* Light theme: same hues, inverted ground. Every component reads the
      variables, so the override list IS the whole theme. */
   html[data-theme="light"] {
-    --bg: #f2f3f7;
+    --bg: #f3f5f9;
     --panel: #ffffff;
-    --panel-2: #eaecf2;
+    --panel-2: #eaedf3;
     --border: rgba(20, 28, 46, 0.10);
     --border-strong: rgba(20, 28, 46, 0.22);
-    --text: #1a2233;
-    --text-muted: #55607a;
-    --text-dim: #8790a5;
-    --accent: #3b66d4;
-    --accent-soft: rgba(59, 102, 212, 0.12);
-    --good: #0f9d6b;
-    --good-soft: rgba(15, 157, 107, 0.12);
-    --warn: #a8730f;
-    --warn-soft: rgba(168, 115, 15, 0.12);
-    --bad: #cf3f4a;
-    --bad-soft: rgba(207, 63, 74, 0.10);
-    --dim-soft: rgba(85, 96, 122, 0.10);
+    --text: #17222f;
+    --text-muted: #56637c;
+    --text-dim: #8a96ab;
+    --accent: #0f9d78;
+    --accent-soft: rgba(15, 157, 120, 0.12);
+    --good: #0f9d78;
+    --good-soft: rgba(15, 157, 120, 0.12);
+    --warn: #a3690f;
+    --warn-soft: rgba(163, 105, 15, 0.12);
+    --bad: #c4324a;
+    --bad-soft: rgba(196, 50, 74, 0.10);
+    --dim-soft: rgba(86, 99, 124, 0.10);
   }
 
-  html[data-density="compact"] main { font-size: 13px; }
+  html[data-density="compact"] main, html[data-density="compact"] .deck { font-size: 13px; }
   html[data-density="compact"] .panel { padding: 12px 14px; }
   html[data-density="compact"] td,
   html[data-density="compact"] th { padding: 5px 8px; }
-
-  .gear-btn {
-    background: none;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text-muted);
-    cursor: pointer;
-    font-size: 14px;
-    line-height: 1;
-    padding: 6px 9px;
-  }
-  .gear-btn:hover, .gear-btn:focus-visible { color: var(--text); border-color: var(--border-strong); }
 
   .drawer-backdrop {
     position: fixed;
@@ -475,15 +639,13 @@
   }
   html.drawer-open .drawer { transform: translateX(0); }
   html.drawer-open .drawer-backdrop { opacity: 1; pointer-events: auto; }
-  @media (prefers-reduced-motion: reduce) {
-    .drawer, .drawer-backdrop { transition: none; }
-  }
 
   .drawer h2 { margin: 0 0 4px; font-size: 15px; }
   .drawer .drawer-sub { margin: 0 0 18px; color: var(--text-dim); font-size: 12px; }
   .drawer .set-group { margin-bottom: 18px; }
   .drawer .set-group > label {
     display: block;
+    font-family: var(--font-mono);
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -515,16 +677,146 @@
     top: 14px;
     right: 14px;
   }
+
+  /* ------------------------------------------------------ command palette */
+
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 50;
+  }
+  .modal-backdrop[hidden] { display: none; }
+
+  .palette {
+    position: fixed;
+    top: 14vh;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(560px, 92vw);
+    max-height: 60vh;
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 30px 80px rgba(0,0,0,0.5);
+    z-index: 51;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .palette[hidden] { display: none; }
+
+  .palette input {
+    font: inherit;
+    font-family: var(--font-mono);
+    font-size: 14px;
+    background: var(--panel-2);
+    color: var(--text);
+    border: none;
+    border-bottom: 1px solid var(--border);
+    padding: 16px 18px;
+    outline: none;
+    flex: 0 0 auto;
+  }
+
+  .palette-results { overflow-y: auto; flex: 1 1 auto; }
+
+  .palette-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 18px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+  }
+  .palette-row:last-child { border-bottom: none; }
+  .palette-row.active { background: var(--accent-soft); }
+  .palette-row.danger .palette-label { color: var(--bad); }
+  .palette-kind {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    width: 44px;
+    flex: 0 0 auto;
+  }
+  .palette-label { flex: 1; font-size: 13px; }
+  .palette-hint { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); }
+  .palette-empty { padding: 18px; color: var(--text-dim); font-size: 13px; }
+  .palette-foot {
+    flex: 0 0 auto;
+    padding: 8px 18px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    border-top: 1px solid var(--border);
+  }
+
+  .help-list { padding: 8px 18px 18px; overflow-y: auto; }
+  .help-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .help-row:last-child { border-bottom: none; }
+  .help-row kbd {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    background: var(--panel-2);
+    border: 1px solid var(--border-strong);
+    border-radius: 5px;
+    padding: 2px 7px;
+    min-width: 20px;
+    text-align: center;
+    color: var(--text);
+  }
+  .help-row span { color: var(--text-muted); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .drawer, .drawer-backdrop { transition: none; }
+  }
 </style>
 </head>
 <body>
 
-<header>
-  <h1>ForgeOS <span>/ operator dashboard</span></h1>
-  <div class="status">
-    <span id="last-updated">not yet loaded</span>
+<header class="rail" id="top-rail">
+  <div class="rail-id">
     <span class="dot" id="live-dot"></span>
-    <span id="live-text">connecting…</span>
+    <h1>ForgeOS <span class="rail-sub">/ control centre</span></h1>
+  </div>
+
+  <div class="rail-instruments">
+    <div class="instrument" id="inst-state">
+      <span class="instrument-label">Feed</span>
+      <span class="instrument-value" id="live-text">connecting…</span>
+    </div>
+    <div class="instrument" id="inst-rate">
+      <span class="instrument-label">Spend / active-hr</span>
+      <span class="instrument-value num spend" id="rate-value">—</span>
+    </div>
+    <div class="instrument instrument-bar" id="inst-burn">
+      <span class="instrument-label">Budget burn (active jobs)</span>
+      <div class="bar-track mini"><div class="bar-fill" id="burn-fill" style="width:0%"></div></div>
+      <span class="instrument-value num" id="burn-value" style="font-size:12px">—</span>
+    </div>
+    <div class="instrument" id="inst-fleet">
+      <span class="instrument-label">Fleet</span>
+      <span class="instrument-value num" id="fleet-value">—</span>
+    </div>
+    <div class="instrument" id="inst-halts">
+      <span class="instrument-label">Halted</span>
+      <span class="instrument-value num" id="halts-value">0</span>
+    </div>
+  </div>
+
+  <div class="rail-actions">
+    <span id="last-updated">not yet loaded</span>
+    <button class="gear-btn" id="palette-open" title="Command palette (Ctrl+K)" aria-label="Open command palette">⌘K</button>
+    <button class="gear-btn" id="help-open" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
     <button class="gear-btn" id="settings-open" title="Settings" aria-label="Open settings">⚙</button>
   </div>
 </header>
@@ -562,97 +854,135 @@
   </div>
 </aside>
 
-<main>
-  <div class="error-banner" id="error-banner"></div>
+<div class="modal-backdrop" id="modal-backdrop" hidden></div>
 
-  <section class="hero">
-    <p class="hero-label">Cost per accepted task</p>
-    <p class="hero-value num" id="hero-value">—</p>
-    <p class="hero-caption" id="hero-caption">Loading…</p>
-  </section>
+<div class="palette" id="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" hidden>
+  <input id="palette-input" type="text" placeholder="Jump to a panel, a job, or halt one…" autocomplete="off" spellcheck="false">
+  <div class="palette-results" id="palette-results"></div>
+  <div class="palette-foot">↑↓ navigate · ↵ select · esc close</div>
+</div>
 
-  <section class="stat-grid" id="stat-grid"></section>
+<div class="palette" id="help-modal" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" hidden>
+  <div class="help-list">
+    <div class="help-row"><kbd>Ctrl</kbd><kbd>K</kbd><span>Open the command palette</span></div>
+    <div class="help-row"><kbd>j</kbd><kbd>k</kbd><span>Move the selection down / up the jobs table</span></div>
+    <div class="help-row"><kbd>↵</kbd><span>Open the selected job's detail</span></div>
+    <div class="help-row"><kbd>h</kbd><span>Halt the selected job (asks to confirm)</span></div>
+    <div class="help-row"><kbd>?</kbd><span>Show this panel</span></div>
+    <div class="help-row"><kbd>esc</kbd><span>Close whatever is open</span></div>
+  </div>
+</div>
 
-  <section class="panel" id="jobs-panel">
-    <div class="panel-head">
-      <h2>Jobs</h2>
-      <span class="hint">Click a row for the task DAG, event feed, trips and leases.</span>
-    </div>
-    <div class="table-scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>Objective</th>
-            <th>State</th>
-            <th>Spend</th>
-            <th>Elapsed</th>
-            <th>Tasks</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="jobs-body"></tbody>
-      </table>
-    </div>
-  </section>
+<main class="deck">
+  <div class="stage">
+    <div class="error-banner" id="error-banner"></div>
 
-  <section class="panel" id="job-detail" hidden></section>
-
-  <section class="grid-2">
-    <section class="panel" id="economy-panel">
-      <div class="panel-head"><h2>Economy</h2></div>
-      <div id="economy-body"></div>
+    <section class="ledger-strip" id="ledger-strip">
+      <div>
+        <p class="ledger-eyebrow">Cost per accepted task</p>
+        <p class="ledger-figure num" id="hero-value">—</p>
+        <p class="ledger-caption" id="hero-caption">Loading…</p>
+      </div>
+      <div class="ledger-cells" id="stat-grid"></div>
     </section>
 
-    <section class="panel" id="workers-panel">
-      <div class="panel-head"><h2>Workers</h2></div>
+    <section class="panel" id="jobs-panel">
+      <div class="panel-head">
+        <h2>Jobs</h2>
+        <span class="hint">click, or j/k + ↵, for the task DAG, event feed, trips and leases</span>
+      </div>
       <div class="table-scroll">
         <table>
           <thead>
             <tr>
-              <th>Worker</th>
-              <th>Tier</th>
-              <th>Attempts</th>
-              <th>Win rate</th>
-              <th>Avg spend</th>
+              <th>Objective</th>
+              <th>State</th>
+              <th>Spend</th>
+              <th>Burn</th>
+              <th>Elapsed</th>
+              <th>Tasks</th>
               <th></th>
             </tr>
           </thead>
-          <tbody id="workers-body"></tbody>
+          <tbody id="jobs-body"></tbody>
         </table>
       </div>
     </section>
-  </section>
 
-  <section class="panel" id="providers-panel">
-    <div class="panel-head">
-      <h2>Providers</h2>
-      <button class="btn" id="providers-refresh">refresh</button>
-    </div>
-    <div class="table-scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>Provider</th>
-            <th>Kind</th>
-            <th>Status</th>
-            <th>Reachable</th>
-            <th>Key variable</th>
-            <th>Endpoint</th>
-          </tr>
-        </thead>
-        <tbody id="providers-body"></tbody>
-      </table>
-    </div>
-    <div id="transports-body" class="muted"></div>
-  </section>
+    <section class="panel" id="job-detail" hidden></section>
 
-  <footer>ForgeOS dashboard — localhost only — read-only except the halt flag</footer>
+    <section class="grid-2">
+      <section class="panel" id="economy-panel">
+        <div class="panel-head"><h2>Economy</h2></div>
+        <div id="economy-body"></div>
+      </section>
+
+      <section class="panel" id="workers-panel">
+        <div class="panel-head"><h2>Workers</h2></div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Worker</th>
+                <th>Tier</th>
+                <th>Attempts</th>
+                <th>Win rate</th>
+                <th>Avg spend</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="workers-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section class="panel" id="providers-panel">
+      <div class="panel-head">
+        <h2>Providers</h2>
+        <button class="btn" id="providers-refresh">refresh</button>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Provider</th>
+              <th>Kind</th>
+              <th>Status</th>
+              <th>Reachable</th>
+              <th>Key variable</th>
+              <th>Endpoint</th>
+            </tr>
+          </thead>
+          <tbody id="providers-body"></tbody>
+        </table>
+      </div>
+      <div id="transports-body" class="muted"></div>
+    </section>
+
+    <footer>ForgeOS dashboard — localhost only — read-only except the halt flag</footer>
+  </div>
+
+  <aside class="activity-rail" id="activity-rail">
+    <div class="activity-head">
+      <h2>Activity</h2>
+      <span class="hint">fleet-wide, live</span>
+    </div>
+    <div class="activity-feed" id="activity-feed"></div>
+  </aside>
 </main>
 
 <script>
-  const state = { summary: null, jobs: [], selectedJobId: null, jobDetail: null };
+  const state = {
+    summary: null, jobs: [], workers: [], activity: [],
+    selectedJobId: null, jobDetail: null, selectedRow: null,
+  };
   let ws = null;
   let wsRetryMs = 2000;
+
+  function reducedMotion() {
+    return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
 
   // ----------------------------------------------------------- settings
   // Browser-local display preferences. Deliberately client-side only: the
@@ -826,6 +1156,60 @@
     `;
   }
 
+  // ---------------------------------------------------------- top-rail
+  // Everything here is derived from data the jobs/workers panels already
+  // hold -- no separate telemetry stream, just an honest fleet-wide roll-up
+  // of the same numbers, so it can never disagree with the tables below it.
+
+  function computeFleetStats() {
+    const active = state.jobs.filter((j) => j.closed_at == null);
+    let spend = 0, maxUsd = 0, unbounded = 0, elapsed = 0;
+    active.forEach((j) => {
+      spend += j.spend_usd || 0;
+      elapsed += j.elapsed_seconds || 0;
+      if (j.budget && j.budget.max_usd != null) maxUsd += j.budget.max_usd;
+      else unbounded += 1;
+    });
+    return {
+      activeCount: active.length,
+      spend, maxUsd, unbounded,
+      burnPct: maxUsd > 0 ? Math.min(100, (spend / maxUsd) * 100) : null,
+      ratePerHour: elapsed > 60 ? (spend / elapsed) * 3600 : null,
+      halted: state.jobs.filter((j) => j.halted).length,
+    };
+  }
+
+  function renderTopRail() {
+    const f = computeFleetStats();
+
+    const rateEl = document.getElementById("rate-value");
+    rateEl.textContent = f.ratePerHour === null ? "—" : fmtUsd(f.ratePerHour) + "/hr";
+
+    const burnFill = document.getElementById("burn-fill");
+    const burnValue = document.getElementById("burn-value");
+    if (f.burnPct === null) {
+      burnFill.style.width = "0%";
+      burnFill.className = "bar-fill";
+      burnValue.textContent = f.activeCount ? "unbounded" : "no active jobs";
+    } else {
+      burnFill.style.width = f.burnPct + "%";
+      burnFill.className = "bar-fill" + (f.burnPct > 90 ? " bad" : f.burnPct > 60 ? " warn" : "");
+      burnValue.textContent = fmtPct(f.burnPct) + (f.unbounded ? ` (+${f.unbounded} unbounded)` : "");
+    }
+
+    const fleetEl = document.getElementById("fleet-value");
+    if (state.workers.length) {
+      const measured = state.workers.filter((w) => w.measured).length;
+      fleetEl.textContent = `${state.workers.length} workers · ${measured} measured`;
+    } else {
+      fleetEl.textContent = "—";
+    }
+
+    const haltsEl = document.getElementById("halts-value");
+    haltsEl.textContent = String(f.halted);
+    haltsEl.className = "instrument-value num" + (f.halted ? " stop" : "");
+  }
+
   // Last rendered markup, kept so an unchanged poll is a no-op. Replacing
   // innerHTML on every tick destroys and recreates every row, so a row you are
   // about to click vanishes out from under the pointer — on a busy job the halt
@@ -836,11 +1220,13 @@
   function renderJobs() {
     const body = document.getElementById("jobs-body");
     if (!state.jobs.length) {
-      const empty = `<tr class="empty-row"><td colspan="6">No jobs yet — nothing has run against this ledger.</td></tr>`;
+      const empty = `<tr class="empty-row"><td colspan="7">No jobs yet — run <code>python -m forgeos team '&lt;objective&gt;' --dry-run</code> to populate this ledger.</td></tr>`;
       if (lastJobsHtml !== empty) {
         body.innerHTML = empty;
         lastJobsHtml = empty;
       }
+      state.selectedRow = null;
+      renderTopRail();
       return;
     }
     const html = state.jobs
@@ -850,11 +1236,18 @@
           .join("");
         const haltDisabled = j.halted ? "disabled" : "";
         const haltLabel = j.halted ? "halted" : "halt";
+        const maxUsd = j.budget ? j.budget.max_usd : null;
+        const burnPct = maxUsd ? Math.min(100, (j.spend_usd / maxUsd) * 100) : null;
+        const burnClass = burnPct === null ? "" : burnPct > 90 ? "bad" : burnPct > 60 ? "warn" : "";
+        const burnCell = burnPct === null
+          ? `<span class="muted">unbounded</span>`
+          : `<div class="bar-track mini" style="width:64px"><div class="bar-fill ${burnClass}" style="width:${burnPct}%"></div></div>`;
         return `
           <tr class="clickable" data-job="${esc(j.id)}">
             <td class="wrap">${esc(j.objective).slice(0, 80)}<br><span class="chip">${esc(j.id)}</span></td>
-            <td>${badge(j.state)}</td>
+            <td>${badge(j.state)}${j.halted ? " " + badge("halted") : ""}</td>
             <td class="num">${esc(fmtUsd(j.spend_usd))}</td>
+            <td>${burnCell}</td>
             <td class="num">${esc(fmtElapsed(j.elapsed_seconds))}</td>
             <td><div class="chip-row">${counts || "<span class=\"chip\">none</span>"}</div></td>
             <td><button class="btn" data-halt="${esc(j.id)}" ${haltDisabled}>${haltLabel}</button></td>
@@ -869,6 +1262,19 @@
     if (html !== lastJobsHtml) {
       body.innerHTML = html;
       lastJobsHtml = html;
+    }
+    if (state.selectedRow != null && state.selectedRow >= state.jobs.length) {
+      state.selectedRow = state.jobs.length - 1;
+    }
+    highlightSelectedRow();
+    renderTopRail();
+  }
+
+  function highlightSelectedRow() {
+    const rows = document.querySelectorAll("#jobs-body tr[data-job]");
+    rows.forEach((tr, i) => tr.classList.toggle("row-selected", i === state.selectedRow));
+    if (state.selectedRow != null && rows[state.selectedRow]) {
+      rows[state.selectedRow].scrollIntoView({ block: "nearest" });
     }
   }
 
@@ -1036,7 +1442,7 @@
     });
     // Only on open. Scrolling on every 6-second poll would yank the page out
     // from under someone reading the panel.
-    if (firstOpen) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (firstOpen) panel.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "start" });
   }
 
   function renderEconomy(data) {
@@ -1120,25 +1526,35 @@
       .join("");
   }
 
-  // -------------------------------------------------------------- load
+  // Same "don't rebuild what hasn't changed" reasoning as the jobs table --
+  // this rail is its own scroll region, and a full innerHTML replace resets
+  // scrollTop to 0, which would yank an operator mid-read every 2 seconds.
+  let lastActivityHtml = null;
 
-  async function loadSummary() {
-    state.summary = await api("/api/summary");
-    renderSummary();
-  }
-
-  async function loadJobs() {
-    const d = await api("/api/jobs");
-    state.jobs = d.jobs;
-    renderJobs();
-  }
-
-  async function loadEconomy() {
-    renderEconomy(await api("/api/economy"));
-  }
-
-  async function loadWorkers() {
-    renderWorkers(await api("/api/workers"));
+  function renderActivity() {
+    const el = document.getElementById("activity-feed");
+    const events = state.activity || [];
+    const html = !events.length
+      ? `<p class="sub" style="color:var(--text-dim)">No activity yet — nothing has run against this ledger.</p>`
+      : events
+          .map((e) => {
+            const cls = e.kind.includes("halt") ? "stop" : e.kind.includes("accept") ? "mint" : "";
+            return `
+              <div class="activity-row">
+                <div class="activity-top">
+                  <span class="activity-kind ${cls}">${esc(e.kind)}</span>
+                  <span class="activity-ts">${esc(fmtAgo(e.created_at))}</span>
+                </div>
+                ${e.detail ? `<span class="activity-detail">${esc(e.detail)}</span>` : ""}
+                ${e.job_id ? `<span class="activity-job">${esc(e.job_id)}</span>` : ""}
+              </div>`;
+          })
+          .join("");
+    if (html === lastActivityHtml) return;
+    const preservedScroll = el.scrollTop;
+    el.innerHTML = html;
+    el.scrollTop = preservedScroll;
+    lastActivityHtml = html;
   }
 
   function renderProviders(d) {
@@ -1166,6 +1582,36 @@
       .join(" · ");
     document.getElementById("transports-body").textContent =
       `${d.usable_count}/${d.total} providers usable · transports: ${t || "none"}`;
+  }
+
+  // -------------------------------------------------------------- load
+
+  async function loadSummary() {
+    state.summary = await api("/api/summary");
+    renderSummary();
+  }
+
+  async function loadJobs() {
+    const d = await api("/api/jobs");
+    state.jobs = d.jobs;
+    renderJobs();
+  }
+
+  async function loadEconomy() {
+    renderEconomy(await api("/api/economy"));
+  }
+
+  async function loadWorkers() {
+    const d = await api("/api/workers");
+    state.workers = d.workers;
+    renderWorkers(d);
+    renderTopRail();
+  }
+
+  async function loadActivity() {
+    const d = await api("/api/activity");
+    state.activity = d.events;
+    renderActivity();
   }
 
   async function loadProviders() {
@@ -1204,7 +1650,11 @@
       return;
     }
     const row = e.target.closest("[data-job]");
-    if (row) loadJobDetail(row.dataset.job);
+    if (row) {
+      const idx = state.jobs.findIndex((j) => j.id === row.dataset.job);
+      if (idx !== -1) { state.selectedRow = idx; highlightSelectedRow(); }
+      loadJobDetail(row.dataset.job);
+    }
   });
 
   // ---------------------------------------------------------------- ws
@@ -1230,6 +1680,9 @@
       } else if (msg.type === "jobs") {
         state.jobs = msg.data.jobs;
         renderJobs();
+      } else if (msg.type === "activity") {
+        state.activity = msg.data.events;
+        renderActivity();
       }
     };
     ws.onclose = () => {
@@ -1247,15 +1700,22 @@
     loadProviders().catch(showError);
   });
 
+  function syncRailHeight() {
+    const rail = document.getElementById("top-rail");
+    document.documentElement.style.setProperty("--rail-h", rail.offsetHeight + "px");
+  }
+
   async function init() {
     try {
       await Promise.all([
-        loadSummary(), loadJobs(), loadEconomy(), loadWorkers(), loadProviders(),
+        loadSummary(), loadJobs(), loadEconomy(), loadWorkers(), loadProviders(), loadActivity(),
       ]);
     } catch (e) {
       showError(e);
     }
     applySettings();
+    syncRailHeight();
+    window.addEventListener("resize", syncRailHeight);
     setInterval(() => {
       if (settings.feed === "paused") return;
       if (state.selectedJobId) loadJobDetail(state.selectedJobId);
@@ -1275,14 +1735,180 @@
   document.getElementById("settings-open").addEventListener("click", () => setDrawer(true));
   document.getElementById("settings-close").addEventListener("click", () => setDrawer(false));
   document.getElementById("drawer-backdrop").addEventListener("click", () => setDrawer(false));
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") setDrawer(false);
-  });
   document.getElementById("settings-drawer").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-set]");
     if (!btn) return;
     settings[btn.dataset.set] = btn.dataset.value;
     saveSettings();
+  });
+
+  // ------------------------------------------------------- command palette
+
+  function scrollToPanel(id) {
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "start" });
+  }
+
+  function paletteEntries() {
+    const entries = [
+      { kind: "panel", label: "Jump to the ledger", hint: "ledger", run: () => scrollToPanel("ledger-strip") },
+      { kind: "panel", label: "Jump to Jobs", hint: "jobs", run: () => scrollToPanel("jobs-panel") },
+      { kind: "panel", label: "Jump to Economy", hint: "economy", run: () => scrollToPanel("economy-panel") },
+      { kind: "panel", label: "Jump to Workers", hint: "workers", run: () => scrollToPanel("workers-panel") },
+      { kind: "panel", label: "Jump to Providers", hint: "providers", run: () => scrollToPanel("providers-panel") },
+      { kind: "panel", label: "Jump to Activity", hint: "rail", run: () => scrollToPanel("activity-rail") },
+      { kind: "action", label: "Open settings", hint: "⚙", run: () => { closePalette(); setDrawer(true); } },
+      { kind: "action", label: "Show keyboard shortcuts", hint: "?", run: () => { closePalette(); setHelp(true); } },
+    ];
+    state.jobs.forEach((j) => {
+      entries.push({
+        kind: "job", label: j.objective.slice(0, 70), hint: j.id,
+        run: () => { closePalette(); loadJobDetail(j.id); scrollToPanel("job-detail"); },
+      });
+      if (!j.halted) {
+        entries.push({
+          kind: "halt", label: `Halt — ${j.objective.slice(0, 50)}`, hint: j.id, danger: true,
+          run: () => { closePalette(); haltJob(j.id); },
+        });
+      }
+    });
+    return entries;
+  }
+
+  let paletteFiltered = [];
+  let paletteIndex = 0;
+
+  function openPalette() {
+    document.getElementById("modal-backdrop").hidden = false;
+    document.getElementById("command-palette").hidden = false;
+    const input = document.getElementById("palette-input");
+    input.value = "";
+    filterPalette("");
+    input.focus();
+  }
+
+  function closePalette() {
+    document.getElementById("command-palette").hidden = true;
+    if (document.getElementById("help-modal").hidden) document.getElementById("modal-backdrop").hidden = true;
+  }
+
+  function setHelp(open) {
+    document.getElementById("help-modal").hidden = !open;
+    document.getElementById("modal-backdrop").hidden = !open && document.getElementById("command-palette").hidden;
+  }
+
+  function filterPalette(q) {
+    const all = paletteEntries();
+    const needle = q.trim().toLowerCase();
+    paletteFiltered = needle
+      ? all.filter((e) => (e.label + " " + (e.hint || "")).toLowerCase().includes(needle))
+      : all;
+    paletteIndex = 0;
+    renderPaletteResults();
+  }
+
+  function renderPaletteResults() {
+    const el = document.getElementById("palette-results");
+    if (!paletteFiltered.length) {
+      el.innerHTML = `<div class="palette-empty">No matches.</div>`;
+      return;
+    }
+    el.innerHTML = paletteFiltered
+      .map((e, i) => `
+        <div class="palette-row ${i === paletteIndex ? "active" : ""} ${e.danger ? "danger" : ""}" data-idx="${i}">
+          <span class="palette-kind">${esc(e.kind)}</span>
+          <span class="palette-label">${esc(e.label)}</span>
+          <span class="palette-hint">${esc(e.hint || "")}</span>
+        </div>`)
+      .join("");
+  }
+
+  function movePaletteSelection(delta) {
+    if (!paletteFiltered.length) return;
+    paletteIndex = (paletteIndex + delta + paletteFiltered.length) % paletteFiltered.length;
+    renderPaletteResults();
+  }
+
+  function runPaletteSelection() {
+    const entry = paletteFiltered[paletteIndex];
+    if (entry) entry.run();
+  }
+
+  document.getElementById("palette-input").addEventListener("input", (e) => filterPalette(e.target.value));
+  document.getElementById("palette-results").addEventListener("click", (e) => {
+    const row = e.target.closest("[data-idx]");
+    if (!row) return;
+    paletteIndex = Number(row.dataset.idx);
+    runPaletteSelection();
+  });
+  document.getElementById("palette-open").addEventListener("click", openPalette);
+  document.getElementById("help-open").addEventListener("click", () => setHelp(true));
+  document.getElementById("modal-backdrop").addEventListener("click", () => { closePalette(); setHelp(false); });
+
+  // --------------------------------------------------------- j/k row nav
+
+  function moveSelection(delta) {
+    if (!state.jobs.length) return;
+    const max = state.jobs.length - 1;
+    state.selectedRow = state.selectedRow == null ? 0 : Math.max(0, Math.min(max, state.selectedRow + delta));
+    highlightSelectedRow();
+  }
+
+  function isTypingTarget(el) {
+    return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+  }
+
+  // One consolidated keyboard router, in priority order: whichever overlay is
+  // topmost owns the keyboard. Anything not caught by an open overlay falls
+  // through to the fleet-wide shortcuts, which themselves stay silent while
+  // the user is typing anywhere else on the page.
+  document.addEventListener("keydown", (e) => {
+    const paletteOpen = !document.getElementById("command-palette").hidden;
+    const helpOpen = !document.getElementById("help-modal").hidden;
+    const drawerOpen = document.documentElement.classList.contains("drawer-open");
+
+    if (paletteOpen) {
+      if (e.key === "Escape") { closePalette(); return; }
+      if (e.key === "ArrowDown") { e.preventDefault(); movePaletteSelection(1); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); movePaletteSelection(-1); return; }
+      if (e.key === "Enter") { e.preventDefault(); runPaletteSelection(); return; }
+      return; // let normal typing through to the filter input
+    }
+    if (helpOpen) {
+      if (e.key === "Escape" || e.key === "?") setHelp(false);
+      return;
+    }
+    if (drawerOpen) {
+      if (e.key === "Escape") setDrawer(false);
+      return;
+    }
+
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      openPalette();
+      return;
+    }
+
+    if (isTypingTarget(e.target)) return;
+
+    if (e.key === "?") { setHelp(true); return; }
+    if (e.key === "j") { moveSelection(1); return; }
+    if (e.key === "k") { moveSelection(-1); return; }
+    if (e.key === "Enter" && state.selectedRow != null) {
+      const j = state.jobs[state.selectedRow];
+      if (j) loadJobDetail(j.id);
+      return;
+    }
+    if (e.key === "h" && state.selectedRow != null) {
+      const j = state.jobs[state.selectedRow];
+      if (j && !j.halted) haltJob(j.id);
+      return;
+    }
+    if (e.key === "Escape" && state.selectedJobId) {
+      state.selectedJobId = null;
+      state.jobDetail = null;
+      renderJobDetail();
+    }
   });
 
   document.addEventListener("DOMContentLoaded", init);
