@@ -44,6 +44,7 @@ from forgeos.catalog import default_catalog  # noqa: E402
 from forgeos.contracts import Budget, JobSpec  # noqa: E402
 from forgeos.economy.capsule import CapsuleBuilder, RefKind, make_ref  # noqa: E402
 from forgeos.economy.preflight import count_tokens  # noqa: E402
+from forgeos.economy.savings import Figure, Provenance, cost_per_accepted_task  # noqa: E402
 from forgeos.gateway.client import Gateway, GatewayRequest, default_transports  # noqa: E402
 from forgeos.ledger import open_ledger  # noqa: E402
 from forgeos.settings import ProviderKind, Settings  # noqa: E402
@@ -68,6 +69,24 @@ CANDIDATES = [
 CAPSULE_BUDGET_TOKENS = 1_500
 WINDOW = 14  # lines of context kept around each hit
 
+# Mechanical, keyword-based acceptance check — NOT a semantic judge. It exists so
+# "billed cost per correct answer" has *some* accept/reject signal instead of
+# silently equating "cheaper" with "better", which is the exact trap
+# arXiv:2607.12161v2 warns about: cutting tokens raised billed cost 6.8% while
+# dropping task success from 27/40 to 15/40, and a cost-only dashboard would
+# have shown that as a win. This only checks whether the answer plausibly names
+# the right function and the right guard — nothing about phrasing or quality.
+# Read the full text in the ANSWERS section below; that is still the real check.
+ACCEPT_TERM_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("record_spend",),  # must name the function
+    ("inflight", "in-flight", "in flight", "dedup", "coalesce", "coalesced"),  # must name the guard
+)
+
+
+def _is_accepted(answer: str) -> bool:
+    low = answer.lower()
+    return all(any(term in low for term in group) for group in ACCEPT_TERM_GROUPS)
+
 
 @dataclass
 class Arm:
@@ -78,6 +97,7 @@ class Arm:
     usd_micros: int = 0
     seconds: float = 0.0
     answers: list[str] = field(default_factory=list)
+    accepted: list[bool] = field(default_factory=list)
     cache_hits: int = 0
     calls: int = 0
     rounds: list[dict] = field(default_factory=list)
@@ -95,7 +115,13 @@ class Arm:
         self.seconds += seconds
         self.cache_hits += 1 if resp.cache_hit else 0
         self.calls += 1
-        self.answers.append(resp.text.strip())
+        text = resp.text.strip()
+        self.answers.append(text)
+        self.accepted.append(_is_accepted(text))
+
+    @property
+    def correct(self) -> int:
+        return sum(self.accepted)
 
 
 def build_baseline_prompt(root: Path) -> str:
@@ -212,12 +238,17 @@ def main() -> int:
     print(f"\nmodel      {model_ref}  (${card.input_cost_per_1m}/1M in, "
           f"${card.output_cost_per_1m}/1M out)")
     print(f"question   {QUESTION[:70]}...")
-    print(f"\nprompt size")
+    # Real and worth showing, but NOT the headline: a smaller prompt is a
+    # context-size fact, not a cost or correctness fact. See the "HEADLINE"
+    # block after the calls run for the number that actually gates a claim
+    # of savings — token reduction alone can raise billed cost and lower
+    # correctness at the same time (arXiv:2607.12161v2).
+    print(f"\nprompt size (context only — not a cost proxy; see HEADLINE below)")
     print(f"  baseline  {b_tok:>7,} tokens  ({len(CANDIDATES)} whole files)")
     print(f"  forgeos      {h_tok:>7,} tokens  ({cap_stats['blocks_sent']} of "
           f"{cap_stats['blocks_found']} ranked blocks, {cap_stats['blocks_dropped']} over budget)")
     if b_tok:
-        print(f"  reduction {100 * (1 - h_tok / b_tok):>6.1f}%")
+        print(f"  reduction {100 * (1 - h_tok / b_tok):>6.1f}%  (smaller prompt — not the same as cheaper or more correct)")
 
     ledger = open_ledger(":memory:")
     job_id = ledger.open_job(JobSpec(objective="a/b bench", cwd=str(root),
@@ -254,6 +285,29 @@ def main() -> int:
         print(f"  round {i + 1}: baseline={'ok' if ok_b else 'failed'} "
               f"forgeos={'ok' if ok_h else 'failed'}")
 
+    # THE HEADLINE. Billed cost per CORRECT answer, not per token moved and not
+    # per dollar spent — a cheaper wrong answer is not a saving, and prompt-size
+    # reduction alone cannot tell you whether correctness survived (this is the
+    # exact failure mode arXiv:2607.12161v2 measured: cutting 38% of tool-output
+    # tokens raised billed cost 6.8% while task success fell from 27/40 to
+    # 15/40). Reuses `cost_per_accepted_task` from `forgeos.economy.savings` so
+    # this benchmark and `SavingsProof` compute "cost per accepted unit of work"
+    # the same way, not two slightly different formulas that could quietly drift.
+    print("\n" + "=" * 74)
+    print("HEADLINE — billed cost per correct answer")
+    for arm in (baseline, forgeos):
+        cash = Figure(
+            value=arm.usd_micros / 1e6, unit="usd", provenance=Provenance.MEASURED,
+            note=f"ab_bench arm={arm.name}: sum of usd_micros recorded in the ledger",
+        )
+        per_correct = cost_per_accepted_task(cash, arm.correct)
+        shown = per_correct.render() if per_correct is not None else "n/a (0 correct)"
+        print(f"  {arm.name:10} {arm.correct}/{arm.calls} correct   {shown}")
+    print("  'correct' is a mechanical keyword check (names the function + the guard),")
+    print("  not a real grader — read ANSWERS below and judge for yourself.")
+    print("  token/prompt-size reduction is NOT a cost proxy: it can go up while this")
+    print("  number gets worse, and it says nothing about whether the answer was right.")
+
     print("\n" + "=" * 74)
     print(f"{'':10} {'calls':>5} {'tok in':>9} {'cached':>8} {'tok out':>8} "
           f"{'USD':>11} {'sec':>7}")
@@ -286,10 +340,10 @@ def main() -> int:
 
     if baseline.usd_micros and forgeos.calls:
         saved = 1 - (forgeos.usd_micros / baseline.usd_micros)
-        print(f"\ncost      forgeos is {saved * 100:.1f}% cheaper overall "
+        print(f"\nraw $     forgeos is {saved * 100:.1f}% cheaper overall, ungated by correctness "
               f"({baseline.usd_micros / 1e6:.6f} -> {forgeos.usd_micros / 1e6:.6f})")
         if baseline.usd_micros > forgeos.usd_micros:
-            print(f"          {baseline.usd_micros / max(forgeos.usd_micros, 1):.1f}x")
+            print(f"          {baseline.usd_micros / max(forgeos.usd_micros, 1):.1f}x — see HEADLINE above for the correctness-gated figure")
     if baseline.seconds and forgeos.seconds:
         print(f"latency   {baseline.seconds:.1f}s -> {forgeos.seconds:.1f}s "
               f"({(1 - forgeos.seconds / baseline.seconds) * 100:+.1f}%)")
@@ -298,9 +352,11 @@ def main() -> int:
     print(f"ledger    ${ledger.job_spend_micros(job_id) / 1e6:.6f} recorded across both arms")
 
     print("\n" + "=" * 74)
-    print("ANSWERS — judge these yourself; a cheaper wrong answer is not a saving.\n")
+    print("ANSWERS — judge these yourself; a cheaper wrong answer is not a saving.")
+    print("(the mechanical tag is the same keyword check behind HEADLINE, not a real grader)\n")
     for arm in (baseline, forgeos):
-        print(f"--- {arm.name} ---")
+        verdict = "mechanical: correct" if (arm.accepted and arm.accepted[0]) else "mechanical: not matched"
+        print(f"--- {arm.name} ({verdict}) ---")
         print(_console_safe(arm.answers[0] if arm.answers else "(no answer)"))
         print()
     return 0

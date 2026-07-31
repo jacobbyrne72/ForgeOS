@@ -227,6 +227,11 @@ class CapsuleBuilder:
         self.budget = budget
         self.items: list[ContextRef] = []
         self.excluded: dict[str, str] = {}
+        # Admitted, but not whole. Tracked separately from `excluded` because a
+        # trimmed item and a dropped one are different facts: one is present and
+        # incomplete, the other is absent. Collapsing them would let a capsule
+        # report full coverage of something it only partly carried.
+        self.partial: dict[str, str] = {}
         self.expansion_requests: list[ExpansionRequest] = []
 
     @property
@@ -254,6 +259,91 @@ class CapsuleBuilder:
 
         self.items.append(ref)
         return True
+
+    def fit(
+        self,
+        kind: RefKind,
+        ref: str,
+        content: str,
+        reason: str,
+        *,
+        model: str = "",
+        min_lines: int = 4,
+    ) -> str | None:
+        """Admit `content`, trimmed to whole lines when the full item will not fit.
+
+        `add()` is a cliff: an item one token over budget is dropped entirely,
+        however relevant it was. Measured on this repo's own benchmark — of 31
+        ranked blocks, 3 were sent and 28 were dropped at the boundary, including
+        blocks that scored well and merely arrived late. Graduated degradation
+        keeps the head of a good block instead of losing all of it.
+
+        Returns the text actually admitted (possibly shorter than `content`), or
+        None if nothing useful fits or policy denies the ref.
+
+        **Whole lines only, never a mid-line cut.** arXiv 2607.12161 measured
+        tool-output trimming that severed verbatim anchors: billed cost rose
+        6.8% and task success fell from 27/40 to 15/40, because the model could
+        no longer match its fix against the failure. A half-identifier is worse
+        than an absent one — it looks usable and is not.
+
+        The ref is built from the ADMITTED text, so its hash and token count
+        describe what was actually sent. Pricing the original while sending a
+        trimmed copy would make the capsule's own accounting a fiction.
+        """
+        full = make_ref(kind, ref, content, reason, model=model)
+
+        path = _extract_path(full)
+        if path is not None:
+            decision = check_read(ReadRequest(path=path, offset=0, limit=1))
+            if not decision.allowed:
+                self.excluded[ref] = f"policy denied: {decision.reason}"
+                return None
+
+        remaining = self.budget - self.total_tokens
+        if full.token_estimate <= remaining:
+            self.items.append(full)
+            return content
+
+        lines = content.splitlines()
+        if len(lines) < min_lines:
+            # Too small to trim meaningfully; dropping beats sending a stub whose
+            # only effect is to spend budget saying nothing.
+            self.excluded[ref] = (
+                f"budget: {full.token_estimate} tokens, {remaining} remaining, "
+                f"and only {len(lines)} line(s) — too few to trim"
+            )
+            return None
+
+        # Longest whole-line prefix that fits. Linear from the top because the
+        # head of a ranked block is the part that earned its rank.
+        kept: list[str] = []
+        for line in lines:
+            candidate = "\n".join([*kept, line])
+            if count_tokens(candidate, model).tokens > remaining:
+                break
+            kept.append(line)
+
+        if len(kept) < min_lines:
+            self.excluded[ref] = (
+                f"budget: only {len(kept)} line(s) of {len(lines)} fit in "
+                f"{remaining} remaining tokens — below the {min_lines}-line floor"
+            )
+            return None
+
+        trimmed = "\n".join(kept)
+        partial = make_ref(
+            kind,
+            ref,
+            trimmed,
+            # The reason carries the loss, so a reader of the capsule can see it
+            # was trimmed without diffing against a source they may not have.
+            f"{reason} (partial: {len(kept)} of {len(lines)} lines)",
+            model=model,
+        )
+        self.items.append(partial)
+        self.partial[ref] = f"kept {len(kept)} of {len(lines)} lines"
+        return trimmed
 
     def expansion_request(self, ref_kind: RefKind, detail: str) -> ExpansionRequest:
         """Record a worker's ask for context beyond what the capsule carried."""
