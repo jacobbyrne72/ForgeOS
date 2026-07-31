@@ -1020,3 +1020,21 @@ if __name__ == "__main__":
     sys.exit(main())
 
 
+
+def cmd_prompt_cache(args):
+    """Show prompt cache stats and clear if requested."""
+    from forgeos.prompt_cache import PromptCache
+
+    pc = PromptCache()
+    if args.clear:
+        n = pc.clear()
+        print("Cleared", n, "cache entries")
+    else:
+        info = pc.total_saved()
+        print("=== Prompt Cache ===")
+        print("Entries:", pc.size())
+        print("Total saved:", "$%.6f" % info["total_saved"])
+        print("Tokens saved:", info["total_tokens_saved"])
+
+    return 0
+

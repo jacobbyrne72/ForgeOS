@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .cost_router import ROUTE_COST, CostRouter, Route
+from .cost_router import ROUTE_COST, CostRouter
 
 
 class BatchProjection:

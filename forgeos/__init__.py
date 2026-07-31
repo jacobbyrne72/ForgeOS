@@ -159,3 +159,5 @@ from .response_truncator import truncate_response
 from .batch_projection import BatchProjection
 
 from .cost_replay import CostReplayer
+
+from .prompt_cache import CacheEntry, PromptCache
