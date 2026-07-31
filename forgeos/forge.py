@@ -27,6 +27,7 @@ network, a subscription, or a model.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import threading
 from collections.abc import Callable
@@ -126,8 +127,19 @@ def _family_of(profile: WorkerProfile | None) -> str:
 
 
 def _looks_like_pytest(output: str) -> bool:
-    """Whether the pytest reducer can meaningfully parse this."""
+    """Whether the pytest reducer can meaningfully parse this.
+
+    The bare summary line — "3 passed in 0.02s" — must match on its own: a
+    headless CLI worker's final message often carries exactly that line and
+    nothing else pytest-shaped, and requiring "pytest"/`::`/`=====` alongside
+    it sent a genuine summary through the generic reducer, which reports no
+    test counts, which the merge gate correctly read as "nothing verified".
+    A correct implementation was refused over the detector, not the evidence.
+    Observed live on the headless-Claude dogfood run.
+    """
     low = output.lower()
+    if re.search(r"\b\d+ (passed|failed|error(?:s)?)\b", low):
+        return True
     return any(m in low for m in ("passed", "failed", "error")) and (
         "pytest" in low or "::" in output or "=====" in output
     )
