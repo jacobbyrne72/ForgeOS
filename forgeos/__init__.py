@@ -78,6 +78,7 @@ __all__ = [
     "to_micros",
     "__version__",
     "bench",
+    "TokenRouter",
     "BenchmarkResult",
     "Layer",
     "format_benchmark",
@@ -139,6 +140,7 @@ from .cost_retry import CostRetry
 from .cost_scheduler import CostScheduler
 
 from .cost_guard import CostGuard
+from .token_router import TokenRouter
 
 from .cost_forecast import CostForecast
 
