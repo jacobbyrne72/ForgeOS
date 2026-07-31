@@ -49,6 +49,7 @@
 - `forgeos/forgebench_table.py`, `forgeos/cli.py`, `tests/test_cli_dispatch.py` — package-level aggregation and installed-CLI parity for receipts/table commands.
 - `forgeos/core/quota.py`, `forgeos/forge.py`, `forgeos/dashboard/app.py`, `tests/test_quota.py`, `tests/test_forge.py`, `tests/test_dashboard.py` — durable quota telemetry, per-model banked-reset handling, and read-only dashboard exposure.
 - `forgeos/core/quota_ingest.py`, `forgeos/core/router.py`, `forgeos/registry.py`, `tests/test_quota_ingest.py`, `tests/test_router.py` — offline header/report normalization and effective-cost arbitration for mapped subscription capacity.
+- `forgeos/cli.py`, `forgeos/core/quota_ingest.py`, `tests/test_cli_dispatch.py` — safe local `quota ingest` / `ingest` commands for header JSON and copied CLI reports; fixed duration-suffix parsing.
 
 ## Commands run
 - `rtk proxy python -m pytest tests -q -m "not slow"`
@@ -75,21 +76,25 @@
 - `python -m pytest tests/test_forge.py tests/test_dashboard.py -q` (53 passed, 1 existing FastAPI/httpx deprecation warning)
 - offline dashboard dogfood with a persisted `Weekly: 75% remaining` report (`/api/quota` and summary both showed 25% burn)
 - direct `QuotaIngestor` assertions for Anthropic utilization/reset, generic rate limits, vendor exhaustion, and CLI reports (passed); `git diff --check` (passed)
+- `python -m pytest tests/test_cli_dispatch.py -q` (147 passed)
+- `python -m pytest tests/test_quota_ingest.py -q` (4 passed)
+- `python -m pytest tests/test_router.py tests/test_quota.py -q` (80 passed)
+- `ruff check forgeos/cli.py forgeos/core/quota_ingest.py tests/test_cli_dispatch.py`; `python -m py_compile ...` (passed)
 
 ## Test status
-- Passing: 106 focused quota/Forge/dashboard tests; 164 focused benchmark/CLI/aggregator tests; Ruff; compileall; CLI dogfood and no-call benchmark smoke checks.
+- Passing: 147 CLI dispatch tests; 4 quota-ingest tests; 80 router/quota tests; 106 focused quota/Forge/dashboard tests; 164 focused benchmark/CLI/aggregator tests; Ruff; compileall; CLI dogfood and no-call benchmark smoke checks.
 - Failing: full non-slow sweep currently has one unrelated concurrent failure in `tests/test_forgebench_packing.py::test_definition_weighting_is_what_makes_that_true` while `forgeos/forgebench.py` is concurrently modified.
-- Not run: reliable pytest for the new `tests/test_quota_ingest.py` and final combined suite; attempts timed out under host saturation from concurrent runners. Direct `QuotaIngestor` assertions passed, and the focused router suite passed (28 passed) before the concurrent edits expanded.
+- Not run: final combined suite after concurrent work; the prior non-slow sweep had one unrelated ForgeBench packing failure.
 
 ## Known blockers
 - No blocker for the source upgrade. Full catalog clone coverage remains intentionally unperformed because it is 713 repositories.
 - Unrelated reducer wrapper-summary fixes were committed concurrently; they were not touched by this benchmark work.
 - A concurrent routed-execution change in `forgeos/adapters/routed.py`, `forgeos/forge.py`, and `tests/test_routed_executor.py` was committed separately; it was not touched here. Its focused route tests passed (15 passed).
 - Concurrent ForgeBench packing work is dirty in `forgeos/forgebench.py` and `tests/test_forgebench_packing.py`; `forgeos/economy/savings.py` is also dirty. Do not stage or revert those files.
-- Additional concurrent adapter, dashboard, economy, gateway, ledger, registry, and test changes are currently dirty; do not stage or revert files outside the owned quota/arbitration hunks. A concurrent full-suite pytest process is still running (PID 42412).
+- Additional concurrent adapter, dashboard, economy, gateway, ledger, registry, settings, hooks, MCP, and test changes are currently dirty; do not stage or revert files outside owned hunks.
 
 ## Next best steps
 - Keep provider calls opt-in; do not run `tools/ab_bench.py --live`, `forge forgebench` live, or a real `forge run` without explicit operator-approved provider/budget calls.
 - The `forge` executable is not installed in this shell (`Get-Command forge` returned unavailable); the source-equivalent `python -m forgeos.cli` path is verified without installing anything.
-- Vendor-neutral quota ingestion and subscription-vs-API arbitration are implemented in the current working tree: `QuotaIngestor`, `market_resource` mappings, effective-cost routing, `Forge.ingest_quota`, and `forge quota --json`.
-- Final commit is intentionally deferred while concurrent agents are modifying overlapping ForgeOS files; stage only verified owned hunks after their work settles.
+- Vendor-neutral quota ingestion and subscription-vs-API arbitration are committed: `QuotaIngestor`, `market_resource` mappings, effective-cost routing, `Forge.ingest_quota`, `forge quota --json`, and `forge quota ingest`.
+- Keep provider calls opt-in; stage only verified owned hunks if touching the concurrently dirty files.
