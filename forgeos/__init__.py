@@ -95,3 +95,5 @@ __all__ = [
 
 from .adaptive_batch import AdaptiveBatch
 from .smart_batch import SmartBatchPredictor
+
+from .cost_audit import CostAuditor

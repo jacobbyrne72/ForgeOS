@@ -369,6 +369,8 @@ def main() -> int:
     p_replace = sub.add_parser("replace", help="Replace expensive calls with cheap equivalents")
     p_adbatch = sub.add_parser("adaptbatch", help="Auto-select cheapest batch strategy for any workload")
     p_smart = sub.add_parser("smartbatch", help="ML-inspired batch cost predictor using history")
+    p_audit = sub.add_parser("audit", help="Scan project for AI cost waste")
+    p_audit.add_argument("--dir", default=".", dest="audit_dir")
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -390,6 +392,7 @@ def main() -> int:
         "replace": cmd_replace,
         "adaptbatch": cmd_adbatch,
         "smartbatch": cmd_smartbatch,
+        "audit": cmd_audit,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -462,6 +465,22 @@ def cmd_smartbatch(args):
     print("Total estimated:", "$" + str(round(result["total_estimated_usd"], 4)))
     print("Monthly projection:", "$" + str(round(result["monthly_projection"], 2)))
     print("Yearly projection:", "$" + str(round(result["yearly_projection"], 2)))
+    return 0
+
+
+
+def cmd_audit(args):
+    from forgeos.cost_audit import CostAuditor
+    auditor = CostAuditor()
+    result = auditor.audit_directory(args.audit_dir)
+    print("=== Cost Audit ===")
+    print("Files audited:", result["files_audited"])
+    print("Issues found:", result["total_issues"])
+    print("Potential savings: $" + str(result["total_potential_savings_usd"]))
+    print()
+    print("By severity:")
+    for sev, count in sorted(result["by_severity"].items()):
+        print("  " + sev + ": " + str(count))
     return 0
 
 def cmd_adbatch(args):
