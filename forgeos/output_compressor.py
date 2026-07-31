@@ -71,6 +71,7 @@ def truncate_response(text: str, max_tokens: int = 4096) -> tuple[str, dict]:
             original_tokens=estimated_tokens,
             final_tokens=estimated_tokens,
             tokens_saved=0,
+            savings_pct=0.0,
         )
 
     # Truncate at budget limit

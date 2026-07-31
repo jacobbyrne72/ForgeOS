@@ -16,8 +16,15 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from forgeos.contracts import FailureClass
-from forgeos.core.manager import Manager, ManagerDecision, ManagerVerdict, wake_triggers
+from forgeos.contracts import FailureClass, Scope, TaskSpec
+from forgeos.core.manager import (
+    Manager,
+    ManagerDecision,
+    ManagerVerdict,
+    SafetyVerdict,
+    parallel_safety,
+    wake_triggers,
+)
 
 
 def clean_heartbeat(**overrides) -> dict:
@@ -277,3 +284,155 @@ def test_blank_reason_code_rejected():
 def test_negative_escalate_after_failed_attempts_rejected():
     with pytest.raises(ValidationError):
         ManagerVerdict(decision=ManagerDecision.BLOCK, reason_code="x", escalate_after_failed_attempts=-1)
+
+
+# ============================================== parallel-safety pre-flight
+# Anthropic vs. Cognition on multi-agent decomposition: parallel subagents
+# silently diverge when they share state neither one fully sees, even when
+# their files never overlap. Every test here is one instance of that failure
+# mode, or a pin that the conservative bias holds when there is nothing to
+# flag.
+
+
+def _spec(subject: str, description: str, *, acceptance=(), paths=("src/default.py",)) -> TaskSpec:
+    return TaskSpec(job_id="j1", subject=subject, description=description,
+                    acceptance=list(acceptance), scope=Scope(paths=list(paths)))
+
+
+def test_disjoint_scope_and_no_shared_contract_is_safe():
+    a = _spec("fix retry", "Fix the retry backoff bug in the scheduler.", paths=["src/a.py"])
+    b = _spec("rename helper", "Rename the logging helper for clarity.", paths=["src/b.py"])
+    verdict = parallel_safety(a, b)
+    assert verdict.safe
+    assert verdict.reasons == []
+    assert verdict.introduces_before is None
+
+
+def test_identical_scope_paths_are_not_safe():
+    a = _spec("a", "Fix a bug.", paths=["src/shared.py"])
+    b = _spec("b", "Fix another bug.", paths=["src/shared.py"])
+    verdict = parallel_safety(a, b)
+    assert not verdict.safe
+    assert any("share scope" in r for r in verdict.reasons)
+
+
+def test_glob_overlap_reuses_leases_patterns_overlap():
+    """Overlap detection is the exact question a path lease already answers
+    -- this pins that manager.py calls `patterns_overlap` rather than a
+    second glob matcher that could silently drift from it."""
+    a = _spec("a", "Fix a bug.", paths=["src/**"])
+    b = _spec("b", "Fix another bug.", paths=["src/pkg/foo.py"])
+    verdict = parallel_safety(a, b)
+    assert not verdict.safe
+    assert any("share scope" in r for r in verdict.reasons)
+
+
+def test_unscoped_task_is_conservatively_unsafe():
+    """An empty scope.paths means the task can touch anything -- non-overlap
+    cannot be proven, so this must not read as 'nothing to check'."""
+    a = _spec("a", "Fix a bug.", paths=[])
+    b = _spec("b", "Fix another bug.", paths=["src/b.py"])
+    verdict = parallel_safety(a, b)
+    assert not verdict.safe
+    assert any("no declared scope.paths" in r for r in verdict.reasons)
+
+
+def test_shared_contract_blocks_even_with_disjoint_scope():
+    a = _spec("build gateway",
+              "Create the `PaymentGateway` class that exposes charge and refund.",
+              paths=["src/gateway.py"])
+    b = _spec("wire checkout",
+              "Wire the checkout flow to call PaymentGateway.charge() on submit.",
+              paths=["src/checkout.py"])
+    verdict = parallel_safety(a, b)
+    assert not verdict.safe
+    assert any("PaymentGateway" in r for r in verdict.reasons)
+    assert verdict.introduces_before == (a.id, b.id)
+
+
+def test_shared_contract_direction_is_detected_either_way():
+    """The introducer is whichever task's text uses the introduce-verb near
+    the symbol, regardless of which one is passed as `a` or `b`."""
+    a = _spec("wire checkout",
+              "Wire the checkout flow to call PaymentGateway.charge() on submit.",
+              paths=["src/checkout.py"])
+    b = _spec("build gateway",
+              "Create the `PaymentGateway` class that exposes charge and refund.",
+              paths=["src/gateway.py"])
+    verdict = parallel_safety(a, b)
+    assert not verdict.safe
+    assert verdict.introduces_before == (b.id, a.id)
+
+
+def test_mentioning_an_existing_symbol_without_an_introduce_verb_is_not_flagged():
+    """Referencing something that already exists is not a contract conflict --
+    only text following create/add/introduce/define counts as a claim."""
+    a = _spec("a", "Uses the existing Foo class to validate input.", paths=["src/a.py"])
+    b = _spec("b", "Also touches the Foo class in a different way.", paths=["src/b.py"])
+    verdict = parallel_safety(a, b)
+    assert verdict.safe
+
+
+def test_snake_case_symbol_is_detected():
+    a = _spec("a", "Add the `reduce_pytest` helper for parsing test output.",
+              paths=["src/a.py"])
+    b = _spec("b", "Call reduce_pytest on the raw output before summarizing.",
+              paths=["src/b.py"])
+    verdict = parallel_safety(a, b)
+    assert not verdict.safe
+    assert any("reduce_pytest" in r for r in verdict.reasons)
+
+
+def test_dotted_path_symbol_is_detected():
+    a = _spec("a", "Introduce forgeos.core.newmod.Thing for the new pipeline.",
+              paths=["src/a.py"])
+    b = _spec("b", "Depends on forgeos.core.newmod.Thing to run.", paths=["src/b.py"])
+    verdict = parallel_safety(a, b)
+    assert not verdict.safe
+
+
+def test_quoted_name_symbol_is_detected():
+    a = _spec("a", 'Define "MAX_RETRY_WINDOW" as the new constant.', paths=["src/a.py"])
+    b = _spec("b", "Read the MAX_RETRY_WINDOW value at startup.", paths=["src/b.py"])
+    verdict = parallel_safety(a, b)
+    assert not verdict.safe
+
+
+def test_pure_scope_overlap_has_no_introduces_before():
+    """A path-overlap-only violation has no natural direction -- either order
+    sequences the pair correctly, so this must stay None rather than
+    implying a resolution the check does not actually know."""
+    a = _spec("a", "Fix a bug.", paths=["src/shared.py"])
+    b = _spec("b", "Fix another bug.", paths=["src/shared.py"])
+    verdict = parallel_safety(a, b)
+    assert not verdict.safe
+    assert verdict.introduces_before is None
+
+
+def test_both_violations_are_reported_together():
+    """One fix at a time would mean one re-check per problem -- both the
+    scope overlap and the contract conflict should surface in one verdict."""
+    a = _spec("build gateway",
+              "Create the `PaymentGateway` class that exposes charge and refund.",
+              paths=["src/shared.py"])
+    b = _spec("wire checkout",
+              "Wire the checkout flow to call PaymentGateway.charge() on submit.",
+              paths=["src/shared.py"])
+    verdict = parallel_safety(a, b)
+    assert not verdict.safe
+    assert len(verdict.reasons) == 2
+    assert any("share scope" in r for r in verdict.reasons)
+    assert any("PaymentGateway" in r for r in verdict.reasons)
+
+
+def test_a_genuinely_independent_pair_is_safe_not_flagged():
+    """The check must not become unpassable -- a real independent pair with
+    real scope and a real contract mention (but no introduce verb) must
+    still be marked safe."""
+    a = _spec("a", "Fix the retry backoff bug in the scheduler.", paths=["src/a.py"],
+              acceptance=["scheduler tests pass"])
+    b = _spec("b", "Add a docstring to the existing helper function.", paths=["src/b.py"],
+              acceptance=["helper docstring present"])
+    verdict = parallel_safety(a, b)
+    assert verdict.safe
+    assert verdict.reasons == []

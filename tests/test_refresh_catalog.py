@@ -131,6 +131,9 @@ def test_main_installs_when_not_a_dry_run(tmp_path, monkeypatch, rc):
     card = Catalog.from_file(fake_target).get("openai/gpt-4")
     assert card is not None
     assert card.output_cost_per_1m == pytest.approx(60.0)
+    assert card.source == "litellm"
+    assert card.source_url == LITELLM_URL
+    assert card.provenance_word == "measured"
 
 
 def test_main_source_flag_selects_the_models_dev_url(tmp_path, monkeypatch, rc):

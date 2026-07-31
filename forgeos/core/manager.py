@@ -370,9 +370,170 @@ class Manager:
         return None
 
 
+# --------------------------------------------- parallel-safety pre-flight
+#
+# Anthropic's and Cognition's public write-ups on multi-agent decomposition
+# disagree on whether to parallelize subagents at all, but converge on the
+# same concrete failure mode: two subagents that never learn of each other
+# silently diverge when they touch the same state without a shared reference
+# (Cognition's Flappy-Bird example -- one agent draws the background, another
+# the bird, neither holding the other's contract). Worktree-per-worker file
+# isolation catches the file-level version of this for free; it does nothing
+# for the semantic version, where the files never even overlap but one task's
+# code is written against an interface the other task hasn't built yet. See
+# docs/research/harness-workflows.md, top action #5.
+
+# Verbs that mean "this task is the one bringing a name/schema/interface into
+# existence", as opposed to merely mentioning something that already exists
+# ("uses the existing Foo class"). Deliberately explicit rather than a
+# stemmer -- a missed inflection just means a missed detection, which the
+# conservative bias below already assumes will sometimes happen.
+_INTRODUCE_VERB = re.compile(
+    r"\b(?:create|creates|created|creating|"
+    r"add|adds|added|adding|"
+    r"introduce|introduces|introduced|introducing|"
+    r"define|defines|defined|defining)\b",
+    re.IGNORECASE,
+)
+
+# How far past an introduce-verb to look for the thing being introduced.
+# Long enough for "creates the `Foo.bar` schema used by ..." to still catch
+# `Foo.bar`; short enough that it does not sweep in unrelated identifiers
+# from later in a long task description.
+_INTRODUCE_WINDOW = 80
+
+_QUOTED_NAME = re.compile(r"['\"`]([^'\"`]{1,80})['\"`]")
+_DOTTED_PATH = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+\b")
+_CAMEL_SYMBOL = re.compile(r"\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+\b")  # >=2 humps
+_SNAKE_SYMBOL = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")  # >=1 underscore
+
+
+def _task_text(spec: TaskSpec) -> str:
+    return f"{spec.description}\n" + "\n".join(spec.acceptance)
+
+
+def _introduced_symbols(text: str) -> set[str]:
+    """Identifier-like tokens a task's own text claims to introduce.
+
+    Deliberately simple, not a parser: only text following an introduce-style
+    verb counts as a claim. An identifier mentioned elsewhere in a long
+    description ("uses the existing Foo class") is not a claim of introducing
+    anything -- counting it would flag near-total contract "sharing" between
+    any two tasks that happen to name the same thing.
+    """
+    symbols: set[str] = set()
+    for m in _INTRODUCE_VERB.finditer(text):
+        window = text[m.end(): m.end() + _INTRODUCE_WINDOW]
+        symbols.update(s.strip() for s in _QUOTED_NAME.findall(window) if s.strip())
+        symbols.update(_DOTTED_PATH.findall(window))
+        symbols.update(_CAMEL_SYMBOL.findall(window))
+        symbols.update(_SNAKE_SYMBOL.findall(window))
+    return symbols
+
+
+def _mentions(text: str, symbol: str) -> bool:
+    """Whether `symbol` appears in `text` as itself, not as a fragment of a
+    longer identifier -- so "Foo" does not match inside "FooBar" or
+    "Foo_bar" (`_` is a word character). Plain `\\b` boundaries, not a
+    stricter non-word-or-dot lookaround: `PaymentGateway.charge()` -- a
+    method call on the very thing being referenced -- is the ordinary way
+    prose points at an introduced symbol, and a dot is not a word character,
+    so `\\b` already treats it as a boundary without excluding it."""
+    return re.search(r"\b" + re.escape(symbol) + r"\b", text) is not None
+
+
+def _shared_contract(a: TaskSpec, b: TaskSpec) -> tuple[str, str, str] | None:
+    """(introducer_id, dependent_id, symbol) if one task introduces something
+    the other's own text references, else None. Checked both directions --
+    either task could be the one introducing the shared piece. Sorted so the
+    result is deterministic when a task's text happens to introduce more than
+    one symbol the other references."""
+    a_text, b_text = _task_text(a), _task_text(b)
+    for symbol in sorted(_introduced_symbols(a_text)):
+        if _mentions(b_text, symbol):
+            return a.id, b.id, symbol
+    for symbol in sorted(_introduced_symbols(b_text)):
+        if _mentions(a_text, symbol):
+            return b.id, a.id, symbol
+    return None
+
+
+class SafetyVerdict(BaseModel):
+    """Whether two TaskSpecs may run in parallel, and why not if they can't.
+
+    Conservative by design: a false-positive sequentialization costs a little
+    wall-clock (one task waits for one it did not actually need to); a
+    false-negative parallelization costs silent divergence between two
+    workers that never see each other's decisions -- the exact failure mode
+    both Anthropic's and Cognition's public write-ups independently reported.
+    When genuinely unsure, this returns unsafe.
+    """
+
+    safe: bool
+    reasons: list[str] = Field(default_factory=list)
+    # Set only when a contract violation implies a direction: the introducing
+    # task's id, then the dependent task's id. A pure path-overlap violation
+    # has no natural direction -- either order sequences the pair correctly
+    # -- so this stays None rather than implying an ordering the check does
+    # not actually know.
+    introduces_before: tuple[str, str] | None = None
+
+
+def parallel_safety(a: TaskSpec, b: TaskSpec) -> SafetyVerdict:
+    """Pre-flight check before two decomposed tasks are marked parallel-safe.
+
+    Two independent, deterministic gates -- no model call, so the check
+    cannot itself be gamed or drift between runs:
+
+    1. `Scope.paths` must not overlap, reusing `leases.patterns_overlap`
+       rather than a second glob matcher -- this is the same glob-overlap
+       question a path lease answers, and a second implementation here would
+       be one more place for the two to silently drift apart. An unscoped
+       task (`scope.paths == []`) can touch anything, so non-overlap cannot
+       be proven either way; treated as unsafe, not as "nothing to check".
+    2. Neither task's description/acceptance may reference a not-yet-
+       materialized symbol the OTHER task's own text claims to introduce --
+       the semantic conflict file-level isolation cannot see.
+
+    A caller that gets `safe=False` should add a `depends_on` edge, never
+    drop the pair or run it anyway. `introduces_before` names which task
+    should run first when the violation implies a direction; a pure scope
+    overlap leaves it None since either order sequences the pair correctly.
+    """
+    reasons: list[str] = []
+    introduces_before: tuple[str, str] | None = None
+
+    if not a.scope.paths or not b.scope.paths:
+        reasons.append(
+            f'"{a.subject}" and "{b.subject}": at least one task has no declared '
+            f"scope.paths -- an unscoped task can touch anything, so non-overlap "
+            f"cannot be proven"
+        )
+    else:
+        overlaps = [
+            (pa, pb) for pa in a.scope.paths for pb in b.scope.paths
+            if patterns_overlap(pa, pb)
+        ]
+        if overlaps:
+            shown = ", ".join(f"{pa!r}~{pb!r}" for pa, pb in overlaps[:3])
+            reasons.append(f'"{a.subject}" and "{b.subject}" share scope: {shown}')
+
+    shared = _shared_contract(a, b)
+    if shared:
+        introducer_id, dependent_id, symbol = shared
+        who = a.subject if introducer_id == a.id else b.subject
+        other = b.subject if introducer_id == a.id else a.subject
+        reasons.append(f'"{who}" introduces {symbol!r}, referenced by "{other}"')
+        introduces_before = (introducer_id, dependent_id)
+
+    return SafetyVerdict(safe=not reasons, reasons=reasons, introduces_before=introduces_before)
+
+
 __all__ = [
     "Manager",
     "ManagerDecision",
     "ManagerVerdict",
+    "parallel_safety",
+    "SafetyVerdict",
     "wake_triggers",
 ]

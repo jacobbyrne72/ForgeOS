@@ -36,6 +36,7 @@ class CostForecast:
                 "days": days,
                 "forecast_usd": 0.0,
                 "confidence": "unknown",
+                "data_points": len(history),
             }
 
         # Simple linear regression
