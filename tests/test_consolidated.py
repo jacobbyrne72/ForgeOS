@@ -43,13 +43,29 @@ class TestCostRetry:
         assert info["reason"] == "max_retries_reached"
 
     def test_should_retry_stops_on_waste_error(self):
+        """A genuinely unretryable error still stops the retry.
+
+        This used to assert that "Rate limit exceeded" stopped one, which pinned
+        a defect rather than a behaviour: a rate limit is TRANSIENT -- the
+        definitively retryable class, the one backoff exists for -- and treating
+        it as waste meant giving up on the failure most likely to succeed on the
+        next attempt. "rate limit" and "quota exceeded" are gone from the waste
+        list; an invalid prompt genuinely does not improve by being resent.
+        """
         from forgeos.cost_retry import CostRetry
 
         r = CostRetry(max_retries=3)
-        should, info = r.should_retry(1, last_error="Rate limit exceeded, try later")
+        should, info = r.should_retry(1, last_error="Invalid prompt: schema mismatch")
         assert should is False
         assert info["reason"] == "waste_error"
-        assert info["match"] == "rate limit"
+        assert info["match"] == "invalid prompt"
+
+    def test_a_rate_limit_is_retried_rather_than_written_off(self):
+        from forgeos.cost_retry import CostRetry
+
+        r = CostRetry(max_retries=3)
+        should, _info = r.should_retry(1, last_error="Rate limit exceeded, try later")
+        assert should is True
 
     def test_should_retry_stops_when_per_attempt_budget_exceeded(self):
         from forgeos.cost_retry import CostRetry

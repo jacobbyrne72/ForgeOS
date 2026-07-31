@@ -17,12 +17,27 @@ Stops when the next retry would overspend.
 """
 from __future__ import annotations
 
+from .contracts import FailureClass
 from .cost_tracker import CostTracker
 
 _RETRY_COST = 0.03  # typical API call
+
+# LAST-RESORT ONLY. `FailureClass` is the real answer and a caller that knows
+# why the attempt failed should pass it; these substrings are what remains for
+# callers that only have an error string.
+#
+# Two of these were actively wrong before `FailureClass` was wired in. "rate
+# limit" and "quota exceeded" are TRANSIENT — the definitively retryable class,
+# the one backoff exists for — and treating them as unretryable waste meant
+# giving up on the failures most likely to succeed on the next attempt. They
+# are gone. What is left maps to SPECIFICATION or POLICY: a wrong prompt or a
+# denied permission does not improve by being asked again.
+#
+# Substring matching on an error message is a guess about someone else's
+# wording. It is kept only because deleting it would silently change behaviour
+# for callers that pass no failure class.
 _WASTE_PATTERNS = [
     "invalid prompt", "permission denied", "not found",
-    "rate limit", "quota exceeded",
 ]
 
 
@@ -43,14 +58,38 @@ class CostRetry:
         self.tracker = CostTracker()
 
     def should_retry(
-        self, attempt: int, last_error: str = "", retry_cost: float = _RETRY_COST
+        self, attempt: int, last_error: str = "", retry_cost: float = _RETRY_COST,
+        failure_class: FailureClass | None = None,
     ) -> tuple[bool, dict]:
         """Decide if retrying makes financial sense.
 
         Returns (should_retry, info dict).
+
+        `failure_class` is the answer when the caller has it. This module used
+        to decide entirely on budget arithmetic plus substring-matching the
+        error text, while `contracts.FailureClass` -- a considered taxonomy that
+        `circuit_breaker.py` already consumes correctly -- sat unused beside it.
+        Two classification systems in one package, and the weaker one was the
+        one wired up.
+
+        Worse than redundant: its waste list contained "rate limit" and "quota
+        exceeded", which are TRANSIENT, the definitively retryable class. It was
+        giving up precisely on the failures most likely to succeed next attempt.
         """
         if attempt >= self.max_retries:
             return False, {"reason": "max_retries_reached", "attempt": attempt}
+
+        # Checked BEFORE the budget arithmetic: whether retrying can possibly
+        # work is a different question from whether it is affordable, and the
+        # first one answers "no" for free.
+        if failure_class is not None and failure_class.needs_human:
+            return False, {
+                "reason": "needs_human",
+                "attempt": attempt,
+                "failure_class": failure_class.value,
+                "detail": "a SPECIFICATION or POLICY failure does not improve by "
+                          "being retried -- the task or the permission is wrong",
+            }
 
         # Exponential backoff: budget halves each retry
         remaining_budget = self.base_cost_budget / (2 ** attempt)
@@ -77,14 +116,20 @@ class CostRetry:
                 "max_total_retry_spend": self.max_total_retry_spend,
             }
 
-        # Check for waste errors
-        for pattern in _WASTE_PATTERNS:
-            if pattern.lower() in last_error.lower():
-                return False, {
-                    "reason": "waste_error",
-                    "attempt": attempt,
-                    "match": pattern,
-                }
+        # Substring matching runs ONLY when the caller supplied no failure
+        # class. A caller that knows why the attempt failed has already been
+        # answered above, and guessing from someone else's error wording on top
+        # of a definite answer is how the two systems disagreed.
+        if failure_class is None:
+            for pattern in _WASTE_PATTERNS:
+                if pattern.lower() in last_error.lower():
+                    return False, {
+                        "reason": "waste_error",
+                        "attempt": attempt,
+                        "match": pattern,
+                        "detail": "matched on error text; pass a FailureClass for a "
+                                  "decision that does not depend on wording",
+                    }
 
         self.total_retries += 1
         self.retry_spend += retry_cost
