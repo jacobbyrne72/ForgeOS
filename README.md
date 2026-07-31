@@ -54,29 +54,37 @@ landing) in [docs/TEAM.md](docs/TEAM.md); a runnable walkthrough in
 ## The benchmark gate
 
 `forge forgebench` runs a pinned 6-task suite through two arms and applies the
-blueprint's savings classes. Latest run, deepseek-chat, both arms on the same
-ledger, same prompt settings, class A paired:
+blueprint's savings classes. deepseek-chat, both arms on the same ledger, same
+prompt settings, class A paired:
 
 ```
            attempted accepted    tok in  tok out         USD
-baseline           6        5    70,510      233    0.009935
-forgeos            6        5    14,595      211    0.002104
+baseline           6        5    73,056      212    0.006249
+forgeos            6        5    15,047      202    0.001109
 
 RELEASE 0.1 EXIT GATE: PASS
 ```
 
-Acceptance is equal, so the cost comparison is valid and the harness prints a
-figure: **cash cost −78.8%, input tokens −79.3%, wall time −51.6%.** Zero proof
-complaints. The provenance on those figures reads `replayed`, not `measured`,
-because the baseline is a separate paired execution rather than a direct
-observation of the same run — that distinction is enforced in code
+Acceptance is **equal**, so the cost comparison is not void and the harness
+prints a figure. Two consecutive runs:
+
+| | run 1 | run 2 |
+|---|---|---|
+| acceptance | 5/6 vs 5/6 | 5/6 vs 5/6 |
+| cash cost | −78.8% | −82.3% |
+| input tokens | −79.3% | −79.4% |
+| wall time | −51.6% | −52.1% |
+
+The provenance on those figures reads `replayed`, not `measured`, because the
+baseline is a separate paired execution rather than a direct observation of the
+same run. That distinction is enforced in code
 ([`savings.py`](forgeos/economy/savings.py)), not left to the writer.
 
 Caveats, stated because they are the ones that matter:
 
-- **Six tasks is small.** Acceptance moved run-to-run at this size before the
-  suite was stable. Treat the direction as the result and the exact percentage
-  as one sample.
+- **Six tasks is small**, and two runs is two runs. The input-token figure is
+  stable to within 0.1pp; cash cost moved 3.5pp between them. Treat the
+  direction as the result.
 - **One model, one repo.** Measured with deepseek-chat against this codebase.
   Nothing here establishes what it does on yours.
 - **`ledger-dedup-guard` fails in both arms** — its answer spans two files. Both
