@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -197,6 +198,169 @@ def cmd_watch(args: argparse.Namespace) -> int:
     return 0
 
 
+# ------------------------------------------------------------------------ team
+
+
+def _print_mission_graph(mission) -> None:
+    """The plan before money moves: every task's subject, scope, and
+    dependency edges, plus any `dependency_conflicts` the compiler could not
+    resolve on its own (see `compiler.Mission.dependency_conflicts` -- a
+    non-empty list there is a human's call, never auto-resolved).
+    """
+    print(f"Mission: {mission.objective}")
+    print(f"Tasks: {len(mission.tasks)}")
+    for t in mission.tasks:
+        print(f"  [{t.id[:12]}] {t.subject}")
+        print(f"    scope: {' '.join(t.scope.paths) or '(none)'}")
+        if t.depends_on:
+            print(f"    depends_on: {', '.join(d[:12] for d in t.depends_on)}")
+    if mission.dependency_conflicts:
+        print()
+        print("Dependency conflicts (unresolved -- human call):")
+        for conflict in mission.dependency_conflicts:
+            print(f"  - {conflict}")
+
+
+# Substring `core.verify.py` appends to `MergeGate.evaluate`'s reasons when
+# `Forge._pick_reviewer` found no second capable worker (see forge.py's
+# `_STRUCTURAL_REFUSALS` -- the same substring it matches on). Lives in
+# `TaskOutcome.merge_reasons`, not the short `reason` field.
+_NO_REVIEW_REFUSAL = "no independent review"
+
+
+def _print_outcomes(outcomes) -> None:
+    for outcome in outcomes:
+        status = "accepted" if outcome.accepted else "rejected"
+        tier = outcome.tier if outcome.tier is not None else "-"
+        print(
+            f"  [{outcome.task_id[:12]}] {status:<8} {outcome.subject}"
+            f"  worker={outcome.worker_id or '-'} tier={tier}"
+            f" attempts={outcome.attempts} cost=${outcome.usd_micros / 1e6:.4f}"
+        )
+        if outcome.reason:
+            print(f"    reason: {outcome.reason}")
+        if any(_NO_REVIEW_REFUSAL in r.lower() for r in outcome.merge_reasons):
+            print(
+                "    review needs a second capable worker -- the registry has "
+                "only one that can take this task"
+            )
+
+
+def _run_team(
+    objective: str,
+    *,
+    cwd: str = ".",
+    budget_usd: float | None,
+    state_dir: str | None,
+    dry_run: bool,
+    forge_factory: Callable[[], object] | None = None,
+) -> int:
+    """Compile `objective` into a task graph, print it, then (unless
+    `dry_run`) run it through a `Forge` and report what happened.
+
+    `forge_factory` is injectable for the same reason `watch.watch_queue`'s
+    is: a real `Forge()` opens five sqlite stores under `state_dir` as a
+    side effect of construction, which a test must not depend on.
+    """
+    from forgeos.compiler import CompilerError, compile_mission
+
+    try:
+        mission = compile_mission(objective, cwd=cwd)
+    except CompilerError as exc:
+        print(f"Cannot compile objective: {exc}")
+        return 1
+
+    _print_mission_graph(mission)
+
+    if dry_run:
+        return 0
+
+    if budget_usd is None:
+        print()
+        print("Refusing to run without an explicit budget.")
+        print("Fix: pass --budget-usd <dollars> -- forgeos never invents a spending cap.")
+        return 1
+
+    from pydantic import ValidationError
+
+    from forgeos.contracts import Budget
+
+    try:
+        budget = Budget(max_usd=budget_usd)
+    except ValidationError as exc:
+        print(f"Invalid --budget-usd: {exc}")
+        return 1
+
+    if forge_factory is None:
+        resolved_state_dir = _resolve_state_dir(state_dir)
+        from forgeos.forge import Forge
+
+        forge_factory = lambda: Forge(home=resolved_state_dir)  # noqa: E731
+
+    try:
+        forge = forge_factory()
+    except OSError as exc:
+        print(f"Cannot use forgeos's home directory: {exc}")
+        print("Fix: check permissions on that path, or set HOME to a writable directory.")
+        return 1
+
+    # A reviewer worth of independent review, built the same way `Forge.run`
+    # builds its own default executor: routed by worker_id, so whichever
+    # worker the merge gate's `_pick_reviewer` names actually gets called.
+    # Without this, `_run_team` never passed a reviewer at all and every task
+    # was refused at the merge gate for "no independent review" -- a fleet
+    # with a genuinely single capable worker still gets that same honest
+    # refusal (see `Forge._pick_reviewer`'s docstring), but now it is because
+    # no second worker exists, not because nothing was ever asked to review.
+    from forgeos.adapters.routed import routed_executor
+
+    reviewer = routed_executor(forge.registry, forge.ledger, cwd=cwd)
+
+    try:
+        result = forge.run(
+            mission.objective,
+            mission.tasks,
+            cwd=cwd,
+            budget=budget,
+            dependencies=mission.dependencies,
+            reviewer=reviewer,
+        )
+    finally:
+        forge.close()
+
+    print()
+    _print_outcomes(result.outcomes)
+
+    print()
+    per_accepted = (
+        f"${result.cost_per_accepted:.4f}" if result.cost_per_accepted is not None else "n/a"
+    )
+    print(
+        f"Result: accepted={result.accepted} rejected={result.rejected}"
+        f"  spend=${result.spend_usd:.4f}  $/accepted={per_accepted}"
+    )
+    if result.halted_reason:
+        print(f"Halted: {result.halted_reason}")
+
+    merge_warnings = [w for o in result.outcomes for w in o.merge_warnings]
+    if merge_warnings:
+        print("Merge warnings:")
+        for warning in merge_warnings:
+            print(f"  - {warning}")
+
+    return 0 if (result.accepted > 0 and result.rejected == 0) else 2
+
+
+def cmd_team(args: argparse.Namespace) -> int:
+    return _run_team(
+        args.objective,
+        cwd=args.cwd or ".",
+        budget_usd=args.budget_usd,
+        state_dir=args.state_dir,
+        dry_run=args.dry_run,
+    )
+
+
 # ----------------------------------------------------------------------- cli
 
 
@@ -232,6 +396,23 @@ def main(argv: list[str] | None = None) -> int:
         help="Seconds between polls when not --once (default: 5)",
     )
 
+    p_team = sub.add_parser(
+        "team", help="Compile an objective into a task graph and run it end-to-end"
+    )
+    p_team.add_argument("objective", help="Natural-language objective to decompose and run")
+    p_team.add_argument("--cwd", help="Working directory to decompose/run against (default: .)")
+    p_team.add_argument(
+        "--budget-usd", type=float, dest="budget_usd",
+        help="Hard USD cap for the whole job (required unless --dry-run)",
+    )
+    p_team.add_argument(
+        "--state-dir", help="Where the ledger lives (default: forgeos's DEFAULT_HOME, ~/.forgeos)"
+    )
+    p_team.add_argument(
+        "--dry-run", action="store_true",
+        help="Print the compiled task graph and exit without spending anything",
+    )
+
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
@@ -241,6 +422,7 @@ def main(argv: list[str] | None = None) -> int:
         "doctor": cmd_doctor,
         "receipts": cmd_receipts,
         "watch": cmd_watch,
+        "team": cmd_team,
     }
     return dispatch[args.command](args)
 

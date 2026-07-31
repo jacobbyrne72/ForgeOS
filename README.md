@@ -22,6 +22,28 @@ not a saving):
 
 Reproduce: `python tools/ab_bench.py --model deepseek/deepseek-chat --repeat 2`
 
+## Team mode — N agents, zero interruptions
+
+Several agents can work one project at once without interrupting each
+other, because each interference class is removed by construction, not by
+prompt etiquette. A parallel-safety pre-flight sequences tasks that would
+silently conflict before they're ever run together, path leases stop
+same-file writes in-process, and an awareness board lets each agent see
+what its teammates currently hold. Per-task worktrees add filesystem-level
+isolation on top of leases — opt-in, still landing. Nothing merges without
+a security scan, a test-tampering check, and independent review by a
+genuinely different worker, and per-worker budgets keep any single agent
+from spending the team's money unaccounted.
+
+```
+python -m forgeos team "<objective>" --dry-run
+```
+
+That's a free preview — it compiles and prints the task graph without
+spending anything. Full mechanism-by-mechanism breakdown (merged vs. still
+landing) in [docs/TEAM.md](docs/TEAM.md); a runnable walkthrough in
+[examples/README.md](examples/README.md).
+
 ## The layers (verified by module execution; savings vary by workload)
 
 | Layer | Savings | Proof |

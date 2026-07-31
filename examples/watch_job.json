@@ -1,0 +1,14 @@
+{
+  "objective": "add a retry helper with exponential backoff",
+  "cwd": ".",
+  "budget_usd": 2.0,
+  "tasks": [
+    {
+      "subject": "add a retry helper with exponential backoff",
+      "description": "Implement a retry wrapper with exponential backoff and jitter for transient network failures.",
+      "acceptance": ["pytest -x -q"],
+      "capabilities": ["edit", "implement", "python"],
+      "scope": {"paths": ["forgeos/retry.py"]}
+    }
+  ]
+}

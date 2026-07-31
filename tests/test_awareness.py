@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from forgeos.core.awareness import BOARD_MAX_WORKERS, TeamBoard
+from forgeos.core.awareness import BOARD_MAX_WORKERS, CONTEXT_MAX_TOKENS, TeamBoard
+from forgeos.economy.preflight import count_tokens
 from forgeos.events import EventLog, EventType
 from forgeos.leases import LeaseStore, LeaseType
 
@@ -226,6 +227,92 @@ def test_empty_job_yields_empty_board_without_crashing(rig):
 
     assert board.board("no-such-job") == ""
     assert board.activities("no-such-job") == []
+
+
+# ------------------------------------------------------------- context_for
+
+
+def test_context_for_empty_board_is_empty_string(rig):
+    events, leases = rig
+    board = TeamBoard(leases, events)
+
+    assert board.context_for("T-1") == ""
+
+
+def test_context_for_excludes_the_asking_tasks_own_leases(rig):
+    events, leases = rig
+    board = TeamBoard(leases, events)
+
+    _activate(events, "job1", "T-30", "forgeos.executor", "own work")
+    leases.acquire("T-30", "repo1", "src/mine/**", LeaseType.WRITE, ttl_seconds=1800)
+
+    assert board.context_for("T-30") == ""
+
+
+def test_context_for_names_other_holders_and_their_goal(rig):
+    events, leases = rig
+    board = TeamBoard(leases, events)
+
+    _activate(events, "job1", "T-40", "forgeos.executor", "steady work", goal="steady goal")
+    leases.acquire("T-40", "repo1", "src/steady/**", LeaseType.WRITE, ttl_seconds=1800)
+
+    text = board.context_for("T-99")
+
+    assert text.startswith("Other tasks holding path leases right now:")
+    assert "src/steady/**" in text
+    assert "T-40" in text
+    assert "forgeos.executor" in text
+    assert "steady goal" in text
+
+
+def test_context_for_is_deterministic_given_the_same_inputs(rig):
+    events, leases = rig
+    board = TeamBoard(leases, events)
+
+    _activate(events, "job1", "T-41", "forgeos.executor", "steady work", goal="steady goal")
+    leases.acquire("T-41", "repo1", "src/steady/**", LeaseType.WRITE, ttl_seconds=1800)
+
+    first = board.context_for("T-99")
+    second = board.context_for("T-99")
+
+    assert first == second
+
+
+def test_context_for_is_capped_and_reports_elided_count(rig):
+    events, leases = rig
+    board = TeamBoard(leases, events)
+
+    n = 80
+    for i in range(n):
+        tid = f"T-{i:03d}"
+        _activate(events, "job1", tid, f"worker.{i}", f"subject {i}")
+        leases.acquire(tid, "repo1", f"src/area{i:03d}/**", LeaseType.WRITE, ttl_seconds=1800)
+
+    text = board.context_for("T-999")
+    lines = text.splitlines()
+
+    assert lines[0] == "Other tasks holding path leases right now:"
+    assert lines[-1].startswith("...+") and lines[-1].endswith(" more")
+
+    shown_lines = lines[1:-1]
+    elided = n - len(shown_lines)
+    assert 0 < len(shown_lines) < n, "the fixture must be large enough to force truncation"
+    assert lines[-1] == f"...+{elided} more"
+
+    # The kept entries are exactly the sorted-first ones -- farthest-sorted
+    # entries are what gets dropped, never an arbitrary subset.
+    expected_paths = sorted(f"src/area{i:03d}/**" for i in range(n))
+    shown_paths = [ln.split(" ", 2)[1] for ln in shown_lines]
+    assert shown_paths == expected_paths[: len(shown_lines)]
+
+    # The cap is why truncation happened at all: the shown portion respects
+    # it, and the next dropped entry would have crossed it.
+    kept_text = "\n".join(lines[:-1])
+    assert count_tokens(kept_text).tokens <= CONTEXT_MAX_TOKENS
+    next_idx = len(shown_lines)
+    next_line = f"- src/area{next_idx:03d}/** held by T-{next_idx:03d} (worker.{next_idx})"
+    one_more = "\n".join([*lines[:-1], next_line])
+    assert count_tokens(one_more).tokens > CONTEXT_MAX_TOKENS
 
 
 # ------------------------------------------------------------------ read-only

@@ -27,6 +27,7 @@ network, a subscription, or a model.
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -65,6 +66,14 @@ from .leases import LeaseStore
 from .ledger import Ledger
 from .registry import Adapter, CostTier, Registry, WorkerProfile, default_registry
 from .settings import Settings
+from .worktrees import (
+    BRANCH_PREFIX as _WORKTREE_BRANCH_PREFIX,
+    create_worktree,
+    list_task_worktrees,
+    merge_accepted,
+    merge_check,
+    remove_worktree,
+)
 
 DEFAULT_HOME = Path.home() / ".forgeos"
 
@@ -123,6 +132,69 @@ def _looks_like_pytest(output: str) -> bool:
         "pytest" in low or "::" in output or "=====" in output
     )
 
+
+def _detect_git_repo_root(cwd: str) -> str | None:
+    """Once-per-job check: is `cwd` inside a git repo `isolate_worktrees` can use?
+
+    A quiet `None` (not a repo, git missing, timeout) means isolation is simply
+    unavailable for this job -- every task then runs exactly as it did before
+    this feature existed, never a crash.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=cwd, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def _resolve_head(repo_root: str) -> str | None:
+    """The commit `isolate_worktrees` bases every task's worktree on, resolved
+    once at job start rather than read fresh (as bare `"HEAD"`) per task.
+
+    Tasks in a wave create their worktrees at different real times as threads
+    get scheduled — reading `"HEAD"` per task would mean a task whose attempt
+    starts after a sibling's merge already landed silently rebases onto that
+    merge instead of genuinely conflicting with it, so whether two edits
+    "conflict" would depend on thread timing rather than on the edits
+    themselves. Pinning one SHA up front gives every task in the job the same
+    starting point; only merge time decides who lands and who doesn't.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+# Set by `Forge._run_task` immediately around the executor call, read by
+# `current_task_cwd` below. A thread-local rather than a new `Executor`
+# parameter or a shared attribute: tasks in one wave run concurrently on
+# separate pool threads (see `Forge.run`), so a shared slot would race between
+# them, and adding a parameter would break every `Executor` callable already
+# in the wild -- production adapters and every existing test's fake alike.
+_task_cwd_local = threading.local()
+
+
+def current_task_cwd(default: str = ".") -> str:
+    """The isolated worktree path for the task attempt running on this thread.
+
+    Returns `default` (ordinarily the job's own cwd) when isolation is off, or
+    when no task is currently attempting on this thread. Any executor -- the
+    default routed one (rebuilt per isolated attempt, see `_run_task`) or a
+    caller-supplied one that chooses to consult this -- can find out where to
+    actually write without the `Executor` Callable type ever changing shape.
+    """
+    return getattr(_task_cwd_local, "value", None) or default
 
 
 class ExecutionResult(BaseModel):
@@ -368,6 +440,7 @@ class Forge:
         dependencies: dict[str, list[str]] | None = None,
         reviewer: Executor | None = None,
         operations: dict[str, Operation] | None = None,
+        isolate_worktrees: bool = False,
     ) -> ForgeResult:
         """Run a job to completion.
 
@@ -381,13 +454,26 @@ class Forge:
         pass `routed_executor(registry, ledger, gateway=...)` explicitly for
         those, because a Gateway owns the ledger its spend lands in and the
         Forge will not invent one.
+
+        `isolate_worktrees` (default False, so every existing caller is
+        byte-for-byte unaffected) gives each file-editing task its own git
+        worktree (forgeos/worktrees.py) instead of every parallel task sharing
+        `cwd` directly. Requires `cwd` to be inside a git repo — detected once
+        here, cheaply — and applies per task only when the task declares
+        `scope.paths` and its routed worker `can_edit_files`. A task the merge
+        gate allows is only truly accepted once its worktree branch actually
+        merges into the repo's current branch; a conflict turns an
+        otherwise-accepted task into an honest refusal instead of a false green.
         """
+        executor_is_default = executor is None
         if executor is None:
             from .adapters.routed import routed_executor
             executor = routed_executor(self.registry, self.ledger, cwd=cwd)
         self._operations = operations or {}
         self._trip.clear()
         self._trip_reason = ""
+        repo_root = _detect_git_repo_root(cwd) if isolate_worktrees else None
+        job_base_ref = _resolve_head(repo_root) if repo_root is not None else None
         job = JobSpec(objective=objective, cwd=cwd,
                       budget=budget or Budget(max_usd=20.0, max_seconds=7200,
                                               max_iterations=60))
@@ -450,8 +536,11 @@ class Forge:
                     spec = next((t for t in tasks if t.id == task_id), None)
                     if spec is None:
                         continue
-                    wave.append((spec, pool.submit(self._run_task_guarded, job,
-                                                   spec, executor, reviewer)))
+                    wave.append((spec, pool.submit(
+                        self._run_task_guarded, job, spec, executor, reviewer,
+                        isolate_worktrees=isolate_worktrees, repo_root=repo_root,
+                        executor_is_default=executor_is_default, job_base_ref=job_base_ref,
+                    )))
 
                 # Collect in SUBMISSION order, not completion order. Completion
                 # order is scheduling noise; a result list that reorders between
@@ -503,7 +592,9 @@ class Forge:
         return self._result(job, objective, outcomes, halted)
 
     def _run_task_guarded(self, job: JobSpec, spec: TaskSpec, executor: Executor,
-                          reviewer: Executor | None) -> TaskOutcome | None:
+                          reviewer: Executor | None, *, isolate_worktrees: bool = False,
+                          repo_root: str | None = None, executor_is_default: bool = False,
+                          job_base_ref: str | None = None) -> TaskOutcome | None:
         """`_run_task` plus the two guarantees threading adds.
 
         An exception in a worker thread must surface as a FAILED outcome — a task
@@ -514,7 +605,10 @@ class Forge:
         model failure, and burning the remaining attempts on it buys nothing.
         """
         try:
-            return self._run_task(job, spec, executor, reviewer)
+            return self._run_task(job, spec, executor, reviewer,
+                                  isolate_worktrees=isolate_worktrees, repo_root=repo_root,
+                                  executor_is_default=executor_is_default,
+                                  job_base_ref=job_base_ref)
         except Exception as exc:  # noqa: BLE001 — the alternative is a vanished task
             reason = f"worker thread raised {type(exc).__name__}: {exc}"
             try:
@@ -532,7 +626,9 @@ class Forge:
     # ------------------------------------------------------------- one task
 
     def _run_task(self, job: JobSpec, spec: TaskSpec, executor: Executor,
-                  reviewer: Executor | None) -> TaskOutcome | None:
+                  reviewer: Executor | None, *, isolate_worktrees: bool = False,
+                  repo_root: str | None = None, executor_is_default: bool = False,
+                  job_base_ref: str | None = None) -> TaskOutcome | None:
         attempts = 0
         tier_used: int | None = None
         worker_id = ""
@@ -549,6 +645,21 @@ class Forge:
         # which is what keeps attempt 1 byte-identical to a task with no retry
         # machinery at all.
         attempt_history: list[AttemptSummary] = []
+        # Set once, on whichever attempt first needs it; reused by every later
+        # attempt of THIS task (see the retry `continue`s below) so attempt 2
+        # actually resumes attempt 1's edits — that is the point of isolation.
+        worktree_info = None
+
+        def _finish(outcome):
+            """Every `_run_task` return funnels through here so a live worktree's
+            working directory is torn down exactly once, right before the task
+            truly finishes — never on a `continue`, which is what lets a retry
+            reuse the same one. The branch is kept either way (forensics); only
+            the checkout goes."""
+            if worktree_info is not None:
+                with self._sched_lock:
+                    remove_worktree(repo_root, spec.id, keep_branch=True)
+            return outcome
 
         # Rung 0: record whether a deterministic strategy exists. This never
         # short-circuits the task — see _note_lowering.
@@ -562,7 +673,7 @@ class Forge:
             # than fabricating a FAILED outcome keeps the task honestly QUEUED —
             # it never ran.
             if self._trip.is_set():
-                return None
+                return _finish(None)
 
             # --- pressure: never start local work the machine cannot hold ----
             pressure = sample_pressure()
@@ -576,7 +687,7 @@ class Forge:
                 else:
                     # Pressure refusals shrink concurrency, they never fail work:
                     # the task waits for a later wave instead of running anyway.
-                    return None
+                    return _finish(None)
 
             # --- route: cheapest tier that can finish, priced by the market ---
             # Quota awareness: skip providers whose window is exhausted.
@@ -610,9 +721,9 @@ class Forge:
             escalate_route = None
             escalate_failure = None
             if route is None:
-                return TaskOutcome(task_id=spec.id, subject=spec.subject, accepted=False,
+                return _finish(TaskOutcome(task_id=spec.id, subject=spec.subject, accepted=False,
                                    reason="no worker has the required capabilities",
-                                   attempts=attempts)
+                                   attempts=attempts))
             tier_used = int(route.tier)
 
             if route.tier is Tier.DETERMINISTIC:
@@ -621,8 +732,8 @@ class Forge:
                     self.ledger.set_task_state(spec.id, TaskState.DONE)
                     self.events.append(job.id, EventType.TASK_ACCEPTED, task_id=spec.id,
                                        reason="handled deterministically")
-                return TaskOutcome(task_id=spec.id, subject=spec.subject, accepted=True,
-                                   tier=tier_used, reason=route.reason, attempts=attempts)
+                return _finish(TaskOutcome(task_id=spec.id, subject=spec.subject, accepted=True,
+                                   tier=tier_used, reason=route.reason, attempts=attempts))
 
             # --- assign: takes path leases, refuses on collision -------------
             # The router is the single decision-maker: the scheduler binds
@@ -646,10 +757,10 @@ class Forge:
                     # for a later wave — it never runs anyway, and it is not a
                     # failure. The holder releases at report time, so the next
                     # wave retries against a settled board.
-                    return None
-                return TaskOutcome(task_id=spec.id, subject=spec.subject, accepted=False,
+                    return _finish(None)
+                return _finish(TaskOutcome(task_id=spec.id, subject=spec.subject, accepted=False,
                                    reason="scheduler refused the assignment",
-                                   attempts=attempts)
+                                   attempts=attempts))
             worker_id = asn.worker_id
             attempts += 1
 
@@ -671,26 +782,84 @@ class Forge:
                                      state=TaskState.PAUSED, blocker="budget exhausted"),
                         job_id=job.id, budget=spec.budget,
                     )
-                return TaskOutcome(
+                return _finish(TaskOutcome(
                     task_id=spec.id, subject=spec.subject, accepted=False,
                     worker_id=worker_id, tier=tier_used, attempts=attempts,
                     reason="refused before spending: no budget headroom",
                     usd_micros=self.ledger.task_spend_micros(spec.id),
-                )
+                ))
+
+            # --- worktree isolation: create/reuse before this attempt --------
+            # Additive and opt-in: when `isolate_worktrees` is False (the
+            # default) or any gate below fails, `task_cwd` stays `job.cwd` and
+            # every line after this block behaves exactly as it did before
+            # this feature existed.
+            task_cwd = job.cwd
+            if isolate_worktrees and repo_root is not None and spec.scope.paths:
+                edit_profile = self.registry.get(worker_id)
+                if edit_profile is not None and edit_profile.can_edit_files:
+                    if worktree_info is None:
+                        # A retry (`continue`, below) reaches this same call
+                        # again with `worktree_info` already set — reused, not
+                        # recreated.
+                        branch = f"{_WORKTREE_BRANCH_PREFIX}{spec.id}"
+                        try:
+                            with self._sched_lock:
+                                matches = [w for w in list_task_worktrees(repo_root)
+                                          if w.branch == branch]
+                                worktree_info = (matches[0] if matches
+                                                 else create_worktree(
+                                                     repo_root, spec.id,
+                                                     base=job_base_ref or "HEAD"))
+                        except Exception as exc:
+                            return _finish(TaskOutcome(
+                                task_id=spec.id, subject=spec.subject, accepted=False,
+                                worker_id=worker_id, tier=tier_used, attempts=attempts,
+                                reason=f"environment: could not create isolated worktree: {exc}",
+                                usd_micros=self.ledger.task_spend_micros(spec.id),
+                            ))
+                    task_cwd = worktree_info.path
 
             # --- execute -----------------------------------------------------
-            # Attempt 1 always sends `spec` itself, untouched -- no copy, no
-            # possible byte difference from a task with no retry history.
-            # Attempt 2+ sends a derived copy carrying the capped history;
-            # `spec` (the canonical object used for routing, leases, ledger
-            # keys, budget checks above and below) is never mutated.
+            # Attempt 1 sends `spec` itself, untouched, when there is no retry
+            # history and no live teammate to report -- no copy, no possible
+            # byte difference from a task with neither retry machinery nor a
+            # team around it. Both the capped history and the teammate-board
+            # digest are per-attempt, in-the-moment state, so they are folded
+            # into a COPY's fields here -- in the prompt's volatile TAIL (see
+            # `_build_prompt`, forgeos/adapters/executor.py) -- and never into
+            # `spec` itself. Per-attempt state belongs in the tail, never the
+            # byte-stable cached prefix (forgeos/prompts/prefix.py): mixing it
+            # into the prefix would turn every cache hit into a miss. `spec`
+            # (the canonical object used for routing, leases, ledger keys,
+            # budget checks above and below) is never mutated.
             task_for_attempt = spec
+            updates: dict = {}
             if attempt_history:
-                task_for_attempt = spec.model_copy(
-                    update={"attempt_history": _cap_attempt_history(attempt_history)}
-                )
-            with self.spans.measure(job.id, Phase.MODEL_REASONING, task_id=spec.id):
-                result = executor(task_for_attempt, worker_id)
+                updates["attempt_history"] = _cap_attempt_history(attempt_history)
+            board_context = self.board.context_for(spec.id)
+            if board_context:
+                updates["description"] = f"{spec.description}\n\n{board_context}"
+            if updates:
+                task_for_attempt = spec.model_copy(update=updates)
+
+            # The default routed executor bakes its cwd in at construction
+            # (adapters/routed.py); rebuilding it here, once per isolated
+            # attempt, is how a per-task worktree reaches it without adding a
+            # cwd parameter to the public `Executor` Callable. Forge never
+            # swaps out a caller-supplied executor — it keeps running exactly
+            # as given — but `current_task_cwd()` still tells it, if it
+            # chooses to ask, where this attempt's worktree lives.
+            call_executor = executor
+            if worktree_info is not None and executor_is_default:
+                from .adapters.routed import routed_executor
+                call_executor = routed_executor(self.registry, self.ledger, cwd=task_cwd)
+            _task_cwd_local.value = task_cwd if worktree_info is not None else None
+            try:
+                with self.spans.measure(job.id, Phase.MODEL_REASONING, task_id=spec.id):
+                    result = call_executor(task_for_attempt, worker_id)
+            finally:
+                _task_cwd_local.value = None
 
             # An unmetered adapter must never read as free. Subscription CLIs
             # (omc team, codex) expose no token or dollar figure at all, so
@@ -772,22 +941,22 @@ class Forge:
                     self._trip.set()
 
             if decision.action is Action.TRIP:
-                return TaskOutcome(task_id=spec.id, subject=spec.subject, accepted=False,
+                return _finish(TaskOutcome(task_id=spec.id, subject=spec.subject, accepted=False,
                                    worker_id=worker_id, tier=tier_used,
                                    reason=f"governor: {decision.reason}", attempts=attempts,
-                                   usd_micros=self.ledger.task_spend_micros(spec.id))
+                                   usd_micros=self.ledger.task_spend_micros(spec.id)))
 
             if result.state is not TaskState.DONE:
                 # Classify before reacting. Escalating an environment failure buys
                 # premium tokens for a problem no model can fix.
                 if result.failure and not self.governor.should_escalate_model(result.failure):
-                    return TaskOutcome(
+                    return _finish(TaskOutcome(
                         task_id=spec.id, subject=spec.subject, accepted=False,
                         worker_id=worker_id, tier=tier_used, attempts=attempts,
                         reason=f"{result.failure.value}: "
                                f"{self.governor.remedy_for(result.failure, attempts, self.max_attempts).value}",
                         usd_micros=self.ledger.task_spend_micros(spec.id),
-                    )
+                    ))
                 # Quota learning: if the blocker mentions a rate limit or reset,
                 # feed it to the tracker so routing skips this provider until
                 # the window reopens. "resets in 2h 15m" → don't burn retries.
@@ -798,12 +967,12 @@ class Forge:
                 if result.failure is not None:
                     escalate_route = route
                     escalate_failure = result.failure
-                continue  # model failure: retry, the next routing step escalates the tier
+                continue  # model failure: retry, the next routing step escalates the tier -- worktree (if any) stays
 
             # --- security: scan the real diff, never assert a pass ------------
             with self.spans.measure(job.id, Phase.TOOL_CALL, task_id=spec.id):
                 gates: list[GateResult] = [
-                    run_security(result.files_touched, cwd=job.cwd)
+                    run_security(result.files_touched, cwd=task_cwd)
                 ]
 
             # --- independent review by a DIFFERENT worker ---------------------
@@ -859,6 +1028,27 @@ class Forge:
             merge_reasons = verdict.reasons
             merge_warnings = verdict.warnings
 
+            # --- worktree isolation: the gate ruled; can it actually land? ---
+            # An accepted-but-unmergeable task is not accepted -- ratifying the
+            # gate's ALLOW and then discovering main can't absorb the change
+            # would be a false green recorded as a true one. A rejected task
+            # skips this: there is no point checking mergeability of work the
+            # gate already refused on its own merits.
+            if worktree_info is not None and verdict.allowed:
+                with self._sched_lock:
+                    check = merge_check(repo_root, worktree_info.branch)
+                    landed = check.clean and merge_accepted(
+                        repo_root, worktree_info.branch, message=f"{spec.id}: {spec.subject}"
+                    )
+                if not landed:
+                    detail = (", ".join(check.conflicts) if check.conflicts
+                             else check.detail or "merge could not be completed")
+                    verdict = verdict.model_copy(update={
+                        "allowed": False,
+                        "reasons": merge_reasons + [f"merge conflict against main: {detail}"],
+                    })
+                    merge_reasons = verdict.reasons
+
             # The merge gate is the only thing that may declare a task accepted.
             # The scheduler emits TASK_COMPLETED when a worker claims success;
             # this is where that claim is either ratified or refused.
@@ -907,20 +1097,20 @@ class Forge:
                 )
                 continue
 
-            return TaskOutcome(
+            return _finish(TaskOutcome(
                 task_id=spec.id, subject=spec.subject, accepted=verdict.allowed,
                 worker_id=worker_id, tier=tier_used,
                 reason="merged" if verdict.allowed else "merge gate refused",
                 merge_reasons=merge_reasons, merge_warnings=merge_warnings, attempts=attempts,
                 usd_micros=self.ledger.task_spend_micros(spec.id),
-            )
+            ))
 
-        return TaskOutcome(task_id=spec.id, subject=spec.subject, accepted=False,
+        return _finish(TaskOutcome(task_id=spec.id, subject=spec.subject, accepted=False,
                            worker_id=worker_id, tier=tier_used,
                            reason=f"exhausted {self.max_attempts} attempts",
                            merge_reasons=merge_reasons, merge_warnings=merge_warnings,
                            attempts=attempts,
-                           usd_micros=self.ledger.task_spend_micros(spec.id))
+                           usd_micros=self.ledger.task_spend_micros(spec.id)))
 
     def _halted(self, job_id: str) -> bool:
         """Whether the operator pressed halt in the dashboard.

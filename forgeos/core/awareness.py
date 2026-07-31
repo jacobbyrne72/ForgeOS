@@ -25,6 +25,7 @@ import time
 from pydantic import BaseModel, Field
 
 from ..contracts import TERMINAL_STATES, TaskState, TestResults
+from ..economy.preflight import count_tokens
 from ..events import EventLog, EventType
 from ..leases import Lease, LeaseStore, LeaseType
 from ..ledger import Ledger
@@ -37,6 +38,11 @@ from ..ledger import Ledger
 BOARD_MAX_WORKERS = 8
 BOARD_MAX_PATHS_PER_WORKER = 3
 BOARD_MAX_GOAL_CHARS = 60
+
+# `context_for`'s per-prompt digest is capped by measured tokens, not a fixed
+# entry count -- a lease's path pattern and a task's goal vary too much in
+# length for an entry count to actually bound the cost this exists to avoid.
+CONTEXT_MAX_TOKENS = 400
 
 
 class WorkerActivity(BaseModel):
@@ -180,6 +186,61 @@ class TeamBoard:
             lines.append(f"...+{elided} more teammate(s) not shown")
         return "\n".join(lines)
 
+    def context_for(self, task_id: str, *, now: float | None = None) -> str:
+        """Compact, deterministic digest of what OTHER tasks are doing, for `task_id`'s own prompt.
+
+        Every path lease currently held by a task other than `task_id`
+        becomes one line: the path, who holds it, and their one-line goal
+        when the board has recorded one. Sorted by path then holder task id
+        -- never by acquisition time or wall clock -- so two calls against
+        an unchanged board return byte-identical bytes. That determinism
+        matters here for the same reason it matters in
+        `forgeos/prompts/prefix.py`'s byte-stable prefix contract: this text
+        is injected into a worker's prompt, and it must land in the prompt's
+        volatile TAIL, appended after the stable prefix, never mixed into it
+        -- per-attempt board state in the cached prefix would turn every
+        cache hit into a miss (see the call site in forge.py).
+
+        Capped at roughly `CONTEXT_MAX_TOKENS`, measured with the same
+        `count_tokens` estimator used elsewhere in the fleet: entries are
+        added in sorted order until the next one would cross the cap, and
+        whatever is left out is summarized as "+N more" instead of silently
+        missing.
+
+        An empty board returns "" -- not a header with nothing under it.
+        """
+        entries = sorted(
+            {
+                (lease.path_pattern, lease.task_id)
+                for lease in self._leases.active()
+                if lease.task_id != task_id
+            }
+        )
+        if not entries:
+            return ""
+
+        lines = ["Other tasks holding path leases right now:"]
+        shown = 0
+        for path, holder_task in entries:
+            activity = self._activity_for_task(holder_task, now=now)
+            worker = activity.worker_id if activity else "unknown"
+            goal = ""
+            if activity and activity.current_goal:
+                goal = activity.current_goal[:BOARD_MAX_GOAL_CHARS]
+                if len(activity.current_goal) > BOARD_MAX_GOAL_CHARS:
+                    goal = goal.rstrip() + "…"
+            suffix = f' goal="{goal}"' if goal else ""
+            line = f"- {path} held by {holder_task} ({worker}){suffix}"
+            if count_tokens("\n".join([*lines, line])).tokens > CONTEXT_MAX_TOKENS:
+                break
+            lines.append(line)
+            shown += 1
+
+        elided = len(entries) - shown
+        if elided > 0:
+            lines.append(f"...+{elided} more")
+        return "\n".join(lines)
+
     # ------------------------------------------------------------- internals
 
     def _activity_for_task(self, task_id: str, *, now: float | None = None) -> WorkerActivity | None:
@@ -289,6 +350,7 @@ __all__ = [
     "BOARD_MAX_GOAL_CHARS",
     "BOARD_MAX_PATHS_PER_WORKER",
     "BOARD_MAX_WORKERS",
+    "CONTEXT_MAX_TOKENS",
     "CollisionReport",
     "PathCollision",
     "TeamBoard",

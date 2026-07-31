@@ -10,12 +10,18 @@ The executor is injected and fake throughout — no network, no model, no subscr
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from forgeos.contracts import Budget, FailureClass, Scope, TaskSpec, TaskState, TestResults
 from forgeos.core.market import CapacityMarket, Entitlement, Forecast, TelemetrySource
-from forgeos.forge import ExecutionResult, Forge
+from forgeos.events import EventType
+from forgeos.forge import ExecutionResult, Forge, current_task_cwd
+from forgeos.leases import LeaseType
 from forgeos.registry import Adapter, CostTier, Registry, WorkerProfile
+from forgeos.worktrees import list_task_worktrees
 
 
 def _fleet() -> Registry:
@@ -94,6 +100,29 @@ def test_two_tasks_on_disjoint_paths_both_complete(forge):
     result = forge.run("ship", [a, b], executor=lambda s, w: _green(),
                        reviewer=_pass_review)
     assert result.accepted == 2
+
+
+def test_worker_prompt_carries_teammate_board_context(forge):
+    """`TeamBoard.context_for` (forgeos/core/awareness.py) is wired into the
+    attempt loop's prompt assembly, not just unit-tested in isolation -- a
+    live teammate holding a lease elsewhere must actually reach the prompt
+    the executor receives."""
+    forge.events.append("job-other", EventType.TASK_CREATED, task_id="T-other", subject="other work")
+    forge.events.append("job-other", EventType.WORKER_ASSIGNED, task_id="T-other", worker="teammate.worker")
+    forge.events.append("job-other", EventType.SESSION_STARTED, task_id="T-other", worker="teammate.worker")
+    forge.leases.acquire("T-other", "default", "src/teammate/**", LeaseType.WRITE, ttl_seconds=1800)
+
+    captured = {}
+
+    def _executor(spec, worker):  # noqa: ARG001
+        captured["description"] = spec.description
+        return _green()
+
+    result = forge.run("ship", [_task()], executor=_executor, reviewer=_pass_review)
+
+    assert result.accepted == 1
+    assert "T-other" in captured["description"]
+    assert "src/teammate" in captured["description"]
 
 
 # ====================================================== the gates hold
@@ -447,3 +476,147 @@ def test_two_local_adapter_workers_share_the_local_family(tmp_path):
         f.close()
     assert result.accepted == 1
     assert any("local" in w for w in result.outcomes[0].merge_warnings)
+
+
+# ===================================================== worktree isolation
+# `isolate_worktrees=True` (forgeos/worktrees.py) gives each file-editing task
+# its own git worktree instead of sharing `cwd` directly, so a task the merge
+# gate allows still has to actually land on main before it counts as accepted.
+# Off by default -- every test above this section runs with it unset and must
+# stay exactly as green as it always was.
+
+
+def _git(args: list[str], cwd) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+
+
+def _commit_all(cwd, message: str) -> None:
+    _git(["add", "-A"], cwd)
+    _git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", message], cwd)
+
+
+def _git_repo(tmp_path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q", "-b", "main"], repo)
+    # Mirrors this repo's own .gitignore: worktree dirs are never tracked.
+    (repo / ".gitignore").write_text(".forgeos-worktrees/\n", encoding="utf-8")
+    (repo / "shared.txt").write_text("base\n", encoding="utf-8")
+    _commit_all(repo, "init")
+    return repo
+
+
+def _editing_executor(content: str):
+    """A fake executor that writes and commits a REAL file into whichever cwd
+    isolation handed it (`current_task_cwd()`) -- a canned `ExecutionResult`
+    alone, like every other test in this file uses, can't exercise real git
+    worktrees or merges at all."""
+    def _exec(spec, worker):  # noqa: ARG001
+        cwd = Path(current_task_cwd())
+        (cwd / "shared.txt").write_text(content, encoding="utf-8")
+        _commit_all(cwd, f"{spec.id} edit")
+        return _green(files_touched=["shared.txt"])
+    return _exec
+
+
+def test_isolate_worktrees_off_by_default_never_touches_the_worktree_module(forge, monkeypatch):
+    """The opt-in flag's whole point: leave every existing caller untouched."""
+    import forgeos.forge as forge_module
+
+    called = []
+    monkeypatch.setattr(forge_module, "create_worktree",
+                        lambda *a, **k: called.append((a, k)))
+    result = forge.run("ship", [_task()], executor=lambda s, w: _green(),
+                       reviewer=_pass_review)
+    assert result.accepted == 1
+    assert called == []
+
+
+@pytest.mark.slow
+def test_isolate_worktrees_two_compatible_concurrent_edits_both_merge(forge, tmp_path):
+    """Non-overlapping declared scope so the two tasks run in the SAME wave --
+    leases never contend -- but their executor actually writes the SAME
+    physical file both times, identically. Worktree isolation is what keeps
+    that real concurrent access from corrupting either edit; identical
+    changes from a shared base are what makes the merge "compatible"."""
+    repo = _git_repo(tmp_path)
+    a = _task("task a", paths=["src/a/"])
+    b = _task("task b", paths=["src/b/"])
+
+    result = forge.run(
+        "ship", [a, b], executor=_editing_executor("shared by both\n"),
+        reviewer=_pass_review, cwd=str(repo), isolate_worktrees=True,
+    )
+
+    assert result.accepted == 2, result.outcomes
+    assert result.rejected == 0
+    assert (repo / "shared.txt").read_text(encoding="utf-8") == "shared by both\n"
+    assert list_task_worktrees(str(repo)) == []  # both cleaned up after landing
+
+
+@pytest.mark.slow
+def test_isolate_worktrees_conflicting_pair_second_refused_main_left_clean(forge, tmp_path):
+    """Two tasks make genuinely different edits to the same file. Whichever
+    lands first wins (thread scheduling decides which); the other must be
+    refused with the conflict reason, and main must show no trace of a
+    half-applied second merge."""
+    repo = _git_repo(tmp_path)
+    a = _task("task a", paths=["src/a/"])
+    b = _task("task b", paths=["src/b/"])
+    written: dict[str, str] = {}
+
+    def _diverging(spec, worker):  # noqa: ARG001
+        cwd = Path(current_task_cwd())
+        text = f"from {spec.id}\n"
+        (cwd / "shared.txt").write_text(text, encoding="utf-8")
+        _commit_all(cwd, f"{spec.id} edit")
+        written[spec.id] = text
+        return _green(files_touched=["shared.txt"])
+
+    result = forge.run(
+        "ship", [a, b], executor=_diverging, reviewer=_pass_review,
+        cwd=str(repo), isolate_worktrees=True,
+    )
+
+    assert result.accepted == 1, result.outcomes
+    assert result.rejected == 1
+    accepted = next(o for o in result.outcomes if o.accepted)
+    refused = next(o for o in result.outcomes if not o.accepted)
+    assert any("merge conflict against main" in r for r in refused.merge_reasons)
+
+    # Main ended up with exactly the winner's content -- no half-applied merge
+    # left behind by the refused task.
+    assert (repo / "shared.txt").read_text(encoding="utf-8") == written[accepted.task_id]
+    assert _git(["status", "--porcelain"], repo).stdout.strip() == ""
+    assert not (repo / ".git" / "MERGE_HEAD").exists()
+    assert list_task_worktrees(str(repo)) == []  # both torn down either way
+
+
+@pytest.mark.slow
+def test_isolate_worktrees_retry_reuses_the_same_worktree(forge, tmp_path):
+    """Attempt 2 must resume in the SAME worktree attempt 1 got -- that is the
+    point of isolation surviving a model-failure retry, not starting over."""
+    repo = _git_repo(tmp_path)
+    calls = {"n": 0}
+    seen_cwds: list[str] = []
+
+    def _flaky_then_edits(spec, worker):  # noqa: ARG001
+        calls["n"] += 1
+        seen_cwds.append(current_task_cwd())
+        if calls["n"] < 2:
+            return ExecutionResult(state=TaskState.FAILED, failure=FailureClass.MODEL,
+                                   usd_micros=1000)
+        cwd = Path(current_task_cwd())
+        (cwd / "shared.txt").write_text("second attempt\n", encoding="utf-8")
+        _commit_all(cwd, "second attempt")
+        return _green(files_touched=["shared.txt"])
+
+    result = forge.run(
+        "ship", [_task("retry task", paths=["src/x/"])], executor=_flaky_then_edits,
+        reviewer=_pass_review, cwd=str(repo), isolate_worktrees=True,
+    )
+
+    assert result.accepted == 1, result.outcomes
+    assert calls["n"] == 2
+    assert seen_cwds[0] == seen_cwds[1]  # same worktree reused across the retry
+    assert (repo / "shared.txt").read_text(encoding="utf-8") == "second attempt\n"

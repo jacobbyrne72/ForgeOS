@@ -22,7 +22,7 @@ import pytest
 from forgeos import __main__ as cli
 from forgeos.catalog import Catalog, ModelCard
 from forgeos.contracts import JobSpec, TaskSpec, TaskState
-from forgeos.forge import DEFAULT_HOME
+from forgeos.forge import DEFAULT_HOME, ForgeResult, TaskOutcome
 from forgeos.ledger import Ledger
 
 # --------------------------------------------------------------------- doctor
@@ -273,7 +273,7 @@ def test_main_dispatch_is_reachable_for_every_registered_subcommand():
         and any(getattr(t, "id", "") == "dispatch" for t in node.targets)
         and isinstance(node.value, ast.Dict)
     )
-    assert registered == {"doctor", "receipts", "watch"}
+    assert registered == {"doctor", "receipts", "watch", "team"}
     assert dispatch_keys == registered
     # And main() must actually call the dispatch table, not just build it.
     returns = [n for n in ast.walk(main_node) if isinstance(n, ast.Return)]
@@ -282,3 +282,212 @@ def test_main_dispatch_is_reachable_for_every_registered_subcommand():
         for r in returns
         if r.value is not None
     )
+
+
+# ---------------------------------------------------------------------- team
+
+
+class _FakeTeamForge:
+    """Stands in for `Forge()` in `_run_team`, same shape as `test_watch.py`'s
+    `_FakeForge`: `.run()` returns a REAL `ForgeResult`/`TaskOutcome` so the
+    printing and exit-code logic below is exercised against the real
+    contract, not a second approximation of it.
+
+    `.registry`/`.ledger` stand in for the real `Forge`'s attributes: `_run_team`
+    passes both to `routed_executor` to build the reviewer, and `routed_executor`
+    never touches either until the returned callable is actually invoked -- which
+    a fake `.run()` that just returns a canned result never does."""
+
+    def __init__(self, result: ForgeResult):
+        self._result = result
+        self.calls: list[dict] = []
+        self.closed = False
+        self.registry = object()
+        self.ledger = object()
+
+    def run(self, objective, tasks, *, cwd=".", budget=None, dependencies=None, reviewer=None):
+        self.calls.append(
+            {"objective": objective, "tasks": tasks, "cwd": cwd, "budget": budget,
+             "dependencies": dependencies, "reviewer": reviewer}
+        )
+        return self._result
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _refusing_factory():
+    raise AssertionError("forge_factory must not be called")
+
+
+def test_team_dry_run_prints_the_task_graph_and_never_touches_forge(tmp_path, capsys):
+    rc = cli._run_team(
+        "add a retry helper",
+        cwd=str(tmp_path),
+        budget_usd=None,
+        state_dir=None,
+        dry_run=True,
+        forge_factory=_refusing_factory,
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Mission: add a retry helper" in out
+    assert "Tasks: 1" in out
+
+
+def test_team_without_dry_run_refuses_a_missing_budget_and_returns_1(tmp_path, capsys):
+    rc = cli._run_team(
+        "add a retry helper",
+        cwd=str(tmp_path),
+        budget_usd=None,
+        state_dir=None,
+        dry_run=False,
+        forge_factory=_refusing_factory,
+    )
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "--budget-usd" in out
+    assert "Fix:" in out
+
+
+def test_team_run_with_everything_accepted_returns_0_and_prints_outcomes(tmp_path, capsys):
+    result = ForgeResult(
+        job_id="j1",
+        objective="add a retry helper",
+        accepted=1,
+        rejected=0,
+        spend_usd=1.23,
+        outcomes=[
+            TaskOutcome(
+                task_id="task-1", subject="add a retry helper", accepted=True,
+                worker_id="forgeos.executor", tier=1, attempts=1, usd_micros=1_230_000,
+            ),
+        ],
+    )
+    fake = _FakeTeamForge(result)
+
+    rc = cli._run_team(
+        "add a retry helper",
+        cwd=str(tmp_path),
+        budget_usd=5.0,
+        state_dir=None,
+        dry_run=False,
+        forge_factory=lambda: fake,
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert fake.closed is True
+    assert fake.calls[0]["budget"].max_usd == 5.0
+    assert fake.calls[0]["reviewer"] is not None
+    assert "forgeos.executor" in out
+    assert "accepted=1 rejected=0" in out
+    assert "$1.2300" in out
+
+
+def test_team_run_passes_a_routed_reviewer_so_the_merge_gate_can_pass(tmp_path):
+    """Before this, `_run_team` never passed `reviewer=`, so `Forge.run` defaulted
+    to `reviewer=None` and every task was refused at the merge gate for lack of
+    independent review -- see `Forge._pick_reviewer` / `core.verify`'s
+    `"no independent review"` reason. `reviewer` must be built (not left None) and
+    handed to `forge.run`, the same `routed_executor` construction `Forge.run`
+    itself uses for its default executor."""
+    result = ForgeResult(job_id="j1", objective="x", accepted=1, rejected=0)
+    fake = _FakeTeamForge(result)
+
+    cli._run_team(
+        "x", cwd=str(tmp_path), budget_usd=5.0, state_dir=None, dry_run=False,
+        forge_factory=lambda: fake,
+    )
+
+    assert len(fake.calls) == 1
+    assert fake.calls[0]["reviewer"] is not None
+    assert callable(fake.calls[0]["reviewer"])
+
+
+def test_team_run_with_a_rejection_returns_2(tmp_path, capsys):
+    result = ForgeResult(
+        job_id="j1",
+        objective="x",
+        accepted=1,
+        rejected=1,
+        spend_usd=2.0,
+        outcomes=[
+            TaskOutcome(task_id="task-1", subject="a", accepted=True, worker_id="w1", attempts=1),
+            TaskOutcome(
+                task_id="task-2", subject="b", accepted=False, reason="test(s) failing",
+                attempts=2, merge_warnings=["worktree merge produced a conflict"],
+            ),
+        ],
+    )
+    fake = _FakeTeamForge(result)
+
+    rc = cli._run_team(
+        "x", cwd=str(tmp_path), budget_usd=5.0, state_dir=None, dry_run=False,
+        forge_factory=lambda: fake,
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 2
+    assert fake.closed is True
+    assert "accepted=1 rejected=1" in out
+    assert "test(s) failing" in out
+    assert "worktree merge produced a conflict" in out
+
+
+def test_team_run_prints_guidance_when_refused_for_lack_of_independent_review(tmp_path, capsys):
+    """A single-capable-worker fleet still gets a real, honest merge-gate refusal
+    (`Forge._pick_reviewer` returns "" on purpose -- see forge.py:1106) -- that
+    refusal is correct behavior, not a bug this CLI should paper over. But the
+    generic `TaskOutcome.reason` ("merge gate refused") doesn't say why, and the
+    detail lives in `merge_reasons`, not `reason` -- see `core.verify.py`'s
+    `"no independent review"` line and `forge.py`'s `_STRUCTURAL_REFUSALS`. The
+    CLI should surface that specific cause with one extra guidance line."""
+    result = ForgeResult(
+        job_id="j1",
+        objective="x",
+        accepted=0,
+        rejected=1,
+        outcomes=[
+            TaskOutcome(
+                task_id="task-1", subject="a", accepted=False, worker_id="forgeos.executor",
+                reason="merge gate refused", merge_reasons=["no independent review"], attempts=3,
+            ),
+        ],
+    )
+    fake = _FakeTeamForge(result)
+
+    rc = cli._run_team(
+        "x", cwd=str(tmp_path), budget_usd=5.0, state_dir=None, dry_run=False,
+        forge_factory=lambda: fake,
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 2
+    assert "review needs a second capable worker" in out
+    assert "only one that can take this task" in out
+
+
+def test_main_team_subcommand_parses_args_and_reaches_run_team(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_run_team(objective, **kwargs):
+        captured["objective"] = objective
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "_run_team", _fake_run_team)
+    rc = cli.main([
+        "team", "add a retry helper",
+        "--cwd", str(tmp_path),
+        "--budget-usd", "3.5",
+        "--state-dir", str(tmp_path / "state"),
+        "--dry-run",
+    ])
+
+    assert rc == 0
+    assert captured["objective"] == "add a retry helper"
+    assert captured["cwd"] == str(tmp_path)
+    assert captured["budget_usd"] == 3.5
+    assert captured["state_dir"] == str(tmp_path / "state")
+    assert captured["dry_run"] is True
