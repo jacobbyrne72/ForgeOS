@@ -427,6 +427,7 @@ def main() -> int:
         "retry": cmd_retry,
         "schedule": cmd_schedule,
         "guard": cmd_guard,
+        "forecast": cmd_forecast,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -636,6 +637,19 @@ def cmd_schedule(args):
         print("  " + b["task_type"] + " batch " + str(b["batch_index"]) + ": " + str(b["batch_size"]) + " tasks, $" + str(b["cost"]))
     print()
     print("Savings vs all-API ($0.03 each): $" + str(round(plan["total_tasks"] * 0.03 - plan["total_cost"], 4)))
+    return 0
+
+
+def cmd_forecast(args):
+    from forgeos.cost_forecast import CostForecast
+    f = CostForecast()
+    print("=== Cost Forecast ===")
+    print("Data points:", f.tracker.total_saved().get("total_events", 0))
+    result = f.forecast(days=args.forecast_days)
+    print("Method:", result["method"])
+    print("Forecast:", "$" + str(result["forecast_usd"]))
+    print("Confidence:", result["confidence"])
+    print("Data points:", result["data_points"])
     return 0
 
 

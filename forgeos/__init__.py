@@ -122,3 +122,5 @@ from .cost_retry import CostRetry
 from .cost_scheduler import CostScheduler
 
 from .cost_guard import CostGuard
+
+from .cost_forecast import CostForecast

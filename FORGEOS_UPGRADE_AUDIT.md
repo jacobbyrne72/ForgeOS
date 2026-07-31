@@ -46,6 +46,7 @@ Current evidence:
 
 - `ruff check forgeos tests`: passes.
 - Full test suite: 1259 passed, 1 dependency deprecation warning.
+- Dependency audit: `uv pip compile pyproject.toml --all-extras` followed by `pip-audit`; no known vulnerabilities found.
 - No production `eval`, `exec`, or `shell=True` found.
 
 The stricter supplemental security rules still flag intentional resilience handlers, runtime assertions, controlled SQL placeholder construction, and bounded subprocess argv. These were reviewed and not changed without a demonstrated behavioral defect.
@@ -58,6 +59,8 @@ These catalog URLs were unavailable or stale and were not replaced with unrelate
 - `lunary-ai/lunary`
 - `NirDiamant/AI_Agents_Book`
 - `xlang-ai/awesome-language-agents`
+
+On the latest live check, all four remaining original URLs returned no Git reference from `git ls-remote`: `JetBrains/awesome-ai-devtools`, `lunary-ai/lunary`, `NirDiamant/AI_Agents_Book`, and `xlang-ai/awesome-language-agents`.
 
 Verified replacements are recorded separately in the replacements clone root, including `allenai/OLMo-Eval` for the stale OLMoE evaluation URL, `qodo-ai/qodo-cover` for the stale Cover-Agent URL, `ast-grep/ast-grep`, `Azure/counterfit`, `ai-dynamo/nixl`, `kingjulio8238/Memary`, `MotiaDev/motia`, `microsoft/semanticworkbench`, `NirDiamant/agents-towards-production`, `OWASP/www-project-ai-security-and-privacy-guide`, `sourcegraph/sourcegraph-public-snapshot`, `sourcegraph/cody-public-snapshot`, `wandb/wandb`, `Not-Diamond/notdiamond-python`, and `microsoft/AI-Red-Teaming-Playground-Labs`.
 
