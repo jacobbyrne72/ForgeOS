@@ -40,6 +40,16 @@ jobs:
           status=$?
           python -c "from pathlib import Path; print(Path('artifacts/dashboard-smoke.json').read_text())"
           exit $status
+      - name: Add dashboard smoke to step summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '### Dashboard smoke (API-only)'
+            echo '```json'
+            cat artifacts/dashboard-smoke.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload dashboard smoke report
         if: always()
         uses: actions/upload-artifact@v4
