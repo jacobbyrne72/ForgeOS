@@ -312,9 +312,15 @@ def _run_team(
     # with a genuinely single capable worker still gets that same honest
     # refusal (see `Forge._pick_reviewer`'s docstring), but now it is because
     # no second worker exists, not because nothing was ever asked to review.
-    from forgeos.adapters.routed import routed_executor
+    default_executor = getattr(forge, "default_executor", None)
+    if callable(default_executor):
+        reviewer = default_executor(cwd=cwd)
+    else:
+        # Keep lightweight Forge-shaped test doubles compatible with the CLI
+        # seam; real Forge instances take the ledger-owned Gateway path above.
+        from forgeos.adapters.routed import routed_executor
 
-    reviewer = routed_executor(forge.registry, forge.ledger, cwd=cwd)
+        reviewer = routed_executor(forge.registry, forge.ledger, cwd=cwd)
 
     try:
         result = forge.run(

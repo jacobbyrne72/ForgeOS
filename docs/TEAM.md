@@ -110,12 +110,12 @@ id derived from the other) is a hard block, same provider *family* is a WARN
 only. `Forge._pick_reviewer` only ever names a real, different worker,
 returning `""` — never a manufactured id — when the fleet has one capable
 worker, which the gate then honestly refuses for. Status, honestly:
-`reviewer` is a caller-supplied callable with no auto-default the way
-`executor=None` falls back to the routed executor; `python -m forgeos team`
-doesn't pass one today, so a job run that way is refused on every task until
-a caller wires one in — a routed-reviewer default for the CLI is landing
-now. Proof: `tests/test_verify.py`; `tests/test_forge.py`
-(`test_missing_independent_review_blocks_the_merge`,
+`Forge.run` and `python -m forgeos team` now build a routed reviewer by
+default. It shares the Forge's ledger-owned gateway, so a gateway review is
+attributed and budgeted in the same receipt rather than being an unmetered
+second path. A fleet with only one capable worker is still refused by the
+merge gate. Proof: `tests/test_cli.py`; `tests/test_verify.py`;
+`tests/test_forge.py` (`test_missing_independent_review_blocks_the_merge`,
 `test_a_rejecting_reviewer_blocks_the_merge`).
 
 ## 8. Test-tampering gate

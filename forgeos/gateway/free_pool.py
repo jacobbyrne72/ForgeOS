@@ -101,7 +101,12 @@ def resolve_free_ref(
     model meant it, and silently substituting a different one would make the
     ledger's model attribution a lie.
     """
-    if model_ref and not model_ref.endswith(":free") and model_ref != "auto:free":
+    # Only the explicit sentinel is a pool request.  A concrete provider slug
+    # may itself end in ``:free``; replacing that caller-selected slug with a
+    # different model would make the ledger's model attribution a lie.
+    if not model_ref:
+        return []
+    if model_ref != "auto:free":
         return [model_ref]
     return [c.ref for c in free_candidates(catalog, settings, **kw)]
 

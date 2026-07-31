@@ -1,7 +1,7 @@
 # AI State
 
 ## Current goal
-- Make ForgeOS's advertised front door execute real, budget-governed work with honest dry-runs and receipts.
+- Continue turning ForgeOS from a verified kernel into a usable, cost-governed agent tool without overstating live-provider evidence.
 
 ## Important project facts
 - ForgeOS is already cloned at `C:\Users\byrne\Downloads\ForgeOS`.
@@ -12,6 +12,9 @@
 - `forge cache stats` previously crashed because `PromptCache.stats()` was missing; `forge doctor` used an unsupported `home=` argument and `cache prune` called a missing method. All cache CLI paths now use the real API and close connections.
 - `forge bench` still called removed `PromptCache.get/put` methods; it now uses `lookup/store` and closes the cache after each full-layer iteration.
 - `forge audit --dir .` now prunes generated/vendored trees (`vendor`, `.venv`, `node_modules`, caches, etc.); the real repo audit dropped from 3503 files/2108 findings to 193/38 and still exits 0.
+- `Forge.default_executor()` now lazily creates a ledger-owned `Gateway` from the default catalog/settings with persistent `.forgeos/dead_models.db`; `Forge.run(executor=None)` and the CLI reviewer use that shared routed path.
+- `Gateway.resolve_model_refs("auto:free")` resolves usable catalogued free models, filters dead transport/model pairs, and `GatewayWorkerAdapter` falls through deterministically when a free slug is retired.
+- The free-pool resolver now preserves explicitly selected concrete `:free` slugs instead of silently replacing them.
 - The 713-entry catalog is a manifest, not a set of local source clones; broad cloning is intentionally avoided.
 - Reference clones are isolated at `C:\Users\byrne\Downloads\ForgeOS-upstreams-2026-07-31`.
 - Existing dirty files before this task: `forgeos/forge.py`, `docs/research/verification-economy.md`, `tests/test_merge_retry.py`.
@@ -31,6 +34,10 @@
 - `tests/test_prompt_cache.py` — cache stats and CLI regression coverage.
 - `forgeos/bench.py` — uses the current prompt-cache contract.
 - `tests/test_bench.py` — locks the benchmark/cache integration.
+- `forgeos/gateway/client.py`, `forgeos/gateway/free_pool.py` — default gateway/free-pool resolution and dead-model filtering.
+- `forgeos/adapters/gateway_worker.py`, `forgeos/forge.py`, `forgeos/__main__.py` — shared default gateway and deterministic free fallback.
+- `tests/test_free_pool.py`, `tests/test_gateway_worker.py`, `tests/test_routed_executor.py` — regression coverage.
+- `README.md`, `docs/ROADMAP.md`, `docs/TEAM.md` — close stale roadmap/team claims.
 
 ## Commands run
 - `rtk proxy python -m pytest tests -q -m "not slow"`
@@ -44,9 +51,11 @@
 - `python -m forgeos.cli audit --dir .` (193 files audited, 38 findings, exit 0 after pruning)
 - `python -m forgeos.cli cache stats` and `python -m forgeos.cli doctor`
 - `python -m forgeos.cli bench "measure a local retry helper" --iterations 1`
+- `python -m forgeos.cli doctor`, `python -m forgeos.cli fleet`, and `python -m forgeos.cli run "summarize the retry policy" --dry-run`
+- local default-gateway catalog resolution smoke check (no provider call)
 
 ## Test status
-- Passing: 4 focused audit/benchmark tests; 1723 full tests (including slow); Ruff; compileall; live CLI dogfood.
+- Passing: 44 focused free-pool/routed-worker tests; 1727 full tests (including slow); Ruff; compileall; CLI dogfood and catalog-resolution smoke check.
 - Failing: none observed.
 - Not run: none.
 
@@ -54,4 +63,5 @@
 - No blocker for the source upgrade. Full catalog clone coverage remains intentionally unperformed because it is 713 repositories.
 
 ## Next best steps
-- Commit `5106f02` contains the verified front-door hardening; next work can target a new product capability rather than re-deriving this audit.
+- Review and commit the default Gateway/free-pool integration; do not run a real `forge run` without an explicit operator-approved provider/budget call.
+- Next product candidate: make the benchmark compare a naive loop against ForgeOS with machine-readable receipts, without spending by default.

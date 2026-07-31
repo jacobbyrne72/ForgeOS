@@ -34,17 +34,21 @@ ForgeOS's differentiators, already built and tested:
 
 ## 2. The gap between "kernel" and "product" (build order)
 
-1. **Routed executor glue** — `build_adapter` + `adapter_executor` exist and are
-   tested; `Forge.run` still requires a hand-rolled executor. One module closes
-   it: registry profile → adapter → bridged executor, `Forge.run(executor=None)`
-   defaults to it. *This turns ForgeOS from a library into a tool.*
-2. **Router escalation wiring** — `Router.escalate` exists; MODEL failures
-   currently retry at the same tier. Wire the failure class into re-routing.
-3. **`forgeos` CLI** — `forgeos run "objective"`, `forgeos doctor`,
-   `forgeos receipts`, `forgeos dash`. The README demo must be one command.
-4. **Live free-fleet defaults** — ship a curated fleet: local Ollama for
-   summarise/classify, free OpenRouter tiers for drafting, metered models only
-   at the top of the ladder, dead-model store keeping the list honest.
+1. **Routed executor glue** ✅ — `Forge.run(executor=None)` now composes the
+   registry profile, live adapter, and executor bridge. The CLI also supplies a
+   routed independent reviewer, so the merge gate refuses only for a real lack
+   of a second capable worker.
+2. **Router escalation wiring** ✅ — MODEL failures re-route at the next tier;
+   policy, environment, and verification failures do not buy a more expensive
+   retry.
+3. **`forgeos` CLI** ✅ — `forge run`, `forge doctor`, `forge receipts`, and
+   `forge dash` are reachable, with explicit budgets for real runs and honest
+   dry-runs.
+4. **Free-fleet defaults** ✅ — the default Forge lazily creates a ledger-owned
+   Gateway, resolves `auto:free` against usable catalogued providers, skips
+   dead slugs, and falls through deterministically to the next free candidate.
+   Live provider reachability remains a runtime/doctor fact, never a claim made
+   from catalog presence alone.
 5. **The benchmark that sells it** — one reproducible script that runs the same
    task list through (a) a naive single-model loop and (b) ForgeOS, and prints
    both bills with receipts. Post the table, not adjectives. (`tools/ab_bench.py`

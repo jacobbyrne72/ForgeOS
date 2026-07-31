@@ -19,7 +19,7 @@ import pytest
 from forgeos.adapters.base import EventKind
 from forgeos.adapters.gateway_worker import GatewayWorkerAdapter
 from forgeos.economy.preflight import CallEstimate, CallRefused, Decision, PreflightVerdict
-from forgeos.gateway.client import GatewayResponse, TransportError
+from forgeos.gateway.client import GatewayResponse, ModelUnavailableError, TransportError
 
 
 def _refusal(reason: str = "estimated 5000000 > remaining 100") -> CallRefused:
@@ -76,6 +76,18 @@ class _FakeGateway:
         if self._raises is not None:
             raise self._raises
         return self._responses.pop(0)
+
+
+class _FreePoolGateway(_FakeGateway):
+    def resolve_model_refs(self, model_ref: str) -> list[str]:
+        assert model_ref == "auto:free"
+        return ["openrouter/dead:free", "openrouter/live:free"]
+
+    def complete(self, request, **kwargs):
+        self.calls.append({"model_ref": request.model_ref})
+        if request.model_ref == "openrouter/dead:free":
+            raise ModelUnavailableError("retired free slug")
+        return _response(model_used=request.model_ref)
 
 
 def _response(**kw) -> GatewayResponse:
@@ -412,6 +424,23 @@ def test_close_is_idempotent():
         return await ad.usage(sid)
 
     assert _run(scenario()).exact is False
+
+
+def test_free_pool_skips_a_retired_slug_without_escalating():
+    gateway = _FreePoolGateway()
+    adapter = _adapter(gateway, model="auto:free")
+
+    async def scenario():
+        sid = await adapter.start("t1", "/repo", "auto:free")
+        return await _drain(adapter, sid)
+
+    events = _run(scenario())
+    assert [call["model_ref"] for call in gateway.calls] == [
+        "openrouter/dead:free",
+        "openrouter/live:free",
+    ]
+    assert any(event.kind is EventKind.DONE for event in events)
+    assert any(event.kind is EventKind.USAGE for event in events)
 
 
 # =================================================================== health

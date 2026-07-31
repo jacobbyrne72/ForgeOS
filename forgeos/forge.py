@@ -379,6 +379,7 @@ class Forge:
         home: Path | None = None,
         registry: Registry | None = None,
         settings: Settings | None = None,
+        gateway: object | None = None,
         market: CapacityMarket | None = None,
         max_attempts: int = 3,
         retry_fixable_refusals: bool = False,
@@ -394,6 +395,8 @@ class Forge:
 
         self.settings = settings or Settings.load()
         self.registry = registry or default_registry()
+        self._gateway = gateway
+        self._owns_gateway = gateway is None
         self.market = market or CapacityMarket()
         self.quota = QuotaTracker()
 
@@ -433,11 +436,46 @@ class Forge:
         self._trip_reason = ""
 
     def close(self) -> None:
+        if self._owns_gateway and self._gateway is not None:
+            try:
+                self._gateway.close()
+            except Exception:
+                pass
         for store in (self.ledger, self.events, self.leases, self.avoidance, self.spans):
             try:
                 store.close()
             except Exception:
                 pass
+
+    def default_executor(self, *, cwd: str = ".") -> Executor:
+        """Build the standard routed executor with this Forge's ledger.
+
+        The gateway is lazy so constructing a Forge for a dry-run or a purely
+        local test does not load a model catalog or create network transports.
+        Once a real default run needs it, the gateway shares this Forge's
+        ledger, settings, and avoidance log; gateway spend therefore lands in
+        the same receipt as every other worker.
+        """
+        if self._gateway is None:
+            from .catalog import default_catalog
+            from .gateway.client import Gateway
+            from .gateway.dead_models import DeadModelStore
+
+            self._gateway = Gateway(
+                catalog=default_catalog(),
+                ledger=self.ledger,
+                settings=self.settings,
+                dead_models=DeadModelStore(self.home / "dead_models.db"),
+                avoidance_log=self.avoidance,
+            )
+        from .adapters.routed import routed_executor
+
+        return routed_executor(
+            self.registry,
+            self.ledger,
+            gateway=self._gateway,
+            cwd=cwd,
+        )
 
     # ------------------------------------------------------------------ run
 
@@ -461,11 +499,9 @@ class Forge:
         do the work cheaply, never a substitute for doing it.
 
         With `executor=None` the Forge runs whichever backend the router picks,
-        via the registry's adapter field — the default that makes this a tool
-        rather than a library. Gateway-backed profiles need a live `Gateway`;
-        pass `routed_executor(registry, ledger, gateway=...)` explicitly for
-        those, because a Gateway owns the ledger its spend lands in and the
-        Forge will not invent one.
+        via the registry's adapter field — including the lazy, ledger-owned
+        Gateway for API/free-pool profiles. Pass an executor explicitly only
+        when embedding a different transport or a deterministic test double.
 
         `isolate_worktrees` (default False, so every existing caller is
         byte-for-byte unaffected) gives each file-editing task its own git
@@ -479,8 +515,7 @@ class Forge:
         """
         executor_is_default = executor is None
         if executor is None:
-            from .adapters.routed import routed_executor
-            executor = routed_executor(self.registry, self.ledger, cwd=cwd)
+            executor = self.default_executor(cwd=cwd)
         self._operations = operations or {}
         self._trip.clear()
         self._trip_reason = ""
@@ -864,8 +899,7 @@ class Forge:
             # chooses to ask, where this attempt's worktree lives.
             call_executor = executor
             if worktree_info is not None and executor_is_default:
-                from .adapters.routed import routed_executor
-                call_executor = routed_executor(self.registry, self.ledger, cwd=task_cwd)
+                call_executor = self.default_executor(cwd=task_cwd)
             _task_cwd_local.value = task_cwd if worktree_info is not None else None
             try:
                 with self.spans.measure(job.id, Phase.MODEL_REASONING, task_id=spec.id):

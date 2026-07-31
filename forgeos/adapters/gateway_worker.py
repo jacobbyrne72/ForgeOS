@@ -47,7 +47,13 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
 from ..economy.preflight import CallRefused
-from ..gateway.client import Gateway, GatewayRequest, GatewayResponse, TransportError
+from ..gateway.client import (
+    Gateway,
+    GatewayRequest,
+    GatewayResponse,
+    ModelUnavailableError,
+    TransportError,
+)
 from .base import EventKind, WorkerAdapter, WorkerCapabilities, WorkerEvent, WorkerUsage
 
 DEFAULT_MAX_OUTPUT_TOKENS = 2_048
@@ -66,6 +72,7 @@ class _Session:
     task_id: str
     cwd: str
     model_ref: str
+    model_refs: list[str] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
     usd_micros: int = 0
@@ -134,9 +141,15 @@ class GatewayWorkerAdapter(WorkerAdapter):
             if not transports:
                 return False, "gateway has no transports configured"
             if self._default_model_ref:
-                card = self._gateway._catalog.get(self._default_model_ref)
-                if card is None:
-                    return False, f"model {self._default_model_ref!r} is not in the catalog"
+                refs = self._resolve_model_refs(self._default_model_ref)
+                if not refs:
+                    return False, (
+                        f"no runnable models resolved for {self._default_model_ref!r}"
+                    )
+                for ref in refs:
+                    card = self._gateway._catalog.get(ref)
+                    if card is None:
+                        return False, f"model {ref!r} is not in the catalog"
             return True, f"gateway ready ({len(transports)} transport(s))"
         except Exception as exc:  # pragma: no cover - defensive, per the base contract
             return False, f"gateway unusable: {exc.__class__.__name__}: {exc}"
@@ -155,13 +168,22 @@ class GatewayWorkerAdapter(WorkerAdapter):
 
     # ----------------------------------------------------------------- session
 
+    def _resolve_model_refs(self, requested: str) -> list[str]:
+        resolver = getattr(self._gateway, "resolve_model_refs", None)
+        if callable(resolver):
+            return list(resolver(requested))
+        return [requested] if requested else []
+
     async def start(self, task_id: str, cwd: str, model_profile: str) -> str:
         self._counter += 1
         session_id = f"gw-{self._counter}"
+        requested = model_profile or self._default_model_ref
+        model_refs = self._resolve_model_refs(requested)
         self._sessions[session_id] = _Session(
             task_id=task_id,
             cwd=cwd,
-            model_ref=model_profile or self._default_model_ref,
+            model_ref=model_refs[0] if model_refs else requested,
+            model_refs=model_refs,
         )
         return session_id
 
@@ -173,55 +195,83 @@ class GatewayWorkerAdapter(WorkerAdapter):
         if sess.cancelled:
             yield WorkerEvent(kind=EventKind.ERROR, text="session was cancelled")
             return
-        if not sess.model_ref:
+        if not sess.model_refs:
             yield WorkerEvent(
                 kind=EventKind.ERROR,
-                text="no model_ref: pass one as model_profile to start() or set default_model_ref",
+                text=(
+                    "no runnable model_ref: the configured free pool is empty; "
+                    "refresh the catalog or configure a usable provider"
+                ),
+                data={"transient": False, "spend_already_recorded": False},
             )
             return
 
-        request = GatewayRequest(
-            model_ref=sess.model_ref,
-            prompt_tail=prompt,
-            max_output_tokens=self._max_output_tokens,
-        )
+        response = None
+        last_model_error: Exception | None = None
+        for model_ref in sess.model_refs:
+            request = GatewayRequest(
+                model_ref=model_ref,
+                prompt_tail=prompt,
+                max_output_tokens=self._max_output_tokens,
+            )
 
-        try:
-            # `Gateway.complete` is synchronous and does blocking network I/O.
-            # Calling it inline would stall the event loop for the whole request,
-            # which defeats running sessions concurrently at all.
-            response = await asyncio.to_thread(
-                self._gateway.complete,
-                request,
-                job_id=self._job_id,
-                task_id=sess.task_id,
-                worker_id=self._worker_id,
-                remaining_micros=self._remaining(),
-            )
-        except CallRefused as exc:
-            # A refusal is the preflight working, not a crash. It is reported as
-            # an error event so the run loop can classify it as POLICY rather
-            # than as a model failure that would escalate to a pricier tier.
+            try:
+                # `Gateway.complete` is synchronous and does blocking network
+                # I/O. Calling it inline would stall the event loop for the
+                # whole request, which defeats running sessions concurrently.
+                response = await asyncio.to_thread(
+                    self._gateway.complete,
+                    request,
+                    job_id=self._job_id,
+                    task_id=sess.task_id,
+                    worker_id=self._worker_id,
+                    remaining_micros=self._remaining(),
+                )
+            except ModelUnavailableError as exc:
+                # A retired free slug is a property of this model, not of the
+                # provider transport. Fall through to the next deterministic
+                # candidate instead of escalating or retrying the same corpse.
+                last_model_error = exc
+                continue
+            except LookupError as exc:
+                # Catalog refresh races can remove a model after resolution. It
+                # is safe to try the next resolved candidate; no transport ran.
+                last_model_error = exc
+                continue
+            except CallRefused as exc:
+                # A refusal is the preflight working, not a crash. It is
+                # reported as POLICY rather than escalated to a pricier tier.
+                yield WorkerEvent(
+                    kind=EventKind.ERROR,
+                    text=f"refused before the call: {exc}",
+                    data={"refused": True, "spend_already_recorded": False},
+                )
+                return
+            except TransportError as exc:
+                yield WorkerEvent(
+                    kind=EventKind.ERROR,
+                    text=f"transport failed: {exc}",
+                    # The gateway records the estimate when a call raises
+                    # mid-flight, so an attempted-but-failed call is charged.
+                    data={"transient": True, "spend_already_recorded": True},
+                )
+                return
+            except Exception as exc:
+                yield WorkerEvent(
+                    kind=EventKind.ERROR,
+                    text=f"{exc.__class__.__name__}: {exc}",
+                    data={"spend_already_recorded": False},
+                )
+                return
+
+            sess.model_ref = model_ref
+            break
+
+        if response is None:
             yield WorkerEvent(
                 kind=EventKind.ERROR,
-                text=f"refused before the call: {exc}",
-                data={"refused": True, "spend_already_recorded": False},
-            )
-            return
-        except TransportError as exc:
-            yield WorkerEvent(
-                kind=EventKind.ERROR,
-                text=f"transport failed: {exc}",
-                # The gateway records the estimate when a call raises mid-flight,
-                # so an attempted-but-failed call has still been charged.
+                text=f"free model pool exhausted: {last_model_error}",
                 data={"transient": True, "spend_already_recorded": True},
-            )
-            return
-        except Exception as exc:
-            yield WorkerEvent(
-                kind=EventKind.ERROR,
-                text=f"{exc.__class__.__name__}: {exc}",
-                data={"spend_already_recorded": False},
             )
             return
 

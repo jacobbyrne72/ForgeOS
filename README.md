@@ -345,7 +345,10 @@ one that admits them:
 Recently closed, for the record: `Forge.run` now defaults to the routed
 adapter path (`executor=None`), MODEL failures escalate exactly one tier per
 failure via `Router.escalate`, and the gateway remembers dead models
-(terminal vs temporary) so retired free tiers stop being re-bought.
+(terminal vs temporary) so retired free tiers stop being re-bought. The default
+Forge also lazily wires a ledger-owned Gateway: `auto:free` resolves against
+usable catalogued providers and falls through deterministic free candidates
+without requiring callers to hand-build a gateway or executor.
 
 ## Connecting a provider
 

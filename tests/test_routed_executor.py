@@ -27,6 +27,7 @@ from forgeos.contracts import (
 )
 from forgeos.forge import ExecutionResult, Forge
 from forgeos.registry import Adapter, CostTier, Registry, WorkerProfile
+from forgeos.settings import Settings
 
 
 class FakeAdapter(WorkerAdapter):
@@ -166,6 +167,25 @@ def test_forge_run_with_no_executor_uses_the_routed_path_end_to_end(tmp_path, mo
     assert result.accepted == 1, result.outcomes
     assert adapters, "no adapter was ever built — the routed default did not run"
     assert "normalise retry parsing" in adapters[0].prompts[0]
+
+
+def test_default_executor_lazily_builds_a_gateway_on_the_forges_ledger(tmp_path, monkeypatch):
+    from forgeos.catalog import Catalog
+
+    monkeypatch.setattr("forgeos.catalog.default_catalog", lambda: Catalog([]))
+    forge = Forge(
+        home=tmp_path / "state",
+        registry=Registry([]),
+        settings=Settings(providers={}),
+    )
+    try:
+        assert forge._gateway is None
+        forge.default_executor()
+        assert forge._gateway is not None
+        assert forge._gateway._ledger is forge.ledger
+        assert forge._gateway._dead_models.path.endswith("dead_models.db")
+    finally:
+        forge.close()
 
 
 # ============================================================= tier escalation

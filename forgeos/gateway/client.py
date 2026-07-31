@@ -636,6 +636,56 @@ class Gateway:
         self._inflight: dict[str, _InFlightCall] = {}
         self._inflight_lock = threading.Lock()
 
+    def resolve_model_refs(
+        self,
+        model_ref: str,
+        *,
+        needs_tools: bool = False,
+        limit: int = 24,
+    ) -> list[str]:
+        """Resolve a configured model reference into runnable model refs.
+
+        ``auto:free`` is deliberately resolved at the gateway boundary, where
+        the catalog, provider settings, transports, and dead-model memory are
+        all available.  Keeping this out of the registry means the same fleet
+        definition remains portable across machines with different credentials
+        and different free-tier corpses.
+        """
+        if not model_ref:
+            return []
+        if model_ref != "auto:free":
+            return [model_ref]
+
+        from .free_pool import resolve_free_ref
+
+        def is_dead(ref: str) -> bool:
+            card = self._catalog.get(ref)
+            if card is None:
+                return True
+            names = []
+            for transport in self._transports:
+                serves = getattr(transport, "serves", set())
+                if not serves or card.provider in serves:
+                    name = getattr(transport, "name", "")
+                    if name:
+                        names.append(name)
+            return bool(names) and all(
+                self._dead_models.is_dead(name, ref) for name in names
+            )
+
+        return resolve_free_ref(
+            model_ref,
+            self._catalog,
+            self._settings,
+            is_dead=is_dead,
+            needs_tools=needs_tools,
+            limit=limit,
+        )
+
+    def close(self) -> None:
+        """Release gateway-owned persistent resilience state."""
+        self._dead_models.close()
+
     def complete(
         self,
         request: GatewayRequest,
