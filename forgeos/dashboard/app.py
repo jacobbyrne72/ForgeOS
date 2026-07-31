@@ -401,7 +401,7 @@ def create_app(state_dir: str | Path, queue_dir: str | Path | None = None) -> Fa
         modelled_usd_total = from_micros(modelled_micros)
         cache = ledger.cache_stats(None)
         avoided = avoidance_log.totals(None)
-        accepted = sum(1 for ev in event_log.replay() if ev.type is EventType.TASK_ACCEPTED)
+        accepted = event_log.count_by_type(EventType.TASK_ACCEPTED)
         cost_per_accepted_task = (spend_usd_total / accepted) if accepted else None
         return {
             "spend_usd": spend_usd_total,
@@ -499,7 +499,10 @@ def create_app(state_dir: str | Path, queue_dir: str | Path | None = None) -> Fa
         `TASK_ACCEPTED`, so this reads nothing the dashboard doesn't already read.
         """
         combined: list[dict[str, Any]] = []
-        for ev in event_log.replay():
+        # Bounded. This runs on a 2-second websocket poll; replaying the whole
+        # event history to return `limit` rows made the work grow with total
+        # lifetime events forever while the answer stayed the same size.
+        for ev in event_log.replay(limit=limit):
             combined.append(
                 {
                     "source": "kernel",

@@ -315,7 +315,8 @@ def _fingerprint_from_row(row) -> str:
     )
 
 
-def matching_tasks(ledger, fingerprint: str, *, scan_limit: int = DEFAULT_TASK_SCAN_LIMIT) -> list[PriorTask]:
+def matching_tasks(ledger, fingerprint: str, *, scan_limit: int = DEFAULT_TASK_SCAN_LIMIT,
+                   repo: str | None = None) -> list[PriorTask]:
     """Every SETTLED prior task with this exact fingerprint, newest first.
 
     "Settled" means the ledger's own `tasks.state` is DONE or FAILED — a task
@@ -330,8 +331,19 @@ def matching_tasks(ledger, fingerprint: str, *, scan_limit: int = DEFAULT_TASK_S
     the latest one) are built on, so the ledger is scanned once per question,
     not once per caller.
     """
+    # Scoped to one repo when the caller knows it. A fingerprint hashes subject,
+    # scope paths, capabilities and acceptance -- `TaskSpec` carries no repo --
+    # so an unrelated checkout can produce an identical one for different work,
+    # and refusing on that shows the operator a receipt for work never done to
+    # their code. `repo=None` keeps the original cross-repo scan for callers
+    # that genuinely want it.
+    rows = (
+        ledger.recent_tasks_for_repo(repo, limit=scan_limit)
+        if repo and hasattr(ledger, "recent_tasks_for_repo")
+        else ledger.recent_tasks(limit=scan_limit)
+    )
     out: list[PriorTask] = []
-    for row in ledger.recent_tasks(limit=scan_limit):
+    for row in rows:
         if row["state"] not in (TaskState.DONE.value, TaskState.FAILED.value):
             continue
         try:
@@ -356,7 +368,8 @@ def matching_tasks(ledger, fingerprint: str, *, scan_limit: int = DEFAULT_TASK_S
 
 
 def prior_outcome(
-    ledger, fingerprint: str, *, scan_limit: int = DEFAULT_TASK_SCAN_LIMIT
+    ledger, fingerprint: str, *, scan_limit: int = DEFAULT_TASK_SCAN_LIMIT,
+    repo: str | None = None,
 ) -> PriorTask | None:
     """The most recent SETTLED prior task with this exact fingerprint, or None.
 
@@ -364,7 +377,7 @@ def prior_outcome(
     latest outcome — the raw ledger lookup `check_repeat_work` is built on to
     decide whether a new submission of the same contract is worth spending on.
     """
-    matches = matching_tasks(ledger, fingerprint, scan_limit=scan_limit)
+    matches = matching_tasks(ledger, fingerprint, scan_limit=scan_limit, repo=repo)
     return matches[0] if matches else None
 
 
@@ -397,6 +410,7 @@ def check_repeat_work(
     skip: bool = False,
     scan_limit: int = DEFAULT_TASK_SCAN_LIMIT,
     environment_failure_threshold: int = DEFAULT_ENVIRONMENT_FAILURE_THRESHOLD,
+    repo: str | None = None,
 ) -> ReceiptVerdict:
     """Refuse to re-spend on a contract this exact ledger already settled.
 
@@ -451,7 +465,7 @@ def check_repeat_work(
         return ReceiptVerdict(decision=Decision.ALLOW, reason="prior-work check skipped by caller")
 
     fingerprint = task_fingerprint(spec)
-    matches = matching_tasks(ledger, fingerprint, scan_limit=scan_limit)
+    matches = matching_tasks(ledger, fingerprint, scan_limit=scan_limit, repo=repo)
     if not matches:
         return ReceiptVerdict(
             decision=Decision.ALLOW,

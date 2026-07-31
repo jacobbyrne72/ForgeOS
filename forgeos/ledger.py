@@ -342,6 +342,30 @@ class Ledger:
             "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()
 
+    def recent_tasks_for_repo(self, repo: str, limit: int = 500) -> list[sqlite3.Row]:
+        """`recent_tasks`, restricted to tasks whose JOB ran in `repo`.
+
+        A task fingerprint hashes subject, scope paths, capabilities and
+        acceptance -- and `TaskSpec` carries no repo at all, so two different
+        checkouts produce identical fingerprints for genuinely different work.
+        "Add retry logic to the client" over `src/client.py` is a plausible task
+        in any number of repos. Scanning every job meant a task that is new HERE
+        could be refused as already-settled because an unrelated project settled
+        the same-shaped one, and the operator would be shown a receipt for work
+        that was never done to their code.
+
+        `leases.py` already draws this boundary and tests it
+        (`test_conflict_is_scoped_to_repo` -- "same pattern, different repo, no
+        shared namespace"). Same discipline, same reason.
+
+        Repo identity is `jobs.cwd`, the only repo-ish value the schema stores.
+        """
+        return self._conn.execute(
+            "SELECT tasks.* FROM tasks JOIN jobs ON jobs.id = tasks.job_id "
+            "WHERE jobs.cwd = ? ORDER BY tasks.created_at DESC LIMIT ?",
+            (repo, limit),
+        ).fetchall()
+
     # ---------------- generation fencing ----------------
     # A task's generation counter starts at 0 and only moves forward. It exists
     # to fence out a worker that outlived its assignment: `bump_generation` is

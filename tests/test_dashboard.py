@@ -401,3 +401,75 @@ def test_index_html_has_balanced_tags():
     checker.feed(html)
     checker.close()
     assert checker.stack == [], f"unclosed tags: {checker.stack}"
+
+
+# ===================== event feed cost is bounded by what it returns
+
+
+def test_replay_limit_returns_the_newest_events_oldest_first(tmp_path):
+    """The activity feed asks for "the last N things". Returning the OLDEST N
+    would show a permanently frozen feed once history outgrew N."""
+    from forgeos.events import EventLog, EventType
+
+    log = EventLog(tmp_path / "ev.db")
+    for i in range(25):
+        log.append("j", EventType.TASK_CREATED, task_id=f"t{i}")
+
+    tail = log.replay(limit=5)
+    assert len(tail) == 5
+    assert [e.task_id for e in tail] == ["t20", "t21", "t22", "t23", "t24"]
+    seqs = [e.seq for e in tail]
+    assert seqs == sorted(seqs), "callers render oldest-first"
+
+
+def test_replay_without_a_limit_is_unchanged(tmp_path):
+    from forgeos.events import EventLog, EventType
+
+    log = EventLog(tmp_path / "ev.db")
+    for i in range(7):
+        log.append("j", EventType.TASK_CREATED, task_id=f"t{i}")
+    assert len(log.replay()) == 7
+
+
+def test_replay_limit_is_pushed_into_sql_not_applied_in_python(tmp_path):
+    """The defect: cost grew with lifetime events while the answer stayed N
+    rows, on a 2-second poll. Slicing in Python looks identical from outside,
+    so this asserts the bound reached the query."""
+    from forgeos.events import EventLog, EventType
+
+    log = EventLog(tmp_path / "ev.db")
+    for i in range(200):
+        log.append("j", EventType.TASK_CREATED, task_id=f"t{i}")
+
+    seen: list[str] = []
+    real_execute = log._conn.execute
+
+    def spy(sql, params=()):
+        seen.append(sql)
+        return real_execute(sql, params)
+
+    log._conn.execute = spy
+    rows = log.replay(limit=10)
+    log._conn.execute = real_execute
+
+    assert len(rows) == 10
+    selects = [q for q in seen if "event_log" in q and "SELECT *" in q]
+    assert selects and all("LIMIT" in q for q in selects), (
+        f"replay(limit=...) read without a SQL bound: {selects}"
+    )
+
+
+def test_count_by_type_matches_a_filtered_replay(tmp_path):
+    from forgeos.events import EventLog, EventType
+
+    log = EventLog(tmp_path / "ev.db")
+    for i in range(4):
+        log.append("j", EventType.TASK_CREATED, task_id=f"t{i}")
+    for i in range(3):
+        log.append("j", EventType.TASK_ACCEPTED, task_id=f"t{i}")
+
+    assert log.count_by_type(EventType.TASK_ACCEPTED) == 3
+    assert log.count_by_type(EventType.TASK_ACCEPTED) == sum(
+        1 for e in log.replay() if e.type is EventType.TASK_ACCEPTED
+    )
+    assert log.count() == 7

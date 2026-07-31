@@ -700,7 +700,13 @@ class Forge:
                 ))
         submitted: list[TaskSpec] = []
         for t in tasks:
-            verdict = check_repeat_work(self.ledger, t, skip=allow_repeat_work or resume_mode)
+            # `repo=job.cwd`: a fingerprint carries no repo, so without this a
+            # same-shaped task settled in ANOTHER checkout refuses genuinely new
+            # work here and shows a receipt for something never done to this code.
+            verdict = check_repeat_work(
+                self.ledger, t, skip=allow_repeat_work or resume_mode,
+                repo=getattr(job, 'cwd', None) or None,
+            )
             if verdict.decision is PreflightDecision.REFUSE_DUPLICATE:
                 outcomes.append(TaskOutcome(
                     task_id=t.id, subject=t.subject, accepted=False,

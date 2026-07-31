@@ -173,14 +173,52 @@ class EventLog:
             seq=r["seq"],
         )
 
-    def replay(self, job_id: str | None = None, after_seq: int = 0) -> list[Event]:
+    def replay(self, job_id: str | None = None, after_seq: int = 0,
+               limit: int | None = None) -> list[Event]:
+        """Events in `seq` order, oldest first.
+
+        `limit` returns the NEWEST `limit` events, still oldest-first. A feed
+        that wants "the last 30 things that happened" would otherwise pull the
+        entire history and slice the tail: the dashboard's activity panel did
+        exactly that on a 2-second poll, so the work grew with total lifetime
+        events forever while the answer stayed 30 rows. Ordering the tail in
+        SQL and reversing keeps the cost proportional to what is returned.
+        """
         sql = "SELECT * FROM event_log WHERE seq > ?"
         args: list = [after_seq]
         if job_id:
             sql += " AND job_id=?"
             args.append(job_id)
-        rows = self._conn.execute(sql + " ORDER BY seq", args).fetchall()
+        if limit is not None and limit >= 0:
+            rows = self._conn.execute(
+                sql + " ORDER BY seq DESC LIMIT ?", [*args, limit]
+            ).fetchall()
+            rows = list(reversed(rows))
+        else:
+            rows = self._conn.execute(sql + " ORDER BY seq", args).fetchall()
         return [self._row_to_event(r) for r in rows]
+
+    def count(self, job_id: str | None = None) -> int:
+        """How many events exist, without materialising any of them."""
+        sql = "SELECT COUNT(*) AS n FROM event_log"
+        args: list = []
+        if job_id:
+            sql += " WHERE job_id=?"
+            args.append(job_id)
+        return int(self._conn.execute(sql, args).fetchone()["n"])
+
+    def count_by_type(self, event_type: "EventType", job_id: str | None = None) -> int:
+        """Count one event type in SQL.
+
+        `_summary()` counted `TASK_ACCEPTED` by replaying every event ever
+        recorded and filtering in Python, on every dashboard poll.
+        """
+        sql = "SELECT COUNT(*) AS n FROM event_log WHERE type=?"
+        args: list = [event_type.value]
+        if job_id:
+            sql += " AND job_id=?"
+            args.append(job_id)
+        return int(self._conn.execute(sql, args).fetchone()["n"])
 
     def for_task(self, task_id: str) -> list[Event]:
         rows = self._conn.execute(
