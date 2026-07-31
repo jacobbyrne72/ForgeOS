@@ -63,6 +63,29 @@ def _wait_for_server(base_url: str, process: subprocess.Popen[str], timeout: flo
     raise TimeoutError(f"dashboard did not become ready at {base_url}")
 
 
+def _validate_payload(payload: object, *, expect_fixture: bool) -> dict[str, object]:
+    if not isinstance(payload, dict) or payload.get("schema") != "forgeos.leaderboard.v1":
+        schema = payload.get("schema") if isinstance(payload, dict) else None
+        raise AssertionError(f"unexpected leaderboard schema: {schema!r}")
+    rollup = payload.get("fleet_rollup", {})
+    if not isinstance(rollup, dict):
+        raise AssertionError(f"fleet_rollup is not an object: {rollup!r}")
+    if expect_fixture:
+        if rollup.get("accepted_count") != 2:
+            raise AssertionError(f"unexpected fleet accepted count: {rollup}")
+        if abs(float(rollup.get("cost_per_accepted_usd", -1)) - 0.2) > 1e-9:
+            raise AssertionError(f"unexpected fleet unit cost: {rollup}")
+    return {"schema": payload["schema"], "fleet_rollup": rollup}
+
+
+def _inspect_api(base_url: str, timeout: float, *, expect_fixture: bool) -> dict[str, object]:
+    with urlopen(f"{base_url}/api/leaderboard", timeout=timeout) as response:
+        if response.status != 200:
+            raise AssertionError(f"/api/leaderboard returned HTTP {response.status}")
+        payload = json.loads(response.read().decode("utf-8"))
+    return _validate_payload(payload, expect_fixture=expect_fixture)
+
+
 async def _inspect(
     base_url: str,
     screenshot: Path | None,
@@ -84,16 +107,8 @@ async def _inspect(
             if api_response.status != 200:
                 raise AssertionError(f"/api/leaderboard returned HTTP {api_response.status}")
             payload = await api_response.json()
-            if payload.get("schema") != "forgeos.leaderboard.v1":
-                raise AssertionError(f"unexpected leaderboard schema: {payload.get('schema')!r}")
-            rollup = payload.get("fleet_rollup", {})
-            if not isinstance(rollup, dict):
-                raise AssertionError(f"fleet_rollup is not an object: {rollup!r}")
-            if expect_fixture:
-                if rollup.get("accepted_count") != 2:
-                    raise AssertionError(f"unexpected fleet accepted count: {rollup}")
-                if abs(float(rollup.get("cost_per_accepted_usd", -1)) - 0.2) > 1e-9:
-                    raise AssertionError(f"unexpected fleet unit cost: {rollup}")
+            validated = _validate_payload(payload, expect_fixture=expect_fixture)
+            rollup = validated["fleet_rollup"]
 
             await page.goto(f"{base_url}/", wait_until="domcontentloaded")
             await page.locator("#leaderboard-body tr").first.wait_for(state="visible")
@@ -109,7 +124,7 @@ async def _inspect(
                 screenshot.parent.mkdir(parents=True, exist_ok=True)
                 await page.screenshot(path=str(screenshot), full_page=True)
             return {
-                "schema": payload["schema"],
+                "schema": validated["schema"],
                 "fleet_rollup": rollup,
                 "rows": rows.splitlines(),
                 "meta": meta,
@@ -125,11 +140,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8899, help="local fixture port (default: 8899)")
     parser.add_argument("--timeout", type=float, default=45.0, help="startup/browser timeout in seconds")
     parser.add_argument("--screenshot", type=Path, help="write a full-page verification screenshot")
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="run the API-only contract check (used by CI without Playwright)",
+    )
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
+    if args.no_browser and args.screenshot:
+        parser.error("--screenshot requires browser mode")
 
     process: subprocess.Popen[str] | None = None
     try:
@@ -162,9 +184,12 @@ def main(argv: list[str] | None = None) -> int:
             base_url = f"http://127.0.0.1:{args.port}"
             _wait_for_server(base_url, process, args.timeout)
 
-        result = asyncio.run(
-            _inspect(base_url, args.screenshot, args.timeout, expect_fixture=not bool(args.url))
-        )
+        if args.no_browser:
+            result = _inspect_api(base_url, args.timeout, expect_fixture=not bool(args.url))
+        else:
+            result = asyncio.run(
+                _inspect(base_url, args.screenshot, args.timeout, expect_fixture=not bool(args.url))
+            )
         result["mode"] = "existing" if args.url else "fixture"
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0

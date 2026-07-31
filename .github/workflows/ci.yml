@@ -27,4 +27,7 @@ jobs:
       # The fast path first: a broken unit fails in seconds, not after the
       # slow integration tests have spent their minutes.
       - run: python -m pytest tests -q -m "not slow"
+      # API-only dashboard contract: starts an isolated fixture and never
+      # needs Playwright, credentials, or a provider call on CI.
+      - run: python tools/dashboard_smoke.py --no-browser --port 8894
       - run: python -m pytest tests -q -m "slow"

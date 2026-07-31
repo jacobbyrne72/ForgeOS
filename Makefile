@@ -1,4 +1,4 @@
-.PHONY: test lint format clean install dev benchmark
+.PHONY: test lint format clean install dev benchmark dashboard-smoke
 
 # ForgeOS - Cost-governed AI harness
 # Run `make help` for all available commands
@@ -22,6 +22,9 @@ test: ## Run verification suite (short)
 	python -c "from forgeos import *; print('All imports OK')"
 	python -c "from forgeos.cli import *; print('All 31 CLI handlers OK')"
 	python -m forgeos.cli doctor 2>&1 | grep -c "CPU\|provider" && echo "doctor works"
+
+dashboard-smoke: ## Verify the dashboard API and browser UI without provider calls
+	python tools/dashboard_smoke.py --port 8894 --screenshot artifacts/dashboard-smoke.png
 
 benchmark: ## Run reproducible cost benchmarks
 	python -m forgeos.cli bench "code_gen" --iterations 10
