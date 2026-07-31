@@ -119,6 +119,21 @@ class GatewayResponse(BaseModel):
     provider_used: str
     exact_usage: bool
     cache_hit: bool
+    # Carried through from the transport so a caller can tell a finished answer
+    # from one the output cap cut off. Defaulted rather than required because
+    # not every provider reports it and a missing value must not be read as
+    # "completed normally".
+    finish_reason: str = ""
+
+    @property
+    def truncated(self) -> bool:
+        return self.finish_reason == "length"
+
+    @property
+    def spent_output_on_nothing(self) -> bool:
+        """Billed for output tokens, handed back no answer. See
+        `RawCallResult.spent_output_on_nothing`."""
+        return not self.text.strip() and bool(self.tokens_out)
 
 
 class RawCallResult(BaseModel):
@@ -144,6 +159,34 @@ class RawCallResult(BaseModel):
     tokens_cached_in: int = 0
     model_used: str = ""
     rate_limit_saturation: float | None = None
+    # Why the provider stopped. "length" means the answer was CUT OFF at the
+    # output cap -- a partial answer that reads exactly like a complete one to
+    # any caller that only inspects `text`. Measured on ForgeBench: three of six
+    # tasks came back empty or truncated with a full quota of billed output
+    # tokens, and the suite scored every one of them as the model getting the
+    # question wrong. Empty string when the provider did not say.
+    finish_reason: str = ""
+    # Chain-of-thought a reasoning model billed as output but kept out of
+    # `content`. Never an answer; recorded so tokens that were paid for are not
+    # invisible when `text` comes back empty.
+    reasoning_text: str = ""
+
+    @property
+    def truncated(self) -> bool:
+        """The response hit the output cap. A caller treating this as a finished
+        answer is reading a sentence that stops mid-word."""
+        return self.finish_reason == "length"
+
+    @property
+    def spent_output_on_nothing(self) -> bool:
+        """Billed for output tokens and handed no answer at all.
+
+        The specific failure this exists to name: a small `max_output_tokens`
+        against a model that reasons before answering burns the entire budget on
+        reasoning and returns `content: ""`. Silent, and it looks identical to a
+        model that simply had nothing to say.
+        """
+        return not self.text.strip() and bool(self.tokens_out)
 
 
 # --------------------------------------------------------------------------
@@ -414,7 +457,15 @@ class HttpTransport:
 
         data = resp.json()
         choice = (data.get("choices") or [{}])[0]
-        text = ((choice.get("message") or {}).get("content")) or ""
+        message = choice.get("message") or {}
+        text = message.get("content") or ""
+        # Reasoning models (deepseek-reasoner, o-series via OpenRouter, ...) put
+        # chain-of-thought in a SEPARATE field and bill it as completion tokens.
+        # Reading only `content` meant a call whose whole output budget went to
+        # reasoning came back as "" while the invoice showed a full quota of
+        # output tokens -- paid for, and invisible. Kept distinct from `text`
+        # because it is not an answer; it is what the answer cost.
+        reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
         usage = data.get("usage") or {}
         cached = int((usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
         return RawCallResult(
@@ -424,6 +475,8 @@ class HttpTransport:
             tokens_cached_in=cached,
             model_used=str(data.get("model") or model_id),
             rate_limit_saturation=rate_limit_saturation(resp.headers),
+            finish_reason=str(choice.get("finish_reason") or ""),
+            reasoning_text=reasoning,
         )
 
 
@@ -473,11 +526,16 @@ class LiteLLMTransport:
         usage = getattr(resp, "usage", None)
         tokens_in = getattr(usage, "prompt_tokens", None) if usage else None
         tokens_out = getattr(usage, "completion_tokens", None) if usage else None
+        # Same truncation/reasoning capture as the HTTP path. A caller must not
+        # have to know which transport served it to find out whether the answer
+        # it got was cut off at the cap.
         return RawCallResult(
             text=text,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             model_used=str(getattr(resp, "model", "") or model_id),
+            finish_reason=str(getattr(choice, "finish_reason", "") or ""),
+            reasoning_text=str(getattr(choice.message, "reasoning_content", "") or ""),
         )
 
 
@@ -1058,6 +1116,7 @@ class Gateway:
             provider_used=provider_used,
             exact_usage=exact_usage,
             cache_hit=tokens_cached_in > 0,
+            finish_reason=raw.finish_reason,
         )
 
 

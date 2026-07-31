@@ -228,6 +228,18 @@ class ArmCallResult:
     tokens_cached_in: int
     usd_micros: int
     seconds: float
+    finish_reason: str = ""
+
+    @property
+    def truncated(self) -> bool:
+        """Cut off at the output cap. Scoring this as a wrong answer blames the
+        model for a limit the harness set."""
+        return self.finish_reason == "length"
+
+    @property
+    def spent_output_on_nothing(self) -> bool:
+        """Billed for output tokens and handed back no answer at all."""
+        return not self.text.strip() and bool(self.tokens_out)
 
     @property
     def total_tokens(self) -> int:
@@ -559,6 +571,16 @@ class GatewayExecutor:
         req = GatewayRequest(
             model_ref=self._model_ref, prompt_prefix=prefix, prompt_tail=prompt,
             max_output_tokens=task.max_output_tokens,
+            # Both arms, identically. These tasks are short factual lookups
+            # ("name the function and the guard, under 30 words"); there is
+            # nothing to reason about. Left at the "medium" default, a reasoning
+            # model spent the ENTIRE output budget on chain-of-thought and
+            # returned content:"" -- measured here as three of six tasks coming
+            # back empty or cut off with a full quota of billed output tokens,
+            # every one of which the suite scored as the model getting the
+            # question wrong. Setting it on one arm only would rig the
+            # comparison; setting it on both removes a confound from each.
+            reasoning_effort="none",
         )
         t0 = time.monotonic()
         try:
@@ -572,6 +594,7 @@ class GatewayExecutor:
         return ArmCallResult(
             text=resp.text, tokens_in=resp.tokens_in, tokens_out=resp.tokens_out,
             tokens_cached_in=resp.tokens_cached_in, usd_micros=resp.usd_micros, seconds=seconds,
+            finish_reason=resp.finish_reason,
         )
 
 
@@ -980,6 +1003,9 @@ def _arm_outcome_dict(outcome: TaskArmOutcome | None) -> dict | None:
             "tokens_cached_in": result.tokens_cached_in,
             "usd_micros": result.usd_micros,
             "seconds": result.seconds,
+            "finish_reason": result.finish_reason,
+            "truncated": result.truncated,
+            "spent_output_on_nothing": result.spent_output_on_nothing,
         },
     }
 
@@ -1061,11 +1087,33 @@ def render_report(report: ForgeBenchReport) -> str:
     lines.append("")
     lines.append(f"{'task':<28} {'baseline':<10} {'forgeos':<10} note")
     lines.append("-" * 74)
+    def _cell(outcome) -> str:
+        """A failure caused by the OUTPUT CAP is not the model getting it wrong,
+        and printing both as "fail" hides the difference. `empty` means output
+        tokens were billed and no answer came back at all -- the signature of a
+        reasoning model spending its whole budget before it starts writing."""
+        if outcome is None:
+            return "-"
+        if not outcome.accepted and outcome.result.spent_output_on_nothing:
+            return "empty!"
+        if not outcome.accepted and outcome.result.truncated:
+            return "cut off!"
+        return "accept" if outcome.accepted else "fail"
+
+    flagged = False
     for c in report.comparisons:
-        b = "accept" if (c.baseline and c.baseline.accepted) else ("fail" if c.baseline else "-")
-        h = "accept" if (c.forgeos and c.forgeos.accepted) else ("fail" if c.forgeos else "-")
+        b, h = _cell(c.baseline), _cell(c.forgeos)
+        flagged = flagged or "!" in b or "!" in h
         note = "VOID (acceptance differs)" if (c.comparison_voided and c.baseline and c.forgeos) else ""
         lines.append(f"{c.task_id:<28} {b:<10} {h:<10} {note}")
+    if flagged:
+        lines.append(
+            "\n  'empty!' / 'cut off!' are HARNESS failures, not model failures: the\n"
+            "  answer was cut off at max_output_tokens, or the entire output budget\n"
+            "  went to reasoning tokens and no answer was returned. Those tasks say\n"
+            "  nothing about either arm's quality -- raise the cap or lower\n"
+            "  reasoning_effort and re-run before reading anything into them."
+        )
 
     lines.append("")
     lines.append(f"{'':10} {'attempted':>9} {'accepted':>8} {'tok in':>9} {'tok out':>8} {'USD':>11}")
