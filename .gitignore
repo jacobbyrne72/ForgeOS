@@ -25,3 +25,8 @@ research/*.tsv
 research/*_ids.txt
 research/enumerated*.tsv
 FORGEOS_UPGRADE_AUDIT.md
+
+# Build artifacts (a local wheel build drops these; they are outputs, not source)
+build/
+dist/
+*.egg-info/
