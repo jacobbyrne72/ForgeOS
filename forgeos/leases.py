@@ -233,7 +233,16 @@ class LeaseStore:
         # 16 threads racing one path — two tasks granted, which is precisely the
         # corruption path leases exist to prevent. Every guard here is only as
         # strong as the window between reading it and acting on it.
-        with self._conn.exclusive():
+        # `exclusive_write`, not `exclusive`: the latter takes a per-process
+        # threading lock, and two processes on one state dir have two of them.
+        # `forge.py` and `dashboard/app.py` already open separate LeaseStores
+        # against the same leases.db. Measured with `exclusive()`: two
+        # connections racing this method past a dead owner were BOTH granted a
+        # WRITE lease on the same path, 5 runs out of 5. `BEGIN IMMEDIATE`
+        # serialises the whole decision across processes, and its rollback is
+        # what stops the reap below leaking an open transaction when this
+        # returns None.
+        with self._conn.exclusive_write():
 
             own = [
                 lease

@@ -87,6 +87,11 @@ class GuardedConnection:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
         self._lock = threading.RLock()
+        # Depth of an open `exclusive_write()`. While non-zero, `with conn:`
+        # must NOT commit on exit -- sqlite3's own `__exit__` commits whatever
+        # transaction is open, which would end the outer one early and hand the
+        # cross-process write lock back mid-decision. See `exclusive_write`.
+        self._write_tx_depth = 0
 
     # -- transaction ------------------------------------------------------
     # The lock spans the entire block, not each statement inside it. Locking
@@ -95,6 +100,13 @@ class GuardedConnection:
 
     def __enter__(self) -> GuardedConnection:
         self._lock.acquire()
+        if self._write_tx_depth:
+            # An `exclusive_write()` owns the transaction. Nest instead of
+            # opening a second one: sqlite3 has no nested transactions, and
+            # letting this block's `__exit__` commit would release the
+            # cross-process write lock in the middle of the outer decision.
+            self._write_tx_depth += 1
+            return self
         try:
             self._conn.__enter__()
         except BaseException:
@@ -104,28 +116,81 @@ class GuardedConnection:
 
     def __exit__(self, exc_type, exc, tb) -> bool:
         try:
+            if self._write_tx_depth > 1:
+                self._write_tx_depth -= 1
+                return False  # the outer exclusive_write commits or rolls back
             return bool(self._conn.__exit__(exc_type, exc, tb))
         finally:
             self._lock.release()
 
     @contextmanager
     def exclusive(self):
-        """Hold the lock across a whole check-then-act sequence.
+        """Hold the in-process lock across a check-then-act sequence.
 
-        `execute` serialises individual statements, which is NOT enough for a
-        read-then-write decision: two threads can each run the SELECT, each see
-        no conflict, and each then run the INSERT. `LeaseStore.acquire` failed
-        exactly that way under 16 threads — two tasks granted the same WRITE
-        lease on the same path, which is the one thing path leases exist to
-        prevent.
-
-        Deliberately NOT `with conn:`. That is a transaction, and the methods
-        this wraps already open their own transactions internally; nesting them
-        would let an inner `__exit__` commit the outer one early. Mutual
-        exclusion is what this needs, so mutual exclusion is all it takes.
+        Serialises THREADS of this process only. That is enough when every
+        caller shares one `GuardedConnection`, and not enough otherwise -- see
+        `exclusive_write`, which is what a decision guarding correctness needs.
         """
         with self._lock:
             yield self
+
+    @contextmanager
+    def exclusive_write(self):
+        """Serialise a check-then-act sequence across THREADS AND PROCESSES.
+
+        `exclusive()` takes `self._lock`, a `threading.RLock` belonging to one
+        `GuardedConnection` in one interpreter. Two processes open two
+        connections and therefore two independent locks, so it does not
+        serialise them at all -- and two processes on one state dir is the
+        normal case here, not an exotic one: `forge.py` and `dashboard/app.py`
+        already open separate `LeaseStore`s against the same `leases.db`, and
+        nothing stops a second `forge run`.
+
+        Measured: with only `exclusive()`, two connections racing
+        `LeaseStore.acquire` for the same path past a dead owner were BOTH
+        granted a WRITE lease, 5 runs out of 5. Each read the blocker set before
+        either wrote, each concluded the owner was dead, each inserted. That is
+        the precise corruption path path-leases exist to prevent, and the
+        headline test could not see it because it drives 16 threads through a
+        single shared store.
+
+        `BEGIN IMMEDIATE` takes SQLite's RESERVED lock at the START of the
+        block rather than on first write, so a second connection blocks here
+        until this one commits and then reads state that already includes the
+        decision. Deferred transactions -- what sqlite3 opens implicitly -- take
+        a read lock first and upgrade later, which is exactly the window that
+        let both racers through.
+
+        Commits on clean exit, rolls back on any exception. That second half
+        also fixes a leak: the reap's UPDATE ran as a bare `execute`, and an
+        `acquire` that then returned None never reached a commit, leaving an
+        open write transaction that held the database against every other
+        process until the connection died.
+        """
+        with self._lock:
+            if self._write_tx_depth:
+                yield self  # already inside one; do not nest a transaction
+                return
+            if self._conn.in_transaction:
+                # sqlite3 opens a DEFERRED transaction implicitly on the first
+                # DML statement, and `BEGIN IMMEDIATE` inside one raises
+                # "cannot start a transaction within a transaction". Anything
+                # pending here is THIS connection's own uncommitted work from a
+                # bare `execute` -- flush it, because the alternative is to
+                # refuse to take the lock and leave the caller unprotected. A
+                # deferred transaction also cannot be upgraded in place, which
+                # is the whole reason this method exists.
+                self._conn.commit()
+            self._conn.execute("BEGIN IMMEDIATE")
+            self._write_tx_depth = 1
+            try:
+                yield self
+            except BaseException:
+                self._write_tx_depth = 0
+                self._conn.rollback()
+                raise
+            self._write_tx_depth = 0
+            self._conn.commit()
 
     # -- statements -------------------------------------------------------
 

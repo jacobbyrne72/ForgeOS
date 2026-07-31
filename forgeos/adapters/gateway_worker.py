@@ -43,6 +43,8 @@ only the first one means nobody has paid yet.
 from __future__ import annotations
 
 import asyncio
+import inspect
+from functools import lru_cache
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
@@ -57,6 +59,15 @@ from ..gateway.client import (
 from .base import EventKind, WorkerAdapter, WorkerCapabilities, WorkerEvent, WorkerUsage
 
 DEFAULT_MAX_OUTPUT_TOKENS = 2_048
+
+
+@lru_cache(maxsize=32)
+def _complete_params(gateway_cls: type) -> frozenset[str]:
+    """Parameter names of this gateway class's `complete`, cached per type."""
+    try:
+        return frozenset(inspect.signature(gateway_cls.complete).parameters)
+    except (TypeError, ValueError):
+        return frozenset()
 
 
 @dataclass
@@ -229,18 +240,28 @@ class GatewayWorkerAdapter(WorkerAdapter):
                    if sess.reasoning_effort else {}),
             )
 
+            complete_kwargs: dict = {
+                "job_id": self._job_id,
+                "task_id": sess.task_id,
+                "worker_id": self._worker_id,
+                "remaining_micros": self._remaining(),
+            }
+            # Newer gateways pin a job to a warm seat via `affinity_key`; older
+            # ones (and every test double written against them) do not take the
+            # argument at all. Passing it unconditionally raised TypeError
+            # inside the stream, which surfaced as an ERROR event and zero
+            # recorded usage -- 11 tests failing as "usage is 0", none of them
+            # saying "signature mismatch". Introspected once per gateway type,
+            # same pattern as the executor's `_accepts_effort`.
+            if "affinity_key" in _complete_params(type(self._gateway)):
+                complete_kwargs["affinity_key"] = self._job_id
+
             try:
                 # `Gateway.complete` is synchronous and does blocking network
                 # I/O. Calling it inline would stall the event loop for the
                 # whole request, which defeats running sessions concurrently.
                 response = await asyncio.to_thread(
-                    self._gateway.complete,
-                    request,
-                    job_id=self._job_id,
-                    task_id=sess.task_id,
-                    worker_id=self._worker_id,
-                    remaining_micros=self._remaining(),
-                    affinity_key=self._job_id,
+                    self._gateway.complete, request, **complete_kwargs,
                 )
             except ModelUnavailableError as exc:
                 # A retired free slug is a property of this model, not of the

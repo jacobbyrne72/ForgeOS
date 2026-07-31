@@ -249,3 +249,111 @@ def test_row_factory_still_yields_named_columns(tmp_path):
                                     "commit", "rollback", "close"])
 def test_the_connection_api_the_stores_use_is_present(method):
     assert callable(getattr(guarded_connect(":memory:"), method, None))
+
+
+# ================== two CONNECTIONS, not two threads on one connection
+
+
+def _dead_pid() -> int:
+    """A pid that is provably not running, so the reap path is exercised."""
+    import psutil
+
+    for candidate in range(90_000, 99_999):
+        if not psutil.pid_exists(candidate):
+            return candidate
+    pytest.skip("no dead pid available on this machine")
+
+
+def _seed_dead_owner(db_path, *, path_pattern="src/race.py"):
+    """One WRITE lease whose owning process no longer exists."""
+    from forgeos.leases import LeaseStore, LeaseType
+
+    store = LeaseStore(db_path)
+    lease = store.acquire(task_id="ghost", repo_id="r", path_pattern=path_pattern,
+                          lease_type=LeaseType.WRITE, ttl_seconds=600)
+    assert lease is not None
+    store._conn.execute(
+        "UPDATE path_leases SET owner_pid = ? WHERE id = ?", (_dead_pid(), lease.id)
+    )
+    store._conn.commit()
+    store.close()
+
+
+def test_two_separate_connections_never_both_reap_and_grant(tmp_path):
+    """THE regression, and the one the headline concurrency test cannot see.
+
+    `test_lease_store_never_grants_two_conflicting_write_leases` races 16
+    threads through ONE shared `LeaseStore`, so it only ever exercises the
+    in-process lock. Two PROCESSES open two connections and therefore two
+    independent `threading.RLock`s, which serialise nothing between them --
+    and two processes on one state dir is the normal case: `forge.py` and
+    `dashboard/app.py` already open separate LeaseStores against the same
+    leases.db.
+
+    Measured before the fix: both racers granted a WRITE lease on the same
+    path, 5 runs out of 5.
+    """
+    from forgeos.leases import LeaseStore, LeaseType
+
+    db = tmp_path / "leases.db"
+    _seed_dead_owner(db)
+
+    a, b = LeaseStore(db), LeaseStore(db)
+    barrier = threading.Barrier(2)
+    results: list[tuple[str, object]] = []
+    guard = threading.Lock()
+
+    def racer(store, name):
+        barrier.wait()
+        got = store.acquire(task_id=name, repo_id="r", path_pattern="src/race.py",
+                            lease_type=LeaseType.WRITE, ttl_seconds=600)
+        with guard:
+            results.append((name, got))
+
+    threads = [threading.Thread(target=racer, args=(a, "A")),
+               threading.Thread(target=racer, args=(b, "B"))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    granted = [name for name, lease in results if lease is not None]
+    assert len(granted) == 1, f"two live owners of one write path: {granted}"
+
+    check = LeaseStore(db)
+    live = [ls for ls in check.active(repo_id="r")
+            if ls.lease_type is LeaseType.WRITE and ls.task_id in ("A", "B")]
+    assert len(live) == 1
+    for store in (a, b, check):
+        store.close()
+
+
+def test_a_refused_acquire_does_not_leave_the_database_locked(tmp_path):
+    """The reap's UPDATE ran as a bare `execute`, and an `acquire` that then
+    returned None never reached a commit. The open write transaction held the
+    database against every other connection until this one died -- surfacing as
+    `database is locked` on an unrelated path, which reads as a completely
+    different bug.
+    """
+    from forgeos.leases import LeaseStore, LeaseType
+
+    db = tmp_path / "leases.db"
+    _seed_dead_owner(db)
+
+    blocker = LeaseStore(db)
+    live = blocker.acquire(task_id="alive", repo_id="r", path_pattern="src/race.py",
+                           lease_type=LeaseType.READ, ttl_seconds=600)
+    assert live is not None
+
+    refused_store = LeaseStore(db)
+    refused = refused_store.acquire(task_id="loser", repo_id="r", path_pattern="src/race.py",
+                                    lease_type=LeaseType.WRITE, ttl_seconds=600)
+    assert refused is None, "a live READ blocker must still refuse a WRITE"
+
+    # An unrelated, non-conflicting path from a third connection must not block.
+    other = LeaseStore(db)
+    got = other.acquire(task_id="elsewhere", repo_id="r", path_pattern="docs/readme.md",
+                        lease_type=LeaseType.WRITE, ttl_seconds=600)
+    assert got is not None, "a refused acquire left the write lock held"
+    for store in (blocker, refused_store, other):
+        store.close()
