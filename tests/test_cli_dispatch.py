@@ -239,6 +239,39 @@ def test_console_receipts_delegates_to_canonical_read_only_view(monkeypatch):
     assert captured == {"state_dir": "state"}
 
 
+def test_console_preflight_forwards_the_read_only_contract(monkeypatch):
+    from forgeos import __main__ as runtime_cli
+
+    captured = {}
+
+    def fake_preflight(args):
+        captured.update({
+            "task_file": args.task_file,
+            "state_dir": args.state_dir,
+            "repo": args.repo,
+            "all_repos": args.all_repos,
+            "scan_limit": args.scan_limit,
+            "skip": args.skip,
+            "json": args.json,
+        })
+        return 0
+
+    monkeypatch.setattr(runtime_cli, "cmd_preflight", fake_preflight)
+    assert cli.main([
+        "preflight", "task.json", "--state-dir", "state", "--repo", "repo",
+        "--all-repos", "--scan-limit", "9", "--skip", "--json",
+    ]) == 0
+    assert captured == {
+        "task_file": "task.json",
+        "state_dir": "state",
+        "repo": "repo",
+        "all_repos": True,
+        "scan_limit": 9,
+        "skip": True,
+        "json": True,
+    }
+
+
 def test_quota_cli_reads_local_snapshot_as_json(tmp_path, capsys):
     from forgeos.core.quota import QuotaTracker
 

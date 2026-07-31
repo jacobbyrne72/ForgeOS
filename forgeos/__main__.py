@@ -142,6 +142,119 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 # ------------------------------------------------------------------ receipts
 
 
+def cmd_preflight(args: argparse.Namespace) -> int:
+    """Check a task contract against prior ledger outcomes without spending.
+
+    The task file is deliberately the same contract shape that Forge submits:
+    ``subject``, ``description``, ``acceptance``, ``scope`` and
+    ``capabilities``.  A missing ledger is an honest clean slate, not a reason
+    to create state just to answer a read-only question.
+    """
+    from forgeos.contracts import TaskSpec, new_id
+    from forgeos.economy.preflight import check_repeat_work, task_fingerprint
+
+    machine_readable = bool(getattr(args, "json", False))
+
+    def error(code: str, message: str) -> int:
+        if machine_readable:
+            print(json.dumps({
+                "schema": "forgeos.preflight.v1",
+                "ok": False,
+                "error": code,
+                "message": message,
+            }, sort_keys=True))
+        else:
+            print(f"Preflight error: {message}")
+        return 1
+
+    task_path = Path(args.task_file)
+    try:
+        raw = json.loads(task_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return error("invalid_task_file", f"cannot read {task_path}: {exc}")
+    if not isinstance(raw, dict):
+        return error("invalid_task_file", "task file must contain one JSON object")
+
+    task_data = dict(raw)
+    task_data.setdefault("job_id", new_id("preflight"))
+    try:
+        spec = TaskSpec.model_validate(task_data)
+    except (TypeError, ValueError) as exc:
+        return error("invalid_task", str(exc))
+
+    if args.scan_limit < 1:
+        return error("invalid_scan_limit", "--scan-limit must be greater than zero")
+
+    state_dir = _resolve_state_dir(args.state_dir)
+    ledger_path = state_dir / "ledger.db"
+    ledger_present = ledger_path.exists()
+    from forgeos.ledger import Ledger
+
+    try:
+        ledger = Ledger(ledger_path) if ledger_present else Ledger(":memory:")
+    except (OSError, sqlite3.Error) as exc:
+        return error("ledger_unreadable", f"cannot open {ledger_path}: {exc}")
+
+    repo = None if getattr(args, "all_repos", False) else args.repo
+    try:
+        verdict = check_repeat_work(
+            ledger,
+            spec,
+            skip=bool(args.skip),
+            scan_limit=args.scan_limit,
+            repo=repo,
+        )
+        fingerprint = task_fingerprint(spec)
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        return error("preflight_failed", str(exc))
+    finally:
+        ledger.close()
+
+    prior = None
+    if verdict.prior is not None:
+        prior = {
+            "task_id": verdict.prior.task_id,
+            "state": verdict.prior.state,
+            "spend_usd": round(verdict.prior.usd_micros / 1e6, 6),
+            "created_at": verdict.prior.created_at,
+            "evidence": verdict.prior.evidence,
+            "verdict": verdict.prior.verdict,
+        }
+    payload = {
+        "schema": "forgeos.preflight.v1",
+        "ok": True,
+        "decision": verdict.decision.value,
+        "allowed": verdict.allowed,
+        "reason": verdict.reason,
+        "fingerprint": fingerprint,
+        "ledger_path": str(ledger_path),
+        "ledger_present": ledger_present,
+        "repo_scope": repo,
+        "task": {
+            "subject": spec.subject,
+            "description": spec.description,
+            "acceptance": spec.acceptance,
+            "scope": spec.scope.model_dump(),
+            "capabilities": spec.capabilities,
+        },
+        "prior": prior,
+    }
+    if machine_readable:
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        print(f"Preflight: {verdict.decision.value.upper()}")
+        print(f"Task: {spec.subject}")
+        print(f"Fingerprint: {fingerprint}")
+        print(f"Scope: {repo or 'all repositories'}")
+        print(f"Reason: {verdict.reason}")
+        if prior is not None:
+            print(
+                f"Prior: {prior['task_id']} state={prior['state']} "
+                f"spend=${prior['spend_usd']:.4f}"
+            )
+    return 0 if verdict.allowed else 2
+
+
 def cmd_receipts(args: argparse.Namespace) -> int:
     from forgeos.contracts import TaskState
 
@@ -661,6 +774,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_receipts.add_argument("--json", action="store_true", help="Machine-readable receipt/status output")
 
+    p_preflight = sub.add_parser(
+        "preflight", help="Read-only prior-work refusal check; never calls a provider"
+    )
+    p_preflight.add_argument("task_file", help="JSON file containing a TaskSpec-shaped contract")
+    p_preflight.add_argument(
+        "--state-dir", help="Where the ledger lives (default: forgeos's DEFAULT_HOME, ~/.forgeos)"
+    )
+    p_preflight.add_argument(
+        "--repo", default=".", help="Exact jobs.cwd to scope the check (default: .)"
+    )
+    p_preflight.add_argument(
+        "--all-repos", action="store_true", help="Search prior work across every repository"
+    )
+    p_preflight.add_argument(
+        "--scan-limit", type=int, default=500, help="Maximum recent tasks to inspect (default: 500)"
+    )
+    p_preflight.add_argument("--skip", action="store_true", help="Explicitly bypass duplicate refusal")
+    p_preflight.add_argument("--json", action="store_true", help="Machine-readable refusal receipt")
+
     p_watch = sub.add_parser(
         "watch", help="Unattended job-queue daemon: poll --queue, run each job, write receipts"
     )
@@ -737,6 +869,7 @@ def main(argv: list[str] | None = None) -> int:
 
     dispatch = {
         "doctor": cmd_doctor,
+        "preflight": cmd_preflight,
         "receipts": cmd_receipts,
         "watch": cmd_watch,
         "queue-status": cmd_queue_status,

@@ -337,7 +337,14 @@ forge compile "Add X"       # see the task graph a model call would have produce
 forge run "Add X" --dry-run # same, through the full runner
 forge forgebench --dry-run  # price the benchmark suite without running it
 forge receipts              # what you have actually spent, from the ledger
+forge preflight task.json --json  # refuse an already-settled contract before routing
 ```
+
+`forge preflight` is a local, no-provider check. The JSON file contains the
+task contract (`subject`, `description`, `acceptance`, `scope`, and
+`capabilities`); the command compares its exact fingerprint with settled work
+in the ledger and prints a receipt. Exit `0` means allowed, `2` means a safe
+duplicate refusal, and `1` means the input or ledger could not be read.
 
 **These spend real money.** Separated deliberately: the two `run` forms differ
 by one flag, and a first-timer pasting a mixed block would find that out from

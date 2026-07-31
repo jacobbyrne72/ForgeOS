@@ -22,7 +22,7 @@ import pytest
 
 from forgeos import __main__ as cli
 from forgeos.catalog import Catalog, ModelCard
-from forgeos.contracts import JobSpec, TaskSpec, TaskState
+from forgeos.contracts import JobSpec, TaskSpec, TaskState, Verdict, WorkerReport
 from forgeos.forge import DEFAULT_HOME, ForgeResult, TaskOutcome
 from forgeos.ledger import Ledger
 
@@ -270,6 +270,74 @@ def test_receipts_defaults_to_default_home_when_state_dir_is_omitted():
     assert cli._resolve_state_dir("/tmp/explicit") == cli.Path("/tmp/explicit")
 
 
+# --------------------------------------------------------------- preflight
+
+
+def _write_preflight_task(path, *, description="new prose"):
+    path.write_text(json.dumps({
+        "subject": "Add retry logic to the gateway client",
+        "description": description,
+        "acceptance": ["python -m pytest tests/test_gateway.py -q passes"],
+        "scope": {"paths": ["forgeos/gateway/client.py"]},
+        "capabilities": ["python"],
+    }), encoding="utf-8")
+
+
+def test_preflight_json_allows_without_creating_a_missing_ledger(tmp_path, capsys):
+    task_file = tmp_path / "task.json"
+    _write_preflight_task(task_file)
+    state_dir = tmp_path / "never-run"
+
+    rc = cli.main([
+        "preflight", str(task_file), "--state-dir", str(state_dir), "--json",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert payload["schema"] == "forgeos.preflight.v1"
+    assert payload["decision"] == "allow"
+    assert payload["ledger_present"] is False
+    assert payload["fingerprint"].startswith("fp_")
+    assert not state_dir.exists()
+
+
+def test_preflight_json_refuses_an_exact_prior_contract(tmp_path, capsys):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    ledger = Ledger(state_dir / "ledger.db")
+    job = JobSpec(objective="prior work", cwd=".")
+    ledger.open_job(job)
+    prior = TaskSpec(
+        job_id=job.id,
+        subject="Add retry logic to the gateway client",
+        description="old prose is intentionally ignored by the fingerprint",
+        acceptance=["python -m pytest tests/test_gateway.py -q passes"],
+        scope={"paths": ["forgeos/gateway/client.py"]},
+        capabilities=["python"],
+    )
+    ledger.add_task(prior, state=TaskState.DONE)
+    ledger.record_spend(job.id, "worker", "model", 1_250_000, task_id=prior.id)
+    ledger.record_report(WorkerReport(
+        task_id=prior.id, worker_id="worker", state=TaskState.DONE,
+        verdict=Verdict.PASS, evidence="merged and tested",
+    ))
+    ledger.close()
+    task_file = tmp_path / "task.json"
+    _write_preflight_task(task_file, description="new prose")
+
+    rc = cli.main([
+        "preflight", str(task_file), "--state-dir", str(state_dir), "--json",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 2
+    assert payload["decision"] == "refuse_duplicate"
+    assert payload["allowed"] is False
+    assert payload["prior"]["task_id"] == prior.id
+    assert payload["prior"]["spend_usd"] == 1.25
+    assert "already merged" in payload["reason"]
+
+
 # ------------------------------------------------------------------------ cli
 
 
@@ -307,7 +375,7 @@ def test_main_dispatch_is_reachable_for_every_registered_subcommand():
         and isinstance(node.value, ast.Dict)
     )
     assert registered == {
-        "doctor", "receipts", "watch", "queue-status", "team", "resume",
+        "doctor", "preflight", "receipts", "watch", "queue-status", "team", "resume",
         "serve-mcp", "memory"
     }
     assert dispatch_keys == registered
