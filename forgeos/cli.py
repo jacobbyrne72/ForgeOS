@@ -332,6 +332,8 @@ def main() -> int:
     p_auto = sub.add_parser("auto", help="Automatic cost optimization with savings report")
     p_auto.add_argument("--task-type", default="code_gen", dest="task_type")
     p_auto.add_argument("--daily-tasks", type=int, default=100, dest="daily_tasks")
+    p_batch = sub.add_parser("batch", help="Batch cost projection across multiple tasks")
+    p_batch.add_argument("--daily-tasks", type=int, default=100, dest="daily_tasks")
     p_opt.add_argument("task_type", nargs="?", default="code_gen", choices=["simple_edit","code_gen","security_scan","review","planning","debug","refactor"])
     p_opt.add_argument("--daily-tasks", type=int, default=100, dest="daily_tasks")
     p_models.add_argument("--capabilities", default="")
@@ -362,6 +364,7 @@ def main() -> int:
         "profile": cmd_profile,
         "optimize": cmd_optimize,
         "auto": cmd_auto,
+        "batch": cmd_batch,
         "bench": cmd_bench,
         "watch": cmd_watch,
         "doctor": cmd_doctor,
@@ -371,6 +374,22 @@ def main() -> int:
         "breaker": cmd_breaker,
         "fleet": cmd_fleet,
     }
+
+
+def cmd_batch(args):
+    from forgeos.batch_optimize import BatchOptimizer
+    b = BatchOptimizer()
+    # Default demo tasks
+    tasks = [
+        {"type": "code_gen", "name": "implement feature"},
+        {"type": "review", "name": "review PR"},
+        {"type": "simple_edit", "name": "format code"},
+        {"type": "debug", "name": "fix null pointer"},
+        {"type": "security_scan", "name": "scan diff"},
+    ]
+    s = b.run_batch(tasks[:args.daily_tasks // 5])
+    print(b.print_report(s))
+    return 0
 
     handler = dispatch.get(args.command)
     if handler is None:

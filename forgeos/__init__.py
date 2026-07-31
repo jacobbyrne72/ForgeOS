@@ -33,7 +33,6 @@ from .adapt import AdapterProfiler, AdapterDecision, AdapterProfile
 from .model_select import ModelSelector, ModelRecommendation
 from .profile import ModelProfiler, ModelProfile
 from .auto_optimize import AutoOptimizer, AutoOptimizeResult
-from .model_select import ModelSelector, ModelRecommendation
 
 __all__ = [
     "Forge",
@@ -84,4 +83,8 @@ __all__ = [
     "AdapterProfiler",
     "AdapterDecision",
     "AdapterProfile",
+    "ModelProfiler",
+    "ModelProfile",
+    "AutoOptimizer",
+    "AutoOptimizeResult",
 ]
