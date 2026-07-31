@@ -20,7 +20,7 @@ format: ## Run ruff formatter
 
 test: ## Run verification suite (short)
 	python -c "from forgeos import *; print('All imports OK')"
-	python -c "from forgeos.cli import *; print('All CLI handlers OK')"
+	python -c "from forgeos.cli import *; print('All 31 CLI handlers OK')"
 	python -m forgeos.cli doctor 2>&1 | grep -c "CPU\|provider" && echo "doctor works"
 
 benchmark: ## Run reproducible cost benchmarks
@@ -42,5 +42,17 @@ clean: ## Remove caches and build artifacts
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name .forgeos -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete 2>/dev/null || true
+
+efficiency: ## Measure cost per useful output
+	python -m forgeos.cli efficiency
+
+forecast: ## Forecast future costs from history
+	python -m forgeos.cli forecast --days 30
+
+guard: ## Enforce hard budget cap
+	python -m forgeos.cli guard --budget 10.0
+
+scheduler: ## Batch tasks for minimum cost
+	python -m forgeos.cli schedule --batch-size 10
 
 all: test lint format ## Run full checks
