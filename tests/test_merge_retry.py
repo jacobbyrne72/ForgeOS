@@ -95,3 +95,21 @@ def test_an_unrecognised_reason_is_not_retried():
 def test_matching_is_case_insensitive():
     assert _refusal_is_fixable(["NO EVIDENCE RECORDED"]) is True
     assert _refusal_is_fixable(["NO INDEPENDENT REVIEW"]) is False
+
+
+# ------------------------------------------------------------------ default
+
+
+def test_retrying_a_refusal_is_off_by_default():
+    """The classifier decides WHICH refusals could be retried. Whether to retry
+    at all is a separate, unproven bet.
+
+    Retrying costs a whole extra attempt, and nothing has yet measured that a
+    worker handed "you did not run the tests" behaves differently on the second
+    pass. Defaulting it on would ship a 3x cost multiplier on a hypothesis —
+    exactly the spend-without-evidence this project refuses everywhere else.
+    """
+    from forgeos.forge import Forge
+
+    assert Forge().retry_fixable_refusals is False
+    assert Forge(retry_fixable_refusals=True).retry_fixable_refusals is True

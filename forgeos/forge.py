@@ -248,6 +248,7 @@ class Forge:
         settings: Settings | None = None,
         market: CapacityMarket | None = None,
         max_attempts: int = 3,
+        retry_fixable_refusals: bool = False,
     ):
         self.home = home or DEFAULT_HOME
         self.home.mkdir(parents=True, exist_ok=True)
@@ -276,6 +277,14 @@ class Forge:
         self.board = TeamBoard(self.leases, self.events)
         self.merge_gate = MergeGate()
         self.max_attempts = max_attempts
+        # Off by default, and that default is the honest one. Retrying a
+        # merge-gate refusal costs a whole extra attempt, and nothing here has
+        # yet measured that a worker handed "you did not run the tests" behaves
+        # any differently on the second pass. Turning it on is a bet that it
+        # does; leaving it off is the position this project takes everywhere
+        # else — do not spend without evidence. Flip it when there are receipts
+        # showing the retry pays for itself, not before.
+        self.retry_fixable_refusals = retry_fixable_refusals
 
         # Concurrency plumbing for `run`. The SQLite stores are already opened
         # with check_same_thread=False; what they cannot protect is the
@@ -803,7 +812,9 @@ class Forge:
             # case the retry context was built for: the gate's reasons are now
             # carried into the next prompt, so "you did not run the tests" is
             # actionable feedback rather than a dead end.
-            if not verdict.allowed and _refusal_is_fixable(merge_reasons):
+            if (self.retry_fixable_refusals
+                    and not verdict.allowed
+                    and _refusal_is_fixable(merge_reasons)):
                 attempt_history.insert(
                     0, _attempt_summary(attempts, result, "; ".join(merge_reasons), [])
                 )

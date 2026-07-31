@@ -193,6 +193,9 @@ def connect(path: str | Path, *, timeout: float = 30.0) -> GuardedConnection:
         Path(p).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(p, check_same_thread=False, timeout=timeout)
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA wal_autocheckpoint=1000")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     return GuardedConnection(conn)
 
 

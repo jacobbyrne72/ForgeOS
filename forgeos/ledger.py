@@ -442,6 +442,12 @@ class Ledger:
         ).fetchone()
         return int(row["t"])
 
+    def task_count(self, job_id: str) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM tasks WHERE job_id=?", (job_id,)
+        ).fetchone()
+        return int(row["n"])
+
     def cache_stats(self, job_id: str | None = None) -> dict[str, int]:
         """Fresh vs cached input tokens. The cache-hit rate is the headline lever."""
         sql = (

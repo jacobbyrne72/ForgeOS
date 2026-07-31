@@ -1,10 +1,11 @@
 [project]
 name = "forgeos"
-version = "0.1.0"
-description = "Cost-governed agent harness: eliminate the request, then make it cheap, then prove what it cost."
+version = "0.2.0"
+description = "Cost-governed agent harness: eliminate the request, auto-discover adapters, circuit-break dead workers, cache prompt prefixes, compile NLP objectives, diff-aware security scanning, full CLI."
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"
+scripts = {forge = "forgeos.cli:main"}
 dependencies = [
     "pydantic>=2.0",
     "fastapi>=0.110",

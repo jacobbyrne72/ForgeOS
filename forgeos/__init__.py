@@ -1,62 +1,30 @@
-"""forgeos — a cost-governed agent harness.
-
-Layers, cheapest first:
-
-    economy/   eliminate the request      (atlas pack, dedup, cache reuse)
-    gateway/   make the request cheap     (OmniRoute free tiers, litellm fallback)
-    registry   pick the cheapest worker that can actually finish
-    adapters/  run it                     (omc team, OmniRoute, Ollama, ACP)
-    core/      supervise it               (manager, governor, router)
-    ledger     prove what it cost
-
-The ordering is the whole thesis. Routing a request to a cheaper model saves a
-fraction; not making the request saves all of it.
-"""
-
-__version__ = "0.1.0"
-
+"""forgeos — the cost-governed AI harness. Eliminate requests before you make them."""
+from __future__ import annotations
+__version__ = "0.2.0"
+from .compiler import CompilerError, Mission, compile_mission
+from .circuit_breaker import BreakerState, CircuitBreaker
+from .prompt_cache import CacheEntry, PromptCache
+from .security_diff import DiffResult, DiffLine, get_diff, run_diff_security
 from .forge import ExecutionResult, Forge, ForgeResult, TaskOutcome
 from .contracts import (
-    Budget,
-    Escalation,
-    EscalationKind,
-    GovernorTrip,
-    JobSpec,
-    Scope,
-    TaskSpec,
-    TaskState,
-    TestResults,
-    Verdict,
-    WorkerReport,
-    from_micros,
-    to_micros,
+    Budget, Escalation, EscalationKind, GovernorTrip, JobSpec, Scope,
+    TaskSpec, TaskState, TestResults, Verdict, WorkerReport,
+    from_micros, to_micros,
 )
 from .ledger import Ledger, open_ledger
 from .registry import Adapter, CostTier, Registry, WorkerProfile, default_registry
-
+from .adapter.auto_discover import DiscoveredAdapter, discover_adapters
 __all__ = [
-    "Adapter",
-    "ExecutionResult",
-    "Forge",
-    "ForgeResult",
-    "Budget",
-    "CostTier",
-    "Escalation",
-    "EscalationKind",
-    "GovernorTrip",
-    "JobSpec",
-    "Ledger",
-    "Registry",
-    "Scope",
-    "TaskSpec",
-    "TaskState",
-    "TestResults",
-    "Verdict",
-    "WorkerProfile",
-    "TaskOutcome",
-    "WorkerReport",
-    "default_registry",
-    "from_micros",
-    "open_ledger",
-    "to_micros",
+    "Forge", "ForgeResult", "ExecutionResult", "TaskOutcome",
+    "compile_mission", "Mission", "CompilerError",
+    "CircuitBreaker", "BreakerState",
+    "PromptCache", "CacheEntry",
+    "DiffResult", "DiffLine", "get_diff", "run_diff_security",
+    "Adapter", "CostTier", "Registry", "WorkerProfile", "default_registry",
+    "discover_adapters", "DiscoveredAdapter",
+    "Ledger", "open_ledger",
+    "Budget", "Escalation", "EscalationKind", "GovernorTrip",
+    "JobSpec", "Scope", "TaskSpec", "TaskState", "TestResults",
+    "Verdict", "WorkerReport", "from_micros", "to_micros",
+    "__version__",
 ]

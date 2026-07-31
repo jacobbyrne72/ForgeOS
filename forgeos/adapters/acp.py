@@ -14,12 +14,14 @@ two concrete agents at `vendor/claude-agent-acp` / `vendor/codex-acp`
   async context manager (`vendor/acp-python-sdk/src/acp/stdio.py`) that
   spawns `command` over stdio and yields `(ClientSideConnection, Process)`.
 - `ClientSideConnection.initialize(protocol_version, client_capabilities,
-  client_info) -> InitializeResponse` (`agent_capabilities.load_session`
-  tells us whether `session/load` is available for `resume()`).
+  client_info) -> InitializeResponse` advertises `session/load` and
+  state-only `session/resume` support through the agent capabilities.
 - `ClientSideConnection.new_session(cwd, mcp_servers=[]) ->
   NewSessionResponse(session_id, ...)`.
 - `ClientSideConnection.load_session(cwd, session_id, mcp_servers=[])` —
-  only called when `agent_capabilities.load_session` is true.
+  preferred when `agent_capabilities.load_session` is true.
+- `ClientSideConnection.resume_session(cwd, session_id, mcp_servers=[])` —
+  used when the agent advertises state-only `session/resume` support.
 - `ClientSideConnection.prompt(session_id, prompt=[TextContentBlock, ...])
   -> PromptResponse(stop_reason, usage)`. The `Client.session_update`
   callback delivers `AgentMessageChunk` / `AgentThoughtChunk` /
@@ -466,12 +468,10 @@ class ACPAdapter(WorkerAdapter):
         agent_supports_resume = _supports_resume_session(init)
 
         # A replacement worker resumes from canonical state, never from a
-        # transcript. `session/load` is the one case where the *original*
-        # ACP session identity itself is part of that state — the agent CLI
-        # owns and replays its own history for that id. Anything else
-        # (a different agent, or one that never advertised load_session)
-        # starts a clean session against the same cwd instead of pretending
-        # continuity it cannot actually provide.
+        # transcript. `session/load` and `session/resume` are the protocol
+        # cases where the original ACP session identity can be reused.
+        # Anything else starts a clean session against the same cwd instead
+        # of pretending continuity it cannot actually provide.
         if agent_supports_load and old_acp_session_id:
             await conn.load_session(cwd=cwd, session_id=old_acp_session_id, mcp_servers=[])
             acp_session_id = old_acp_session_id
