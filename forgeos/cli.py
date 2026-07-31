@@ -367,6 +367,7 @@ def main() -> int:
     p_budget.add_argument("--max-tokens", type=int, default=4096, dest="max_tokens")
     p_budget.add_argument("--warn-at", type=float, default=0.8, dest="warn_at")
     p_replace = sub.add_parser("replace", help="Replace expensive calls with cheap equivalents")
+    p_adbatch = sub.add_parser("adaptbatch", help="Auto-select cheapest batch strategy for any workload")
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -386,6 +387,7 @@ def main() -> int:
         "watch": cmd_watch,
         "budget": cmd_budget,
         "replace": cmd_replace,
+        "adaptbatch": cmd_adbatch,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -434,6 +436,37 @@ def cmd_budget(args):
     print("  Remaining:", result["budget_remaining"])
     print()
     print("Budget prevents overspending on single requests.")
+    return 0
+
+
+
+def cmd_adbatch(args):
+    from forgeos.adaptive_batch import AdaptiveBatch
+    ab = AdaptiveBatch()
+    # Demo workload
+    tasks = [
+        {"type": "code_gen", "name": "feature A"},
+        {"type": "code_gen", "name": "feature B"},
+        {"type": "review", "name": "PR review"},
+        {"type": "simple_edit", "name": "format"},
+        {"type": "debug", "name": "null fix"},
+        {"type": "code_gen", "name": "feature C"},
+        {"type": "security_scan", "name": "scan diff"},
+    ]
+    result = ab.run(tasks)
+    analysis = result["analysis"]
+    print("=== Adaptive Batch Optimizer ===")
+    print("Tasks:", analysis["total_tasks"])
+    print("Types:", analysis["task_types"])
+    print("Recommended:", analysis["recommended_strategy"])
+    print("Rationale:", analysis["strategy_rationale"])
+    print("Estimated savings:", analysis["strategy_savings"], "USD/task")
+    print("All strategies:", analysis["all_strategies"])
+    print()
+    actual = result["actual_savings"]
+    print("Actual savings:")
+    print("  USD:", actual["total_saved_usd"])
+    print("  Tokens:", actual["total_tokens"])
     return 0
 
 def cmd_optimize(args):
