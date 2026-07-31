@@ -14,6 +14,7 @@ channel consuming the whole budget. Costs no model tokens — yt-dlp only.
 from __future__ import annotations
 
 import argparse
+import pathlib
 import subprocess
 import sys
 import time
@@ -24,8 +25,32 @@ TRANSCRIPTS = ROOT / "transcripts"
 ENUM = ROOT / "enumerated_deep.tsv"
 
 
+def _id_from_filename(path: pathlib.Path) -> str:
+    """Recover the video id from a `{vid}_{vid}` filename.
+
+    Splitting on the FIRST underscore was wrong: YouTube ids contain
+    underscores, so `-1K_ZWDKpU0_-1K_ZWDKpU0.txt` keyed as `-1K`. Every id with
+    an underscore therefore looked missing, got re-queued, and then `_written()`
+    matched the file that was already there and reported a "success" that
+    fetched nothing. That is how a run reported wrote=13 while the transcript
+    count did not move — the same false-success class as counting exit codes,
+    reached by a different route.
+
+    The name is the id doubled with one separator, so the id is the first half
+    when the two halves match. Anything that does not fit that shape falls back
+    to the whole stem rather than guessing.
+    """
+    stem = path.stem
+    for suffix in (".en", ".en-orig", ".en-US"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+    half = (len(stem) - 1) // 2
+    head = stem[:half]
+    return head if head and stem == f"{head}_{head}" else stem
+
+
 def already_have() -> set[str]:
-    return {p.name.split("_")[0] for p in TRANSCRIPTS.glob("*.txt")}
+    return {_id_from_filename(p) for p in TRANSCRIPTS.iterdir() if p.is_file()}
 
 
 def load_rows() -> list[tuple[str, str, str]]:
@@ -95,10 +120,18 @@ def main() -> int:
         if vid not in have:
             by_channel.setdefault(chan, []).append(vid)
 
+    # Genuinely round-robin, as the docstring always claimed. Appending each
+    # channel's full quota before starting the next meant a run that stopped
+    # early on 429s spent every attempt inside whichever channel happened to be
+    # first in the TSV -- the last run made all 33 attempts against one channel
+    # and none of the other 19. Interleaving means a truncated run still widens
+    # coverage across every channel, which is the whole point of a backfill.
     queue: list[tuple[str, str]] = []
-    for chan, vids in by_channel.items():
-        for vid in vids[: args.per_channel]:
-            queue.append((chan, vid))
+    ordered = [(chan, vids[: args.per_channel]) for chan, vids in sorted(by_channel.items())]
+    for i in range(args.per_channel):
+        for chan, vids in ordered:
+            if i < len(vids):
+                queue.append((chan, vids[i]))
 
     print(f"have {len(have)} transcripts; {len(queue)} queued "
           f"across {len(by_channel)} channels", flush=True)

@@ -19,18 +19,33 @@ remove, so `decide()` pre-empts the model whenever the answer is already
 deterministic: a clean heartbeat, an exhausted attempt budget, or a
 classified failure. The model is invoked only for the genuinely ambiguous
 case -- a worker escalation with no governor classification attached.
+
+When the model's reply itself fails schema or format validation, that is a
+mistake any tier could make -- not evidence this tier is out of its depth.
+`_decide_with_model` retries exactly once, with the EXACT parse/validation
+error appended to the SAME prompt so the model can self-correct against its
+own specific mistake -- the `instructor` library's pattern (patch a client,
+catch the `ValidationError`, retry with it in context). A violation that
+survives seeing its own error is `SCHEMA_REPAIR_FAILURE_CLASS`
+(`FailureClass.SPECIFICATION`), never `.MODEL`: `router.Router.escalate` only
+escalates a MODEL failure, so this is what stops a formatting mistake from
+ever buying a pricier tier. See `RepairAttempt` / `compress_repair_history`
+for the inner loop's own (distinct from forge.py's cross-attempt
+`attempt_history`) prior-iteration bookkeeping.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from enum import Enum
 from typing import Callable
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from ..contracts import FailureClass, TaskSpec
+from ..economy.reducer import ToolResult, Turn, clear_tool_results
 from ..leases import patterns_overlap
 
 
@@ -81,6 +96,112 @@ class ManagerVerdict(BaseModel):
         if self.decision is ManagerDecision.CONTINUE and self.instructions:
             raise ValueError("CONTINUE must not carry instructions")
         return self
+
+
+# ------------------------------------------------------ auto-repair on parse
+#
+# The `instructor` library's pattern for unreliable structured output: patch
+# the client, validate the reply against a pydantic schema, and on failure
+# retry with the EXACT error fed back so the model can self-correct -- "it
+# also lets the model know what the error was so it can self-correct which
+# can sometimes help you to correct a Json schema" (mined from a tutorial on
+# the library; see docs cited in the auto-repair test module). A schema/format
+# violation is never grounds to escalate: the next tier would make the exact
+# same formatting mistake for the exact same reason, so this must resolve at
+# the SAME tier or fail safe -- never buy a pricier one.
+
+
+@dataclass
+class ParseAttempt:
+    """One call-and-parse cycle's outcome. `error` and `raw` are populated
+    exactly when `verdict` is None -- there is nothing to repair once parsing
+    already succeeded."""
+
+    verdict: ManagerVerdict | None
+    raw: str = ""
+    error: str = ""
+
+
+@dataclass
+class RepairAttempt:
+    """One failed iteration of an inner verify/repair loop -- e.g. one turn
+    of `Manager._decide_with_model`'s schema-repair retry.
+
+    Distinct from forge.py's cross-ATTEMPT `AttemptSummary`/`attempt_history`,
+    which spans whole worker sessions across the OUTER per-task retry loop
+    (see `forge.py::_cap_attempt_history`, tests/test_retry_context.py). This
+    is one level further IN: iterations *within* a single validation cycle
+    for one piece of model output.
+    """
+
+    iteration: int
+    raw_reply: str
+    error: str
+
+
+def compress_repair_history(
+    attempts: list[RepairAttempt],
+    *,
+    keep_last_n: int = 1,
+    trigger_tokens: int = 200,
+    clear_at_least_tokens: int = 1,
+) -> list[RepairAttempt]:
+    """Compress older repair iterations before the next prompt is built.
+
+    Reuses `economy.reducer.clear_tool_results` -- the harness's one
+    already-built "keep the newest N turns raw, clear older tool output to a
+    placeholder once a token trigger is crossed" algorithm (a
+    provider-agnostic port of Anthropic's `clear_tool_uses_20250919`; see
+    docs/research/cost-reduction.md) -- rather than a second reducer. Each
+    `RepairAttempt` becomes one `Turn` holding one `ToolResult`;
+    `clear_tool_results` makes every clearing decision and this function only
+    translates the shape back.
+
+    Never rewords or trims a kept iteration: `clear_tool_results` either
+    leaves an entry completely untouched or replaces its ENTIRE content with
+    a placeholder -- nothing in between. That is what keeps an exact
+    validation error, file:line reference, or test node id inside a
+    still-relevant iteration byte-for-byte, per arXiv:2607.12161 (dropping
+    whole low-value items is fine; rewording or truncating a kept one is not
+    -- doing so was measured to raise billed cost and lower task success,
+    because the next attempt can no longer match its fix against the
+    failure).
+    """
+    turns = [
+        Turn(
+            content=f"repair iteration {a.iteration}",
+            tool_results=[
+                ToolResult(
+                    tool_name=f"repair_attempt_{a.iteration}",
+                    content=f"{a.raw_reply}\n{a.error}".strip("\n"),
+                )
+            ],
+        )
+        for a in attempts
+    ]
+    cleared, _saved_tokens = clear_tool_results(
+        turns,
+        trigger_tokens=trigger_tokens,
+        keep_last_n=keep_last_n,
+        clear_at_least_tokens=clear_at_least_tokens,
+    )
+    out: list[RepairAttempt] = []
+    for original, turn in zip(attempts, cleared):
+        result = turn.tool_results[0]
+        if result.cleared:
+            out.append(RepairAttempt(iteration=original.iteration, raw_reply="", error=result.content))
+        else:
+            out.append(original)
+    return out
+
+
+# A schema/format violation that survives the one repair retry in
+# `Manager._decide_with_model` is a SPECIFICATION-class failure -- the
+# schema/prompt combination did not work for this reply -- never a MODEL
+# failure. `FailureClass.MODEL` is the only class `router.Router.escalate`
+# acts on (`escalate_model` is False for every other class), so this constant
+# is what keeps a formatting mistake from ever buying a pricier tier.
+SCHEMA_REPAIR_FAILURE_CLASS = FailureClass.SPECIFICATION
 
 
 # ------------------------------------------------------------------ triggers
@@ -308,66 +429,106 @@ class Manager:
         attempts: int,
         max_attempts: int,
     ) -> ManagerVerdict:
-        prompt = self._build_prompt(heartbeat, triggers, terse=False)
-        verdict = self._call_and_parse(prompt)
-        if verdict is None:
-            prompt = self._build_prompt(heartbeat, triggers, terse=True)
-            verdict = self._call_and_parse(prompt)
-        if verdict is None:
-            # Never fall back to CONTINUE: a manager that guesses "carry on"
-            # after failing to parse twice is how a runaway loop keeps
-            # running. Punt to a human instead.
-            return ManagerVerdict(
-                decision=ManagerDecision.ASK_HUMAN,
-                reason_code="unparseable_model_output",
-                confidence=0.0,
-                escalate_after_failed_attempts=0,
-            )
-        return verdict
+        prompt = self._build_prompt(heartbeat, triggers)
+        attempt = self._call_and_parse(prompt)
+        if attempt.verdict is not None:
+            return attempt.verdict
 
-    def _call_and_parse(self, prompt: str) -> ManagerVerdict | None:
+        # Auto-repair, not an escalation trigger (see the module docstring
+        # and SCHEMA_REPAIR_FAILURE_CLASS): exactly one retry, with the exact
+        # error appended to the SAME prompt -- never a fresh rebuild --
+        # before this is treated as a real failure. `compress_repair_history`
+        # is the same mechanism a deeper repair loop would reach for to keep
+        # older iterations from re-inflating the prompt; here there is only
+        # ever one prior iteration, so it is a no-op, but routing through it
+        # means this one-retry path and any future multi-retry path share one
+        # tested implementation rather than two.
+        history = compress_repair_history(
+            [RepairAttempt(iteration=1, raw_reply=attempt.raw, error=attempt.error)]
+        )
+        repair_prompt = self._repair_prompt(prompt, history[-1].error)
+        attempt = self._call_and_parse(repair_prompt)
+        if attempt.verdict is not None:
+            return attempt.verdict
+
+        # Never fall back to CONTINUE: a manager that guesses "carry on"
+        # after failing to parse twice is how a runaway loop keeps running.
+        # Punt to a human instead -- this is the SCHEMA_REPAIR_FAILURE_CLASS
+        # (SPECIFICATION) outcome: the schema/prompt combination did not work
+        # for this reply, which is never grounds to escalate to a pricier
+        # tier.
+        return ManagerVerdict(
+            decision=ManagerDecision.ASK_HUMAN,
+            reason_code="unparseable_model_output",
+            confidence=0.0,
+            escalate_after_failed_attempts=0,
+        )
+
+    def _call_and_parse(self, prompt: str) -> ParseAttempt:
         raw = self.complete(prompt)
         self.model_calls_made += 1
         return self._parse_verdict(raw)
 
-    def _build_prompt(self, heartbeat: dict, triggers: list[str], *, terse: bool) -> str:
-        lines = [
+    def _build_prompt(self, heartbeat: dict, triggers: list[str]) -> str:
+        return "\n".join([
             "You are the MANAGER. A worker heartbeat needs a decision.",
             f"heartbeat: {json.dumps(heartbeat, sort_keys=True)}",
             f"wake_triggers: {triggers}",
             _SCHEMA_HINT,
-        ]
-        if terse:
-            lines.append(
-                "Your previous reply could not be parsed as that JSON object. "
-                "Reply with the JSON object ONLY -- nothing before or after it."
-            )
-        return "\n".join(lines)
+        ])
 
     @staticmethod
-    def _parse_verdict(raw: str) -> ManagerVerdict | None:
+    def _repair_prompt(prompt: str, error: str) -> str:
+        """`prompt` reproduced in full, then the exact error appended in the
+        tail -- never a reworded summary of it, and never a rebuild of the
+        prefix (see `RepairAttempt` / `compress_repair_history`)."""
+        return "\n".join([
+            prompt,
+            "",
+            "Your previous reply failed validation with this exact error. "
+            "Fix precisely this and reply with the corrected JSON object "
+            "ONLY, nothing before or after it:",
+            error,
+        ])
+
+    @staticmethod
+    def _parse_verdict(raw: str) -> ParseAttempt:
         """Parse strictly: valid JSON object matching the schema, optionally
         wrapped in prose a weak model tacked on. No leniency beyond that --
-        malformed JSON syntax is not hand-repaired."""
+        malformed JSON syntax is not hand-repaired.
+
+        On failure, `error` is the most actionable message available. A
+        schema `ValidationError` (real JSON was found; a field is wrong)
+        always wins over an earlier JSON-syntax error, because it names the
+        EXACT thing to fix -- which is what makes the one repair retry (see
+        `Manager._decide_with_model`) a real self-correction loop rather than
+        a blind resend.
+        """
         if not raw or not raw.strip():
-            return None
+            return ParseAttempt(verdict=None, raw=raw, error="empty reply -- no JSON object found")
         text = raw.strip()
         candidates = [text]
         match = _JSON_OBJECT.search(text)
         if match and match.group(0) != text:
             candidates.append(match.group(0))
+
+        best_error = ""
         for candidate in candidates:
             try:
                 data = json.loads(candidate)
-            except (json.JSONDecodeError, ValueError):
+            except (json.JSONDecodeError, ValueError) as exc:
+                if not best_error:
+                    best_error = f"JSON syntax error: {exc}"
                 continue
             if not isinstance(data, dict):
+                if not best_error:
+                    best_error = f"parsed JSON is a {type(data).__name__}, not an object"
                 continue
             try:
-                return ManagerVerdict(**data)
-            except ValidationError:
-                continue
-        return None
+                return ParseAttempt(verdict=ManagerVerdict(**data), raw=raw)
+            except ValidationError as exc:
+                best_error = f"schema validation failed: {exc}"
+        return ParseAttempt(verdict=None, raw=raw, error=best_error or "no JSON object found in reply")
 
 
 # --------------------------------------------- parallel-safety pre-flight
@@ -533,6 +694,10 @@ __all__ = [
     "Manager",
     "ManagerDecision",
     "ManagerVerdict",
+    "ParseAttempt",
+    "RepairAttempt",
+    "SCHEMA_REPAIR_FAILURE_CLASS",
+    "compress_repair_history",
     "parallel_safety",
     "SafetyVerdict",
     "wake_triggers",
