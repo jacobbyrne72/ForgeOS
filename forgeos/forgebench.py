@@ -829,6 +829,7 @@ class ForgeBenchReport:
     proof_complaints: list[str]
     comparison_voided: bool
     exit_gate_passed: bool | None
+    model_ref: str = ""
 
 
 def _exit_gate(forgeos: ArmTotals, baseline: ArmTotals) -> bool:
@@ -873,7 +874,9 @@ def _exit_gate(forgeos: ArmTotals, baseline: ArmTotals) -> bool:
     return forgeos_per_task < baseline_per_task
 
 
-def build_report(run: SuiteRunResult, *, mission_id: str, repo_revision: str) -> ForgeBenchReport:
+def build_report(
+    run: SuiteRunResult, *, mission_id: str, repo_revision: str, model_ref: str = ""
+) -> ForgeBenchReport:
     """Assemble the SavingsProof + comparison report for a finished (or
     aborted) `SuiteRunResult`. Reuses `Figure`/`Provenance`/`savings_pct`/
     `cost_per_accepted_task`/`verify_proof` throughout -- this function never
@@ -988,6 +991,7 @@ def build_report(run: SuiteRunResult, *, mission_id: str, repo_revision: str) ->
         proof_complaints=complaints,
         comparison_voided=void,
         exit_gate_passed=exit_gate_passed,
+        model_ref=model_ref,
     )
 
 
@@ -1032,6 +1036,7 @@ def report_to_dict(report: ForgeBenchReport) -> dict:
 
     return {
         "schema": "forgeos.forgebench.v1",
+        "model_ref": report.model_ref,
         "mode": "dry-run" if run.dry_run else "live",
         "provenance": "modelled" if run.dry_run else "measured",
         "suite": {
@@ -1337,7 +1342,9 @@ def main(
             tasks, suite_name="forgeos-default", executor=None, savings_class=savings_class,
             budget_usd_micros=budget_micros, dry_run=True, root=root, card=card,
         )
-        report = build_report(run, mission_id="forgebench-dry-run", repo_revision=repo_revision)
+        report = build_report(
+            run, mission_id="forgebench-dry-run", repo_revision=repo_revision, model_ref=model_ref
+        )
         print(render_report(report))
         if args.json_out:
             print(f"JSON receipt: {write_json_report(args.json_out, report)}")
@@ -1362,7 +1369,9 @@ def main(
             tasks, suite_name="forgeos-default", executor=executor, savings_class=savings_class,
             budget_usd_micros=budget_micros, dry_run=False, root=root, card=card,
         )
-        report = build_report(run, mission_id=job_id, repo_revision=repo_revision)
+        report = build_report(
+            run, mission_id=job_id, repo_revision=repo_revision, model_ref=model_ref
+        )
     finally:
         ledger.close()
 

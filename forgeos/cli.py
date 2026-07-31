@@ -525,6 +525,15 @@ def cmd_forgebench_table(args) -> int:
     return table_main(argv)
 
 
+def cmd_leaderboard(args) -> int:
+    from forgeos.leaderboard import main as leaderboard_main
+
+    argv = list(args.paths)
+    if args.json_out:
+        argv += ["--json-out", args.json_out]
+    return leaderboard_main(argv)
+
+
 def cmd_watch(args):
     from forgeos.watch import watch
 
@@ -839,6 +848,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_forgebench_table.add_argument("paths", nargs="+", help="ForgeBench JSON files or directories")
     p_forgebench_table.add_argument("--json-out", default="", dest="json_out")
+    p_leaderboard = sub.add_parser(
+        "leaderboard", help="Rank measured ForgeBench receipts by cost per accepted task"
+    )
+    p_leaderboard.add_argument("paths", nargs="+", help="ForgeBench JSON files or directories")
+    p_leaderboard.add_argument("--json-out", default="", dest="json_out")
     p_watch = sub.add_parser("watch", help="Continuous cost monitoring")
     p_watch.add_argument("--interval", type=int, default=30)
     p_watch.add_argument("--max-alerts", type=int, default=5)
@@ -909,6 +923,7 @@ def main(argv: list[str] | None = None) -> int:
         "bench": cmd_bench,
         "forgebench": cmd_forgebench,
         "forgebench-table": cmd_forgebench_table,
+        "leaderboard": cmd_leaderboard,
         "watch": cmd_watch,
         "queue-status": cmd_queue_status,
         "budget": cmd_budget,

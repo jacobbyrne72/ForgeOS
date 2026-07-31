@@ -225,6 +225,23 @@ def test_forgebench_table_forwards_receipts_and_json_path(monkeypatch):
     assert captured["argv"] == ["one.json", "receipts", "--json-out", "table.json"]
 
 
+def test_leaderboard_forwards_receipts_and_json_path(monkeypatch):
+    from types import SimpleNamespace
+    from forgeos import leaderboard
+
+    captured = {}
+
+    def fake_main(argv):
+        captured["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(leaderboard, "main", fake_main)
+    args = SimpleNamespace(paths=["one.json", "receipts"], json_out="leaderboard.json")
+
+    assert cli.cmd_leaderboard(args) == 0
+    assert captured["argv"] == ["one.json", "receipts", "--json-out", "leaderboard.json"]
+
+
 def test_console_receipts_delegates_to_canonical_read_only_view(monkeypatch):
     from forgeos import __main__ as runtime_cli
 

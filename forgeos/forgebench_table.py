@@ -78,6 +78,8 @@ def row_for_receipt(path: str | Path, receipt: dict[str, Any]) -> dict[str, Any]
     return {
         "source": str(path),
         "run_id": proof.get("mission_id") or suite.get("name") or Path(path).stem,
+        "model_ref": receipt.get("model_ref") or proof.get("model_ref", ""),
+        "contract_hash": proof.get("contract_hash", ""),
         "repo_revision": proof.get("repo_revision", ""),
         "suite": suite.get("name", ""),
         "mode": receipt.get("mode", "unknown"),

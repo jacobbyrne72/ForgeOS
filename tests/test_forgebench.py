@@ -351,6 +351,7 @@ def test_forgebench_json_receipt_preserves_pinned_contract_and_class_d(tmp_path)
     path = forgebench.write_json_report(tmp_path / "receipt.json", report)
 
     assert payload["schema"] == "forgeos.forgebench.v1"
+    assert payload["model_ref"] == ""
     assert payload["mode"] == "dry-run"
     assert payload["provenance"] == "modelled"
     assert len(payload["suite"]["tasks"]) == len(DEFAULT_SUITE)

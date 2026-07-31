@@ -149,6 +149,9 @@ The repository tool `python tools/aggregate_bench.py ...` remains an equivalent
 compatibility entry point.
 The table keeps dry-run, failed, aborted, and voided receipts visible, and only
 computes savings from measured live Class-A runs with matching acceptance.
+`forge leaderboard artifacts/forgebench-*.json --json-out artifacts/leaderboard.json`
+produces the ranked cost-per-accepted-task view; only measured, paired receipts
+with matching acceptance and accepted ForgeOS work can rank.
 
 ## The layers — built and tested, NOT individually benchmarked
 
