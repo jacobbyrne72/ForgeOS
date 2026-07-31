@@ -50,6 +50,7 @@
 - `forgeos/core/quota.py`, `forgeos/forge.py`, `forgeos/dashboard/app.py`, `tests/test_quota.py`, `tests/test_forge.py`, `tests/test_dashboard.py` — durable quota telemetry, per-model banked-reset handling, and read-only dashboard exposure.
 - `forgeos/core/quota_ingest.py`, `forgeos/core/router.py`, `forgeos/registry.py`, `tests/test_quota_ingest.py`, `tests/test_router.py` — offline header/report normalization and effective-cost arbitration for mapped subscription capacity.
 - `forgeos/cli.py`, `forgeos/core/quota_ingest.py`, `tests/test_cli_dispatch.py` — safe local `quota ingest` / `ingest` commands for header JSON and copied CLI reports; fixed duration-suffix parsing.
+- `forgeos/core/effort.py`, `forgeos/cli.py`, `forgeos/prompts/prefix.py`, `tests/test_effort.py` — task-difficulty effort routing and a real bounded `forge init` repository scan (committed in `4c9390f`).
 
 ## Commands run
 - `rtk proxy python -m pytest tests -q -m "not slow"`
@@ -80,9 +81,10 @@
 - `python -m pytest tests/test_quota_ingest.py -q` (4 passed)
 - `python -m pytest tests/test_router.py tests/test_quota.py -q` (80 passed)
 - `ruff check forgeos/cli.py forgeos/core/quota_ingest.py tests/test_cli_dispatch.py`; `python -m py_compile ...` (passed)
+- `python -m pytest tests/test_effort.py -q` (28 passed)
 
 ## Test status
-- Passing: 147 CLI dispatch tests; 4 quota-ingest tests; 80 router/quota tests; 106 focused quota/Forge/dashboard tests; 164 focused benchmark/CLI/aggregator tests; Ruff; compileall; CLI dogfood and no-call benchmark smoke checks.
+- Passing: 28 effort tests; 147 CLI dispatch tests; 4 quota-ingest tests; 80 router/quota tests; 106 focused quota/Forge/dashboard tests; 164 focused benchmark/CLI/aggregator tests; Ruff; compileall; CLI dogfood and no-call benchmark smoke checks.
 - Failing: full non-slow sweep currently has one unrelated concurrent failure in `tests/test_forgebench_packing.py::test_definition_weighting_is_what_makes_that_true` while `forgeos/forgebench.py` is concurrently modified.
 - Not run: final combined suite after concurrent work; the prior non-slow sweep had one unrelated ForgeBench packing failure.
 
