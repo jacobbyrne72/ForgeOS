@@ -400,6 +400,9 @@ your browser and never touch the harness). The dashboard also exposes
 same `forgeos.leaderboard.v1` schema as `forge leaderboard`; it never calls a
 provider. A missing receipt directory is reported as an empty, unavailable
 board rather than being created.
+For automation and incident capture, `GET /api/snapshot` returns one
+`forgeos.dashboard_snapshot.v1` payload containing the summary, quota, queue,
+jobs, economy, workers, providers, leaderboard, and activity views.
 
 Run a deterministic browser/API smoke without provider calls:
 `python tools/dashboard_smoke.py --port 8894 --screenshot artifacts/dashboard-smoke.png`.

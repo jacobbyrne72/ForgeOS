@@ -68,6 +68,7 @@ AVOIDANCE_DB = "avoidance.db"
 LEASES_DB = "leases.db"
 HALTS_FILE = "halts.json"
 QUOTA_FILE = "quota.json"
+DASHBOARD_SNAPSHOT_SCHEMA = "forgeos.dashboard_snapshot.v1"
 
 WS_POLL_SECONDS = 2.0
 
@@ -721,6 +722,35 @@ def create_app(
             ],
             "usable_count": sum(1 for r in rows if r["usable"]),
             "total": len(rows),
+        }
+
+    @app.get("/api/snapshot")
+    def get_snapshot(stale_after_seconds: float = 30.0) -> dict[str, Any]:
+        """Export one coherent, local-only dashboard observation.
+
+        The browser normally polls several endpoints independently. Automation
+        and incident capture need one versioned payload instead, so consumers
+        can archive the operator view without joining responses from different
+        moments. Every component below is read-only and provider-free.
+        """
+        if not math.isfinite(stale_after_seconds) or stale_after_seconds <= 0:
+            raise HTTPException(status_code=422, detail="stale_after_seconds must be positive and finite")
+        from ..watch import queue_status
+
+        return {
+            "schema": DASHBOARD_SNAPSHOT_SCHEMA,
+            "captured_at": time.time(),
+            "summary": _summary(),
+            "quota": _quota_view(),
+            "queue": queue_status(
+                queue_dir, stale_after_seconds=stale_after_seconds
+            ).model_dump(mode="json"),
+            "jobs": _jobs_list(),
+            "economy": _economy(None),
+            "workers": _workers_list(),
+            "providers": get_providers(),
+            "leaderboard": _leaderboard_view(),
+            "activity": _activity_feed(),
         }
 
     # ---------------------------------------------------------- write api

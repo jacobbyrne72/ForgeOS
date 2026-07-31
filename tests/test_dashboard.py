@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from forgeos.contracts import Budget, JobSpec, TaskSpec, TaskState, WorkerReport
 from forgeos.dashboard.app import (
     AVOIDANCE_DB,
+    DASHBOARD_SNAPSHOT_SCHEMA,
     EVENTS_DB,
     HOST,
     LEASES_DB,
@@ -82,6 +83,24 @@ def test_jobs_on_fresh_empty_db_is_an_empty_list(client: TestClient):
     res = client.get("/api/jobs")
     assert res.status_code == 200
     assert res.json() == {"jobs": []}
+
+
+def test_snapshot_is_one_versioned_read_only_dashboard_observation(client: TestClient):
+    res = client.get("/api/snapshot")
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["schema"] == DASHBOARD_SNAPSHOT_SCHEMA
+    assert isinstance(body["captured_at"], float)
+    for key in ("summary", "quota", "queue", "jobs", "economy", "workers", "providers", "leaderboard", "activity"):
+        assert key in body
+    assert body["summary"]["spend_usd"] == 0
+    assert body["leaderboard"]["available"] is False
+    assert body["jobs"] == {"jobs": []}
+
+
+def test_snapshot_rejects_invalid_staleness(client: TestClient):
+    assert client.get("/api/snapshot?stale_after_seconds=0").status_code == 422
 
 
 def _write_leaderboard_receipt(path: Path, *, model_ref: str = "local/model") -> None:
