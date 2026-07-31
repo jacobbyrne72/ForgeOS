@@ -18,7 +18,10 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import urlopen
+
+REPORT_SCHEMA = "forgeos.dashboard_smoke.v1"
 
 
 def _receipt(model_ref: str, forgeos_usd_micros: int) -> dict[str, object]:
@@ -55,6 +58,15 @@ def _free_port() -> int:
         return int(probe.getsockname()[1])
 
 
+def _emit_failure(kind: str, error: BaseException) -> None:
+    print(json.dumps({
+        "report_schema": REPORT_SCHEMA,
+        "ok": False,
+        "kind": kind,
+        "error": str(error),
+    }, indent=2, sort_keys=True), file=sys.stderr)
+
+
 def _wait_for_server(base_url: str, process: subprocess.Popen[str], timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -86,10 +98,13 @@ def _validate_payload(payload: object, *, expect_fixture: bool) -> dict[str, obj
 
 
 def _inspect_api(base_url: str, timeout: float, *, expect_fixture: bool) -> dict[str, object]:
-    with urlopen(f"{base_url}/api/leaderboard", timeout=timeout) as response:
-        if response.status != 200:
-            raise AssertionError(f"/api/leaderboard returned HTTP {response.status}")
-        payload = json.loads(response.read().decode("utf-8"))
+    try:
+        with urlopen(f"{base_url}/api/leaderboard", timeout=timeout) as response:
+            if response.status != 200:
+                raise AssertionError(f"/api/leaderboard returned HTTP {response.status}")
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        raise AssertionError(f"/api/leaderboard returned HTTP {exc.code}") from exc
     return _validate_payload(payload, expect_fixture=expect_fixture)
 
 
@@ -202,13 +217,15 @@ def main(argv: list[str] | None = None) -> int:
                 _inspect(base_url, args.screenshot, args.timeout, expect_fixture=not bool(args.url))
             )
         result["mode"] = "existing" if args.url else "fixture"
+        result["report_schema"] = REPORT_SCHEMA
+        result["ok"] = True
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     except AssertionError as exc:
-        print(f"dashboard smoke failed: {exc}", file=sys.stderr)
+        _emit_failure("assertion", exc)
         return 1
     except (OSError, RuntimeError, TimeoutError) as exc:
-        print(f"dashboard smoke could not run: {exc}", file=sys.stderr)
+        _emit_failure("runtime", exc)
         return 2
     finally:
         if process is not None:
