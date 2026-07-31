@@ -15,7 +15,13 @@ import json
 from pathlib import Path
 
 from forgeos.forge import ForgeResult
-from forgeos.watch import WATCH_HALT_KEY, WatchStats, _write_heartbeat, watch_queue
+from forgeos.watch import (
+    WATCH_HALT_KEY,
+    WatchStats,
+    _QueueOwnership,
+    _write_heartbeat,
+    watch_queue,
+)
 
 
 class _FakeForge:
@@ -199,6 +205,70 @@ def test_heartbeat_publication_is_atomic_and_leaves_no_temp_snapshot(tmp_path):
     assert list(tmp_path.glob(".heartbeat-*.tmp")) == []
 
 
+def test_second_queue_worker_refuses_before_constructing_forge(tmp_path):
+    queue = tmp_path / "queue"
+    queue.mkdir()
+    owner = _QueueOwnership(queue)
+    owner.acquire()
+    factory_calls = []
+    try:
+        stats = watch_queue(
+            queue,
+            once=True,
+            forge_factory=lambda: factory_calls.append("constructed"),
+        )
+        assert stats.ownership_conflict is True
+        assert stats.jobs_done == 0 and stats.jobs_failed == 0
+        assert factory_calls == []
+    finally:
+        owner.release()
+
+    # OS-held ownership is crash-safe and reusable after release; no stale PID
+    # marker or manual cleanup is needed for the next worker.
+    stats = watch_queue(queue, once=True, forge_factory=lambda: _FakeForge([]))
+    assert stats.ownership_conflict is False
+
+
+def test_queue_ownership_is_enforced_across_processes(tmp_path):
+    """The lock must protect the real deployment shape, not just threads."""
+    import subprocess
+    import sys
+    import time
+
+    queue = tmp_path / "queue"
+    queue.mkdir()
+    ready = tmp_path / "ready"
+    stop = tmp_path / "stop"
+    child_code = (
+        "from pathlib import Path\n"
+        "import sys, time\n"
+        "from forgeos.watch import _QueueOwnership\n"
+        "q=Path(sys.argv[1]); ready=Path(sys.argv[2]); stop=Path(sys.argv[3])\n"
+        "owner=_QueueOwnership(q); owner.acquire(); ready.write_text('ready')\n"
+        "while not stop.exists():\n    time.sleep(0.01)\n"
+        "owner.release()\n"
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-c", child_code, str(queue), str(ready), str(stop)],
+        cwd=str(Path.cwd()),
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists(), "child never acquired the queue lock"
+        stats = watch_queue(queue, once=True, forge_factory=lambda: _FakeForge([]))
+        assert stats.ownership_conflict is True
+    finally:
+        stop.write_text("stop", encoding="utf-8")
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait(timeout=5)
+    assert child.returncode == 0
+
+
 # ----------------------------------------------------------------------- halt
 
 
@@ -283,3 +353,19 @@ def test_cli_watch_subcommand_reaches_watch_queue_and_reports_its_stats(tmp_path
     out = capsys.readouterr().out
     assert rc == 0
     assert "2 done, 1 failed" in out
+
+
+def test_cli_watch_returns_nonzero_for_an_ownership_conflict(tmp_path, monkeypatch, capsys):
+    import importlib
+
+    from forgeos import __main__ as cli
+
+    watch_module = importlib.import_module("forgeos.watch")
+    monkeypatch.setattr(
+        watch_module, "watch_queue",
+        lambda queue, **kw: WatchStats(ownership_conflict=True),
+    )
+    rc = cli.main(["watch", "--queue", str(tmp_path / "q"), "--once"])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "another worker owns the queue" in out

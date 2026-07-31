@@ -58,6 +58,7 @@ from .diagnostics import record_degradation
 # daemon (as opposed to one job) in the shared halts.json -- see
 # `_watch_halted`.
 WATCH_HALT_KEY = "__watch__"
+QUEUE_LOCK_FILE = ".watch_queue.lock"
 
 
 def watch(ledger, job_id: str | None = None, interval_seconds: int = 30, max_alerts: int = 10) -> list[dict]:
@@ -116,6 +117,65 @@ class WatchStats(BaseModel):
     jobs_done: int = 0
     jobs_failed: int = 0
     halted: bool = False
+    ownership_conflict: bool = False
+
+
+class QueueAlreadyOwned(RuntimeError):
+    """Another live process already owns this queue's OS lock."""
+
+
+class _QueueOwnership:
+    """Cross-process, crash-safe single-writer lock for one queue directory.
+
+    The lock is held by the OS file handle rather than represented by a PID
+    marker. A crashed process therefore releases it automatically, and a
+    persistent `.watch_queue.lock` file never needs unsafe stale-PID deletion.
+    """
+
+    def __init__(self, queue_dir: Path) -> None:
+        self.path = queue_dir / QUEUE_LOCK_FILE
+        self._handle = None
+
+    def acquire(self) -> None:
+        self._handle = self.path.open("a+b")
+        try:
+            # Windows locking requires a byte to exist; keeping the marker
+            # file forever is intentional, because deleting it after unlock
+            # can race a new owner between close() and unlink().
+            self._handle.seek(0, os.SEEK_END)
+            if self._handle.tell() == 0:
+                self._handle.write(b"\0")
+                self._handle.flush()
+            self._handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(self._handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:  # pragma: no cover - exercised on POSIX CI, not Windows
+                import fcntl
+
+                fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError) as exc:
+            self._handle.close()
+            self._handle = None
+            raise QueueAlreadyOwned(f"queue lock is held: {self.path}") from exc
+
+    def release(self) -> None:
+        if self._handle is None:
+            return
+        try:
+            self._handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(self._handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:  # pragma: no cover - exercised on POSIX CI, not Windows
+                import fcntl
+
+                fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            self._handle.close()
+            self._handle = None
 
 
 class _JobSpecError(Exception):
@@ -295,11 +355,22 @@ def watch_queue(
     for d in (incoming, done_dir, failed_dir):
         d.mkdir(parents=True, exist_ok=True)
 
+    ownership = _QueueOwnership(queue_dir)
+    try:
+        ownership.acquire()
+    except QueueAlreadyOwned as exc:
+        record_degradation(
+            "watch_queue", "queue ownership conflict", exc,
+            consequence="this worker refused to start; another process owns the queue",
+        )
+        return WatchStats(ownership_conflict=True)
+
     forge_factory = forge_factory or (lambda: Forge(home=resolved_state_dir))
-    forge = forge_factory()
+    forge = None
     stats = WatchStats()
 
     try:
+        forge = forge_factory()
         while True:
             _write_heartbeat(queue_dir, state="idle", current_job=None, stats=stats)
             if _watch_halted(resolved_state_dir):
@@ -324,7 +395,16 @@ def watch_queue(
         stats.halted = True
         return stats
     finally:
-        forge.close()
+        if forge is not None:
+            forge.close()
+        ownership.release()
 
 
-__all__ = ["WATCH_HALT_KEY", "WatchStats", "watch", "watch_queue"]
+__all__ = [
+    "QUEUE_LOCK_FILE",
+    "WATCH_HALT_KEY",
+    "QueueAlreadyOwned",
+    "WatchStats",
+    "watch",
+    "watch_queue",
+]

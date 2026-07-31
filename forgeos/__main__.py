@@ -221,8 +221,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
     print(
         f"watch: {stats.jobs_done} done, {stats.jobs_failed} failed"
         + (" (halted by operator)" if stats.halted else "")
+        + (" (another worker owns the queue)" if stats.ownership_conflict else "")
     )
-    return 0
+    return 2 if stats.ownership_conflict else 0
 
 
 # ------------------------------------------------------------------------ team
