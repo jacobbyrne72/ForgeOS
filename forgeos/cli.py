@@ -26,8 +26,8 @@ def cmd_run(args) -> int:
     auto = AutoOptimizer()
     planner = CostOptimizer()
     total_saved = 0.0
+    plan = planner.plan_for("code_gen")
     for t in mission.tasks:
-        plan = planner.plan_for("code_gen")
         opt = auto.apply("code_gen", t.subject)
         total_saved += opt.saved_usd
     print()
@@ -395,6 +395,19 @@ def main() -> int:
     sub.add_parser("smartbatch", help="ML-inspired batch cost predictor using history")
     p_audit = sub.add_parser("audit", help="Scan project for AI cost waste")
     sub.add_parser("route", help="Route tasks to cheapest execution path")
+    p_prompt = sub.add_parser("prompt", help="Optimize a prompt for token cost")
+    p_prompt.add_argument("--max-tokens", type=int, default=100, dest="max_tokens")
+    p_local = sub.add_parser("local", help="Execute a safe local code demo")
+    p_local.add_argument("--code", default="")
+    p_retry = sub.add_parser("retry", help="Show cost-aware retry policy")
+    p_retry.add_argument("--max-retries", type=int, default=3, dest="max_retries")
+    p_schedule = sub.add_parser("schedule", help="Schedule tasks into cost-aware batches")
+    p_schedule.add_argument("--batch-size", type=int, default=5, dest="batch_size")
+    p_forecast = sub.add_parser("forecast", help="Forecast future savings")
+    p_forecast.add_argument("--forecast-days", type=int, default=30, dest="forecast_days")
+    p_guard = sub.add_parser("guard", help="Check cost guard decisions")
+    p_guard.add_argument("--guard-budget", type=float, default=1.0, dest="guard_budget")
+    sub.add_parser("track", help="Show recorded cost savings")
     p_audit.add_argument("--dir", default=".", dest="audit_dir")
     args = parser.parse_args()
     if not args.command:
@@ -409,7 +422,6 @@ def main() -> int:
         "models": cmd_models,
         "profile": cmd_profile,
         "optimize": cmd_optimize,
-        "prompt": cmd_prompt_opt,
         "auto": cmd_auto,
         "batch": cmd_batch,
         "bench": cmd_bench,
@@ -419,15 +431,15 @@ def main() -> int:
         "adaptbatch": cmd_adbatch,
         "smartbatch": cmd_smartbatch,
         "audit": cmd_audit,
-        "route": cmd_route,
-        "optimize": cmd_optimize,
         "prompt": cmd_prompt_opt,
+        "route": cmd_route,
         "track": cmd_track,
         "local": cmd_local,
         "retry": cmd_retry,
         "schedule": cmd_schedule,
         "guard": cmd_guard,
         "forecast": cmd_forecast,
+        "efficiency": cmd_efficiency,
         "doctor": cmd_doctor,
         "init": cmd_init,
         "compile": cmd_compile,
@@ -624,9 +636,12 @@ def cmd_schedule(args):
     from forgeos.cost_scheduler import CostScheduler
     s = CostScheduler(batch_size=args.batch_size)
     # Demo workload
-    for i in range(5): s.add_task("code_gen", {"name": f"feature {i}"})
-    for i in range(3): s.add_task("review", {"name": f"PR #{i}"})
-    for i in range(2): s.add_task("format", {"name": f"format {i}"})
+    for i in range(5):
+        s.add_task("code_gen", {"name": f"feature {i}"})
+    for i in range(3):
+        s.add_task("review", {"name": f"PR #{i}"})
+    for i in range(2):
+        s.add_task("format", {"name": f"format {i}"})
     plan = s.schedule()
     print("=== Cost Scheduler ===")
     print("Total tasks:", plan["total_tasks"])
@@ -637,6 +652,25 @@ def cmd_schedule(args):
         print("  " + b["task_type"] + " batch " + str(b["batch_index"]) + ": " + str(b["batch_size"]) + " tasks, $" + str(b["cost"]))
     print()
     print("Savings vs all-API ($0.03 each): $" + str(round(plan["total_tasks"] * 0.03 - plan["total_cost"], 4)))
+    return 0
+
+
+def cmd_efficiency(args):
+    from forgeos.cost_efficiency import CostEfficiency
+    e = CostEfficiency()
+    # Demo records
+    for _ in range(10): e.record_output("code_gen", 0.9, 200)
+    for _ in range(5): e.record_output("review", 0.95, 600)
+    r = e.efficiency_report()
+    print("=== Cost Efficiency ===")
+    print("Overall tokens per dollar:", r["overall_tokens_per_dollar"])
+    print()
+    for bt in r["by_task_type"]:
+        print("  " + bt["task_type"] + ":")
+        print("    Total usd: $" + str(bt["total_usd"]))
+        print("    Total tokens:", bt["total_tokens"])
+        print("    Tokens/dollar:", bt["tokens_per_dollar"])
+        print("    Efficiency:", bt["efficiency_score"])
     return 0
 
 

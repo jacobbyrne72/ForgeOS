@@ -64,6 +64,7 @@ class CostRetry:
         task_fn returns (success, error_message, output).
         """
         last_result = None
+        attempt = -1
         for attempt in range(self.max_retries + 1):
             should, info = self.should_retry(attempt, last_result or "")
             if not should and attempt > 0:
