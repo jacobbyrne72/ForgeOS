@@ -138,18 +138,22 @@ def tally(votes: list[Vote]) -> Verdict:
         # decided, the honest report is that the question did not admit one.
         return Verdict(
             Outcome.ABSTAINED, votes=votes, abstentions=abstentions, families=families,
-            tally=dict(Counter(v.choice for v in answered)),
+            # Plain dict(Counter(...)). A comprehension of the form
+            # `{v.choice: c for v.choice, c in ...}` parses, but its loop target
+            # ASSIGNS to `v.choice` -- and `Vote` is frozen, so it raises at
+            # runtime on every call that reaches this branch.
+            tally=dict(Counter(v.choice for v in answered if v.choice is not None)),
             reason=f"{abstentions} of {len(votes)} abstained -- too few could answer",
         )
 
-    counts = Counter(v.choice for v in answered)
-    ranked = counts.most_common()
+    counts: dict[str, int] = Counter(v.choice for v in answered if v.choice is not None)
+    ranked = Counter(counts).most_common()
     top_choice, top_count = ranked[0]
 
     # A tie is a result, not something to break. Returning the first option
     # would record a coin flip as a decision.
     if len(ranked) > 1 and ranked[1][1] == top_count:
-        tied = sorted(c for c, n in ranked if n == top_count)
+        tied = sorted(c for c, n in ranked if n == top_count and c is not None)
         return Verdict(
             Outcome.SPLIT, votes=votes, tally=dict(counts), abstentions=abstentions,
             families=families,

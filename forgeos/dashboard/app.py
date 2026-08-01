@@ -700,9 +700,48 @@ def create_app(
                         for t in transports)
         reachable = {t.name for t in transports}
 
+        # Last `forge doctor --probe`, if one has been run. `status` above is what
+        # settings BELIEVES (enabled, installed, key present) and it is not a
+        # verification: on this machine it reported 13/14 "ready" while three of
+        # those providers could not serve a request at all. The probe actually
+        # contacted each one, so where a probe result exists it is the better
+        # answer and is surfaced beside the declared status rather than replacing
+        # it -- a reader needs to see that the two disagree, which is the whole
+        # finding.
+        probed: dict[str, dict] = {}
+        probe_age: float | None = None
+        probe_error: str | None = None
+        # Narrow, and it REPORTS. A bare `except Exception` here swallowed a
+        # NameError -- this scope's directory is `state_dir`, not `home` -- and
+        # the panel silently showed no probe data, which is indistinguishable
+        # from "no probe has been run". That is the same failure mode that let
+        # three dead providers read as ready.
+        try:
+            from ..core.probe import load_report
+
+            home = Path.home() / ".forgeos"
+            report = load_report(state_dir / "provider_probe.json")
+            if report is not None:
+                probed = {
+                    r.provider: {
+                        "probe_status": r.status.value,
+                        "probe_routable": r.routable,
+                        "probe_detail": r.detail,
+                        "probe_models_seen": r.models_seen,
+                        "probe_checked_at": r.checked_at,
+                    }
+                    for r in report.results
+                }
+                stamps = [r.checked_at for r in report.results if r.checked_at]
+                if stamps:
+                    probe_age = time.time() - max(stamps)
+        except (OSError, ValueError, ImportError, NameError, AttributeError) as exc:
+            probed = {}
+            probe_error = f"{type(exc).__name__}: {exc}"
+
         rows = []
         for p in sorted(settings.providers.values(), key=lambda x: (x.kind.value, x.name)):
-            rows.append({
+            row = {
                 "name": p.name,
                 "kind": p.kind.value,
                 "auth": p.auth.value,
@@ -713,8 +752,13 @@ def create_app(
                 "base_url": p.base_url,
                 "capabilities": sorted(p.capabilities),
                 "has_transport": p.name in reachable or universal,
-            })
+                "probe_status": None,
+                "probe_routable": None,
+            }
+            row.update(probed.get(p.name, {}))
+            rows.append(row)
 
+        verified = sum(1 for r in rows if r.get("probe_status") == "ready")
         return {
             "providers": rows,
             "transports": [
@@ -722,6 +766,14 @@ def create_app(
                 for t in transports
             ],
             "usable_count": sum(1 for r in rows if r["usable"]),
+            # Reported separately from `usable_count` and never merged into it.
+            # "declared usable" and "answered when contacted" are different
+            # claims, and collapsing them is exactly how three dead providers
+            # came to read as ready.
+            "verified_count": verified,
+            "probed": bool(probed),
+            "probe_error": probe_error,
+            "probe_age_seconds": probe_age,
             "total": len(rows),
         }
 
