@@ -524,6 +524,9 @@ def test_index_html_surfaces_the_measured_leaderboard_panel():
     assert 'id="leaderboard-refresh"' in html
     assert 'api("/api/leaderboard")' in html
     assert "Jump to Leaderboard" in html
+    assert "fleet_rollup" in html
+    assert 'const state = data.partial ? "partial" : "unavailable"' in html
+    assert "measured live Class-A only" in html
 
 
 def test_index_html_surfaces_the_recovery_desk():
@@ -532,9 +535,6 @@ def test_index_html_surfaces_the_recovery_desk():
     assert 'id="recovery-body"' in html
     assert 'api("/api/recovery")' in html
     assert "Jump to Recovery desk" in html
-    assert "fleet_rollup" in html
-    assert 'const state = data.partial ? "partial" : "unavailable"' in html
-    assert "measured live Class-A only" in html
 
 
 # ===================== event feed cost is bounded by what it returns
