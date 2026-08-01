@@ -106,7 +106,7 @@ def main() -> int:
                      detail="HTTP-date rounding off by one; requested normalisation rule")
     led.open_escalation(esc)
 
-    b2 = sch.assign(job.id, impl.id)
+    sch.assign(job.id, impl.id)
     led.record_spend(job.id, wid, "claude/sonnet", to_micros(0.31), task_id=impl.id,
                      tokens_in=3100, tokens_cached_in=28800, tokens_out=1500)
     sch.report(WorkerReport(task_id=impl.id, worker_id=wid, state=TaskState.DONE,

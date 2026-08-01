@@ -214,6 +214,19 @@ def test_snapshot_exports_one_dashboard_observation_as_json(tmp_path, capsys):
     assert payload["leaderboard"]["available"] is False
 
 
+def test_recovery_exports_provider_free_next_action_report(tmp_path, capsys):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    rc = cli.main(["recovery", "--state-dir", str(state_dir), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert payload["schema"] == "forgeos.recovery.v1"
+    assert payload["status"] == "clear"
+    assert payload["note"].startswith("No persisted recovery action")
+
+
 def test_receipts_summarizes_spend_by_worker(seeded_state_dir, capsys):
     cli.main(["receipts", "--state-dir", str(seeded_state_dir)])
     out = capsys.readouterr().out
@@ -439,7 +452,7 @@ def test_main_dispatch_is_reachable_for_every_registered_subcommand():
         and isinstance(node.value, ast.Dict)
     )
     assert registered == {
-        "doctor", "preflight", "call-preflight", "receipts", "snapshot", "watch", "queue-status", "team", "resume",
+        "doctor", "preflight", "call-preflight", "receipts", "snapshot", "recovery", "watch", "queue-status", "team", "resume",
         "serve-mcp", "memory"
     }
     assert dispatch_keys == registered

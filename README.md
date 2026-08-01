@@ -343,6 +343,7 @@ forge compile "Add X"       # see the task graph a model call would have produce
 forge run "Add X" --dry-run # same, through the full runner
 forge forgebench --dry-run  # price the benchmark suite without running it
 forge receipts              # what you have actually spent, from the ledger
+forge recovery              # provider-free next actions for unfinished local work
 forge preflight task.json --json  # refuse an already-settled contract before routing
 forge call-preflight --prompt-file prompt.txt --model provider/model --remaining-usd 0.05 --json
 ```
@@ -405,6 +406,12 @@ For automation and incident capture, `GET /api/snapshot` returns one
 jobs, economy, workers, providers, leaderboard, and activity views.
 The same export is available without a running server:
 `python -m forgeos snapshot --state-dir .forgeos --json --output artifacts/snapshot.json`.
+The snapshot also carries a `forgeos.recovery.v1` report. For a smaller export,
+`forge recovery --state-dir .forgeos --json --output artifacts/recovery.json`
+lists resumable jobs and stale queues with copyable commands. Recovery guidance
+never resumes a job automatically: a resume can spend money and remains an
+explicit operator decision. The same report is available at `GET /api/recovery`
+and through the read-only `forgeos_recovery` MCP tool.
 
 Run a deterministic browser/API smoke without provider calls:
 `python tools/dashboard_smoke.py --port 8894 --screenshot artifacts/dashboard-smoke.png`.

@@ -92,11 +92,32 @@ def test_snapshot_is_one_versioned_read_only_dashboard_observation(client: TestC
     body = res.json()
     assert body["schema"] == DASHBOARD_SNAPSHOT_SCHEMA
     assert isinstance(body["captured_at"], float)
-    for key in ("summary", "quota", "queue", "jobs", "economy", "workers", "providers", "leaderboard", "activity"):
+    for key in ("summary", "quota", "queue", "jobs", "economy", "workers", "providers", "leaderboard", "activity", "recovery"):
         assert key in body
+    assert body["recovery"]["schema"] == "forgeos.recovery.v1"
+    assert body["recovery"]["status"] == "clear"
     assert body["summary"]["spend_usd"] == 0
     assert body["leaderboard"]["available"] is False
     assert body["jobs"] == {"jobs": []}
+
+
+def test_recovery_endpoint_reports_unfinished_job_without_running_a_provider(state_dir: Path):
+    job_id, task_id = _seed_job(state_dir)
+    ledger = Ledger(state_dir / LEDGER_DB)
+    try:
+        ledger.set_task_state(task_id, TaskState.RUNNING)
+    finally:
+        ledger.close()
+
+    client = TestClient(create_app(state_dir))
+    response = client.get("/api/recovery")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schema"] == "forgeos.recovery.v1"
+    assert body["summary"]["unfinished_jobs"] == 1
+    assert body["next_action"]["job_id"] == job_id
+    assert body["next_action"]["kind"] == "resume_job"
 
 
 def test_snapshot_rejects_invalid_staleness(client: TestClient):
@@ -497,6 +518,14 @@ def test_index_html_surfaces_the_measured_leaderboard_panel():
     assert 'id="leaderboard-refresh"' in html
     assert 'api("/api/leaderboard")' in html
     assert "Jump to Leaderboard" in html
+
+
+def test_index_html_surfaces_the_recovery_desk():
+    html = STATIC_DIR.joinpath("index.html").read_text(encoding="utf-8")
+    assert 'id="recovery-panel"' in html
+    assert 'id="recovery-body"' in html
+    assert 'api("/api/recovery")' in html
+    assert "Jump to Recovery desk" in html
     assert "fleet_rollup" in html
     assert 'const state = data.partial ? "partial" : "unavailable"' in html
     assert "measured live Class-A only" in html

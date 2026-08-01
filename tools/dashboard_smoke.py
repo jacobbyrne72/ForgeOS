@@ -23,6 +23,7 @@ from urllib.request import urlopen
 
 REPORT_SCHEMA = "forgeos.dashboard_smoke.v1"
 SNAPSHOT_SCHEMA = "forgeos.dashboard_snapshot.v1"
+RECOVERY_SCHEMA = "forgeos.recovery.v1"
 
 
 def _receipt(model_ref: str, forgeos_usd_micros: int) -> dict[str, object]:
@@ -114,7 +115,11 @@ def _inspect_api(base_url: str, timeout: float, *, expect_fixture: bool) -> dict
         raise AssertionError(f"/api/snapshot returned HTTP {exc.code}") from exc
     if not isinstance(snapshot, dict) or snapshot.get("schema") != SNAPSHOT_SCHEMA:
         raise AssertionError(f"unexpected snapshot schema: {snapshot.get('schema') if isinstance(snapshot, dict) else None!r}")
+    recovery = snapshot.get("recovery") if isinstance(snapshot, dict) else None
+    if not isinstance(recovery, dict) or recovery.get("schema") != RECOVERY_SCHEMA:
+        raise AssertionError(f"unexpected recovery schema: {recovery.get('schema') if isinstance(recovery, dict) else None!r}")
     result["snapshot_schema"] = snapshot["schema"]
+    result["recovery_schema"] = recovery["schema"]
     return result
 
 
@@ -150,9 +155,16 @@ async def _inspect(
                     f"unexpected snapshot schema: "
                     f"{snapshot.get('schema') if isinstance(snapshot, dict) else None!r}"
                 )
+            recovery = snapshot.get("recovery") if isinstance(snapshot, dict) else None
+            if not isinstance(recovery, dict) or recovery.get("schema") != RECOVERY_SCHEMA:
+                raise AssertionError(
+                    f"unexpected recovery schema: "
+                    f"{recovery.get('schema') if isinstance(recovery, dict) else None!r}"
+                )
 
             await page.goto(f"{base_url}/", wait_until="domcontentloaded")
             await page.locator("#leaderboard-body tr").first.wait_for(state="visible")
+            await page.locator("#recovery-body").wait_for(state="visible")
             rows = await page.locator("#leaderboard-body").inner_text()
             meta = await page.locator("#leaderboard-meta").inner_text()
             if expect_fixture and (
@@ -167,6 +179,7 @@ async def _inspect(
             return {
                 "schema": validated["schema"],
                 "snapshot_schema": snapshot["schema"],
+                "recovery_schema": recovery["schema"],
                 "fleet_rollup": rollup,
                 "rows": rows.splitlines(),
                 "meta": meta,

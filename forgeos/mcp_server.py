@@ -143,6 +143,22 @@ class McpServer:
                 },
             },
             {
+                "name": "forgeos_recovery",
+                "description": (
+                    "Read-only provider-free next-action report for unfinished jobs "
+                    "and stale queues. It recommends commands but never resumes work."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "stale_after_seconds": {
+                            "type": "number",
+                            "description": "Queue heartbeat staleness threshold (default: 30)",
+                        },
+                    },
+                },
+            },
+            {
                 "name": "forgeos_plan",
                 "description": (
                     "Compile a natural-language objective into a task graph. Dry-run "
@@ -265,6 +281,33 @@ class McpServer:
             raise _ToolError(f"snapshot unavailable: HTTP {response.status_code}")
         return response.text
 
+    def _call_recovery(self, arguments: dict[str, Any]) -> str:
+        stale_after = arguments.get("stale_after_seconds", 30.0)
+        if (
+            isinstance(stale_after, bool)
+            or not isinstance(stale_after, (int, float))
+            or not math.isfinite(stale_after)
+            or stale_after <= 0
+        ):
+            raise _ToolError("stale_after_seconds must be a finite positive number")
+
+        from fastapi.testclient import TestClient
+
+        from .dashboard.app import create_app, default_state_dir
+
+        app = create_app(
+            self.state_dir or default_state_dir(),
+            queue_dir=self.queue_dir,
+        )
+        with TestClient(app) as client:
+            response = client.get(
+                "/api/recovery",
+                params={"stale_after_seconds": float(stale_after)},
+            )
+        if response.status_code != 200:
+            raise _ToolError(f"recovery unavailable: HTTP {response.status_code}")
+        return response.text
+
     def _call_plan(self, arguments: dict[str, Any]) -> str:
         from .__main__ import _print_mission_graph
         from .compiler import CompilerError, compile_mission
@@ -336,6 +379,7 @@ class McpServer:
         "forgeos_receipts": _call_receipts,
         "forgeos_leaderboard": _call_leaderboard,
         "forgeos_snapshot": _call_snapshot,
+        "forgeos_recovery": _call_recovery,
         "forgeos_plan": _call_plan,
         "forgeos_submit_job": _call_submit_job,
         "forgeos_queue_status": _call_queue_status,

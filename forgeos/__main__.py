@@ -515,17 +515,18 @@ def cmd_receipts(args: argparse.Namespace) -> int:
         ledger.close()
 
 
-# --------------------------------------------------------------- snapshot
+# --------------------------------------------------------- dashboard exports
 
 
-def cmd_snapshot(args: argparse.Namespace) -> int:
-    """Export one coherent local dashboard observation as JSON.
-
-    The dashboard route is the single source of truth for this payload; the
-    CLI only gives operators and scripts a file/stdout surface over it.
-    """
+def _cmd_dashboard_export(
+    args: argparse.Namespace,
+    *,
+    endpoint: str,
+    schema: str,
+    error_prefix: str,
+) -> int:
+    """Export one provider-free dashboard route without duplicating its reads."""
     state_dir = _resolve_state_dir(args.state_dir)
-    schema = "forgeos.dashboard_snapshot.v1"
     if not state_dir.exists():
         print(json.dumps({
             "schema": schema,
@@ -546,14 +547,14 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
         )
         with TestClient(app) as client:
             response = client.get(
-                "/api/snapshot",
+                endpoint,
                 params={"stale_after_seconds": args.stale_after},
             )
     except Exception as exc:  # noqa: BLE001 - diagnostics command returns JSON, never a traceback
         print(json.dumps({
             "schema": schema,
             "ok": False,
-            "error": "snapshot_unavailable",
+            "error": f"{error_prefix}_unavailable",
             "message": str(exc),
         }, indent=2, sort_keys=True))
         return 1
@@ -562,7 +563,7 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
         print(json.dumps({
             "schema": schema,
             "ok": False,
-            "error": "snapshot_http_error",
+            "error": f"{error_prefix}_http_error",
             "status_code": response.status_code,
             "message": response.text,
         }, indent=2, sort_keys=True))
@@ -575,6 +576,26 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
         target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
+
+
+def cmd_snapshot(args: argparse.Namespace) -> int:
+    """Export one coherent local dashboard observation as JSON."""
+    return _cmd_dashboard_export(
+        args,
+        endpoint="/api/snapshot",
+        schema="forgeos.dashboard_snapshot.v1",
+        error_prefix="snapshot",
+    )
+
+
+def cmd_recovery(args: argparse.Namespace) -> int:
+    """Export provider-free next actions for unfinished local work."""
+    return _cmd_dashboard_export(
+        args,
+        endpoint="/api/recovery",
+        schema="forgeos.recovery.v1",
+        error_prefix="recovery",
+    )
 
 
 # ---------------------------------------------------------------------- watch
@@ -923,6 +944,16 @@ def main(argv: list[str] | None = None) -> int:
     p_snapshot.add_argument("--output", help="Also write the snapshot JSON to this path")
     p_snapshot.add_argument("--json", action="store_true", help="Machine-readable output (default)")
 
+    p_recovery = sub.add_parser(
+        "recovery", help="Export provider-free next actions for unfinished local work"
+    )
+    p_recovery.add_argument("--state-dir", help="Where the dashboard state lives")
+    p_recovery.add_argument("--queue", help="Queue directory to include in the heartbeat view")
+    p_recovery.add_argument("--leaderboard-dir", help="ForgeBench receipt directory to rank")
+    p_recovery.add_argument("--stale-after", type=float, default=30.0)
+    p_recovery.add_argument("--output", help="Also write the recovery JSON to this path")
+    p_recovery.add_argument("--json", action="store_true", help="Machine-readable output (default)")
+
     p_preflight = sub.add_parser(
         "preflight", help="Read-only prior-work refusal check; never calls a provider"
     )
@@ -1032,6 +1063,7 @@ def main(argv: list[str] | None = None) -> int:
         "call-preflight": cmd_call_preflight,
         "receipts": cmd_receipts,
         "snapshot": cmd_snapshot,
+        "recovery": cmd_recovery,
         "watch": cmd_watch,
         "queue-status": cmd_queue_status,
         "team": cmd_team,

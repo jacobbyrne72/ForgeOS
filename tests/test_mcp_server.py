@@ -123,7 +123,7 @@ def test_tools_list_shape(server):
 
     tools = {t["name"]: t for t in resp["result"]["tools"]}
     assert set(tools) == {
-        "forgeos_doctor", "forgeos_receipts", "forgeos_leaderboard", "forgeos_snapshot", "forgeos_plan",
+        "forgeos_doctor", "forgeos_receipts", "forgeos_leaderboard", "forgeos_snapshot", "forgeos_recovery", "forgeos_plan",
         "forgeos_submit_job", "forgeos_queue_status",
     }
     for tool in tools.values():
@@ -133,6 +133,7 @@ def test_tools_list_shape(server):
     assert set(tools["forgeos_submit_job"]["inputSchema"]["required"]) == {"objective", "budget_usd"}
     assert tools["forgeos_leaderboard"]["inputSchema"]["required"] == ["paths"]
     assert tools["forgeos_snapshot"]["inputSchema"]["type"] == "object"
+    assert tools["forgeos_recovery"]["inputSchema"]["type"] == "object"
 
 
 # ------------------------------------------------------------- read-only tools
@@ -171,6 +172,23 @@ def test_snapshot_call_returns_one_local_dashboard_observation(server):
     assert payload["schema"] == "forgeos.dashboard_snapshot.v1"
     assert payload["summary"]["spend_usd"] == 0
     assert payload["leaderboard"]["available"] is False
+
+
+def test_recovery_call_returns_provider_free_next_action_report(server):
+    _initialize(server)
+    _send(
+        server,
+        {"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+         "params": {"name": "forgeos_recovery", "arguments": {}}},
+    )
+    resp = _recv(server)
+
+    assert resp["id"] == 7
+    result = resp["result"]
+    assert result["isError"] is False
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["schema"] == "forgeos.recovery.v1"
+    assert payload["status"] == "clear"
 
 
 def test_leaderboard_call_returns_a_local_ranked_receipt(tmp_path):

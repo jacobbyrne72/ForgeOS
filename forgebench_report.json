@@ -11,14 +11,14 @@
         "accepted": false,
         "result": {
           "finish_reason": "stop",
-          "seconds": 9.84400000000096,
+          "seconds": 10.703000000001339,
           "spent_output_on_nothing": false,
-          "text": "The function that records spend is `Ledger.record_spend`. \n\nThe guard against double-charging is the `spend_already_recorded` flag on `ExecutionResult`/`WorkerEvent`. In `Forge._run_task`, the code checks `getattr(result, \"spend_already_recorded\", False)` before recording spend. The `GatewayWorkerAdapter` sets this to `True` because `Gateway.complete` already writes to the ledger (invariant 4), preventing the same call from being billed twice.",
+          "text": "The function that records spend is `Ledger.record_spend`. \n\nThe guard preventing double-charging is the `spend_already_recorded` attribute/flag. In `Forge._run_task`, the code checks `getattr(result, \"spend_already_recorded\", False)` before recording spend. When `True`, it skips recording because the transport (like `Gateway.complete` or `GatewayWorkerAdapter`) already banked the cost in the ledger. This prevents the same call from being billed twice.",
           "tokens_cached_in": 0,
-          "tokens_in": 40722,
-          "tokens_out": 111,
+          "tokens_in": 43268,
+          "tokens_out": 109,
           "truncated": false,
-          "usd_micros": 5732
+          "usd_micros": 6088
         }
       },
       "comparison_voided": false,
@@ -26,14 +26,14 @@
         "accepted": false,
         "result": {
           "finish_reason": "stop",
-          "seconds": 1.7660000000032596,
+          "seconds": 2.0469999999986612,
           "spent_output_on_nothing": false,
-          "text": "The function `record_spend` in `forgeos/ledger.py` records spend to the ledger. The guard preventing double-charging is the `spend_already_recorded` attribute on the result/event. In `forge.py`, the code checks `already_recorded = getattr(result, \"spend_already_recorded\", False)` and skips recording if true, since `Gateway.complete` already banked the spend per invariant (4).",
+          "text": "The function `record_spend` in `ledger.py` records spend to the ledger. The guard preventing double-charging is the `spend_already_recorded` attribute on the result/response object. When set to `True`, both `forge.py`'s `_run_task_guarded` and the gateway worker skip recording again\u2014the gateway already banked the call, so recording it elsewhere would double-count.",
           "tokens_cached_in": 0,
-          "tokens_in": 6519,
-          "tokens_out": 96,
+          "tokens_in": 6971,
+          "tokens_out": 89,
           "truncated": false,
-          "usd_micros": 940
+          "usd_micros": 1001
         }
       },
       "task_id": "ledger-dedup-guard"
@@ -44,14 +44,14 @@
         "accepted": true,
         "result": {
           "finish_reason": "stop",
-          "seconds": 1.1409999999996217,
+          "seconds": 1.0309999999990396,
           "spent_output_on_nothing": false,
-          "text": "`PreflightVerdict.raise_if_refused()` raises `CallRefused`, and the enum is `Decision` with members `ALLOW`, `REFUSE_BUDGET`, and `REFUSE_CONTEXT`.",
-          "tokens_cached_in": 0,
-          "tokens_in": 5449,
-          "tokens_out": 45,
+          "text": "`CallRefused`, `Decision`",
+          "tokens_cached_in": 5376,
+          "tokens_in": 73,
+          "tokens_out": 8,
           "truncated": false,
-          "usd_micros": 775
+          "usd_micros": 28
         }
       },
       "comparison_voided": false,
@@ -59,14 +59,14 @@
         "accepted": true,
         "result": {
           "finish_reason": "stop",
-          "seconds": 0.9679999999971187,
+          "seconds": 1.4220000000022992,
           "spent_output_on_nothing": false,
-          "text": "CallRefused; Decision",
-          "tokens_cached_in": 0,
-          "tokens_in": 1758,
-          "tokens_out": 5,
+          "text": "`CallRefused` and `Decision`",
+          "tokens_cached_in": 1664,
+          "tokens_in": 94,
+          "tokens_out": 9,
           "truncated": false,
-          "usd_micros": 248
+          "usd_micros": 20
         }
       },
       "task_id": "preflight-refusal-types"
@@ -77,14 +77,14 @@
         "accepted": true,
         "result": {
           "finish_reason": "stop",
-          "seconds": 1.2970000000022992,
+          "seconds": 1.625,
           "spent_output_on_nothing": false,
-          "text": "cache_read_rate\n\nfalls back to input_cost_per_1m",
-          "tokens_cached_in": 0,
-          "tokens_in": 4289,
-          "tokens_out": 13,
+          "text": "`cache_read_rate` falls back to `input_cost_per_1m` when no cache price exists.",
+          "tokens_cached_in": 4224,
+          "tokens_in": 65,
+          "tokens_out": 22,
           "truncated": false,
-          "usd_micros": 604
+          "usd_micros": 27
         }
       },
       "comparison_voided": false,
@@ -92,14 +92,14 @@
         "accepted": true,
         "result": {
           "finish_reason": "stop",
-          "seconds": 1.360000000000582,
+          "seconds": 2.1090000000003783,
           "spent_output_on_nothing": false,
-          "text": "The property is `cache_read_rate`, and it falls back to `input_cost_per_1m` when no cache price is published.",
-          "tokens_cached_in": 0,
-          "tokens_in": 1634,
-          "tokens_out": 28,
+          "text": "The property is `cache_read_rate`. It falls back to `input_cost_per_1m` when no cache price is published.",
+          "tokens_cached_in": 1536,
+          "tokens_in": 98,
+          "tokens_out": 27,
           "truncated": false,
-          "usd_micros": 237
+          "usd_micros": 26
         }
       },
       "task_id": "catalog-cache-pricing"
@@ -110,14 +110,14 @@
         "accepted": true,
         "result": {
           "finish_reason": "stop",
-          "seconds": 1.3119999999980791,
+          "seconds": 6.3439999999973224,
           "spent_output_on_nothing": false,
-          "text": "`bump_generation` advances the counter; `record_report_if_current` refuses stale reports.",
-          "tokens_cached_in": 0,
-          "tokens_in": 8163,
-          "tokens_out": 20,
+          "text": "`bump_generation()` advances the counter. `record_report_if_current()` refuses stale reports and returns `(accepted, current_generation)`.",
+          "tokens_cached_in": 8064,
+          "tokens_in": 99,
+          "tokens_out": 31,
           "truncated": false,
-          "usd_micros": 1148
+          "usd_micros": 45
         }
       },
       "comparison_voided": false,
@@ -125,14 +125,14 @@
         "accepted": true,
         "result": {
           "finish_reason": "stop",
-          "seconds": 1.25,
+          "seconds": 1.5,
           "spent_output_on_nothing": false,
-          "text": "`bump_generation` advances the counter on reclaim. `record_report_if_current` refuses to record reports with a stale generation.",
-          "tokens_cached_in": 0,
-          "tokens_in": 1479,
-          "tokens_out": 27,
+          "text": "`bump_generation` advances the generation counter. `record_report_if_current` refuses to record reports with stale generations.",
+          "tokens_cached_in": 1408,
+          "tokens_in": 71,
+          "tokens_out": 25,
           "truncated": false,
-          "usd_micros": 215
+          "usd_micros": 21
         }
       },
       "task_id": "ledger-generation-fencing"
@@ -143,14 +143,14 @@
         "accepted": true,
         "result": {
           "finish_reason": "stop",
-          "seconds": 0.8440000000009604,
+          "seconds": 2.0,
           "spent_output_on_nothing": false,
           "text": "[\"to_micros\", \"from_micros\"]",
-          "tokens_cached_in": 0,
-          "tokens_in": 2862,
+          "tokens_cached_in": 2816,
+          "tokens_in": 46,
           "tokens_out": 12,
           "truncated": false,
-          "usd_micros": 404
+          "usd_micros": 18
         }
       },
       "comparison_voided": false,
@@ -158,14 +158,14 @@
         "accepted": true,
         "result": {
           "finish_reason": "stop",
-          "seconds": 0.875,
+          "seconds": 2.5159999999996217,
           "spent_output_on_nothing": false,
           "text": "[\"to_micros\", \"from_micros\"]",
-          "tokens_cached_in": 0,
-          "tokens_in": 1549,
+          "tokens_cached_in": 1536,
+          "tokens_in": 13,
           "tokens_out": 12,
           "truncated": false,
-          "usd_micros": 220
+          "usd_micros": 9
         }
       },
       "task_id": "contracts-micros-json"
@@ -176,14 +176,14 @@
         "accepted": true,
         "result": {
           "finish_reason": "stop",
-          "seconds": 1.0940000000009604,
+          "seconds": 1.875,
           "spent_output_on_nothing": false,
-          "text": "The private helper function is `_weaker`, and the result takes the **lesser**-certain (weaker) of the two input provenances.",
-          "tokens_cached_in": 0,
-          "tokens_in": 9025,
-          "tokens_out": 32,
+          "text": "The private helper function is `_weaker`, and the result takes the **lesser-certain** (weaker) of the two inputs.",
+          "tokens_cached_in": 8960,
+          "tokens_in": 65,
+          "tokens_out": 30,
           "truncated": false,
-          "usd_micros": 1272
+          "usd_micros": 43
         }
       },
       "comparison_voided": false,
@@ -191,14 +191,14 @@
         "accepted": true,
         "result": {
           "finish_reason": "stop",
-          "seconds": 1.2969999999986612,
+          "seconds": 1.7029999999977008,
           "spent_output_on_nothing": false,
-          "text": "Based on the code, the private helper function that implements the choice is **`_weaker`**, and the result takes the **lesser-certain** (weaker) of the two input provenances.",
-          "tokens_cached_in": 0,
-          "tokens_in": 1656,
-          "tokens_out": 43,
+          "text": "Based on the code, the private helper function that implements the provenance choice is `_weaker`, and the result takes the **lesser**-certain of the two inputs (the weaker provenance).",
+          "tokens_cached_in": 1536,
+          "tokens_in": 120,
+          "tokens_out": 40,
           "truncated": false,
-          "usd_micros": 244
+          "usd_micros": 32
         }
       },
       "task_id": "savings-provenance-rule"
@@ -217,7 +217,7 @@
         "note": "forgebench forgeos arm: usd_micros summed across the suite's ledger-recorded Gateway calls",
         "provenance": "measured",
         "unit": "usd",
-        "value": 0.002104
+        "value": 0.001109
       },
       "human_interventions": {
         "confidence": null,
@@ -233,7 +233,7 @@
         "note": "forgebench forgeos arm: fresh+cached input tokens summed across the suite",
         "provenance": "measured",
         "unit": "tokens",
-        "value": 14595.0
+        "value": 15047.0
       },
       "output_tokens": {
         "confidence": null,
@@ -241,7 +241,7 @@
         "note": "forgebench forgeos arm: output tokens summed across the suite",
         "provenance": "measured",
         "unit": "tokens",
-        "value": 211.0
+        "value": 202.0
       },
       "wall_time": {
         "confidence": null,
@@ -249,10 +249,10 @@
         "note": "forgebench forgeos arm: sum of per-call wall-clock seconds",
         "provenance": "measured",
         "unit": "seconds",
-        "value": 7.515999999999622
+        "value": 11.296999999998661
       }
     },
-    "actual_trace_hash": "55ad3974612352546da0dccef9ef043bfd86c99dd2041d9436b6eb23d8295ab9",
+    "actual_trace_hash": "3b7f615f1555b540d1672f6d6c23e99bb0346641e3cbe58da2a0b6da429eaa2b",
     "baseline": {
       "baseline_policy": "unwrapped CLI baseline: naive whole-scope-file prompt, no capsule, no cache-prefix discipline",
       "baseline_provenance": "replayed",
@@ -263,7 +263,7 @@
           "note": "forgebench baseline arm: usd_micros summed across the suite's ledger-recorded Gateway calls",
           "provenance": "replayed",
           "unit": "usd",
-          "value": 0.009935
+          "value": 0.006249
         },
         "human_interventions": {
           "confidence": null,
@@ -279,7 +279,7 @@
           "note": "forgebench baseline arm: fresh+cached input tokens summed across the suite",
           "provenance": "replayed",
           "unit": "tokens",
-          "value": 70510.0
+          "value": 73056.0
         },
         "output_tokens": {
           "confidence": null,
@@ -287,7 +287,7 @@
           "note": "forgebench baseline arm: output tokens summed across the suite",
           "provenance": "replayed",
           "unit": "tokens",
-          "value": 233.0
+          "value": 212.0
         },
         "wall_time": {
           "confidence": null,
@@ -295,11 +295,11 @@
           "note": "forgebench baseline arm: sum of per-call wall-clock seconds",
           "provenance": "replayed",
           "unit": "seconds",
-          "value": 15.532000000002881
+          "value": 23.5779999999977
         }
       }
     },
-    "baseline_trace_hash": "0ae30044628b29ff6e74747a68fe318026b28ec643d9efa0d1107485a3e82b53",
+    "baseline_trace_hash": "8b69e1047e0cf11536b118bf763b745956d5ae57481b1998d85ed11dec8344a6",
     "contract_hash": "45767b789241a67b8cb555d0558e46b104ffb9592f1b268d0888feae7bea2c55",
     "cost_per_accepted_task": {
       "confidence": null,
@@ -307,13 +307,13 @@
       "note": "forgebench forgeos arm: usd_micros summed across the suite's ledger-recorded Gateway calls / 5 accepted task(s)",
       "provenance": "measured",
       "unit": "usd",
-      "value": 0.0004208
+      "value": 0.0002218
     },
-    "created_at": 1785511731.2174995,
-    "id": "proof_3d37f59f7ae9",
-    "mission_id": "job_869b5da4dcd2",
+    "created_at": 1785516192.244931,
+    "id": "proof_b6b6e3e80c8d",
+    "mission_id": "job_8978af431e5c",
     "outcome": "partial",
-    "repo_revision": "8b12412",
+    "repo_revision": "e246e5d",
     "savings": {
       "cash_cost": {
         "confidence": null,
@@ -321,7 +321,7 @@
         "note": "actual=measured, baseline=replayed",
         "provenance": "replayed",
         "unit": "pct",
-        "value": 78.8223
+        "value": 82.2532
       },
       "human_interventions": {
         "confidence": null,
@@ -337,7 +337,7 @@
         "note": "actual=measured, baseline=replayed",
         "provenance": "replayed",
         "unit": "pct",
-        "value": 79.3008
+        "value": 79.4035
       },
       "output_tokens": {
         "confidence": null,
@@ -345,7 +345,7 @@
         "note": "actual=measured, baseline=replayed",
         "provenance": "replayed",
         "unit": "pct",
-        "value": 9.4421
+        "value": 4.717
       },
       "wall_time": {
         "confidence": null,
@@ -353,7 +353,7 @@
         "note": "actual=measured, baseline=replayed",
         "provenance": "replayed",
         "unit": "pct",
-        "value": 51.6096
+        "value": 52.0867
       }
     },
     "test_artifact_hash": "5acd7a2c8f94c0ff7e6f995114229ff860f0d4fd11b2b0960f29f0e168ce3574"
@@ -435,20 +435,20 @@
     "baseline": {
       "accepted_count": 5,
       "attempted_count": 6,
-      "seconds": 15.532000000002881,
-      "tokens_cached_in": 0,
-      "tokens_in": 70510,
-      "tokens_out": 233,
-      "usd_micros": 9935
+      "seconds": 23.5779999999977,
+      "tokens_cached_in": 29440,
+      "tokens_in": 43616,
+      "tokens_out": 212,
+      "usd_micros": 6249
     },
     "forgeos": {
       "accepted_count": 5,
       "attempted_count": 6,
-      "seconds": 7.515999999999622,
-      "tokens_cached_in": 0,
-      "tokens_in": 14595,
-      "tokens_out": 211,
-      "usd_micros": 2104
+      "seconds": 11.296999999998661,
+      "tokens_cached_in": 7680,
+      "tokens_in": 7367,
+      "tokens_out": 202,
+      "usd_micros": 1109
     }
   }
 }

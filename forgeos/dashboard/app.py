@@ -48,6 +48,7 @@ from ..core.quota import QUOTA_SNAPSHOT_SCHEMA, QuotaSource, QuotaTracker
 from ..diagnostics import record_degradation
 from ..forgebench_table import load_receipt, row_for_receipt
 from ..leaderboard import build_leaderboard
+from ..recovery import build_recovery
 from ..registry import MIN_ATTEMPTS_TO_TRUST, default_registry
 
 HOST = "127.0.0.1"
@@ -737,7 +738,7 @@ def create_app(
             raise HTTPException(status_code=422, detail="stale_after_seconds must be positive and finite")
         from ..watch import queue_status
 
-        return {
+        payload = {
             "schema": DASHBOARD_SNAPSHOT_SCHEMA,
             "captured_at": time.time(),
             "summary": _summary(),
@@ -752,6 +753,16 @@ def create_app(
             "leaderboard": _leaderboard_view(),
             "activity": _activity_feed(),
         }
+        # Keep recovery guidance inside the same captured observation.  The
+        # guidance is derived from these exact job/queue facts, not a second
+        # set of reads that could disagree with the archived snapshot.
+        payload["recovery"] = build_recovery(payload, state_dir=state_dir)
+        return payload
+
+    @app.get("/api/recovery")
+    def get_recovery(stale_after_seconds: float = 30.0) -> dict[str, Any]:
+        """Return provider-free next actions for unfinished local work."""
+        return get_snapshot(stale_after_seconds=stale_after_seconds)["recovery"]
 
     # ---------------------------------------------------------- write api
 

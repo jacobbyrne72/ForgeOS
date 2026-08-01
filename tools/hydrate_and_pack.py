@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -42,13 +43,22 @@ def _run(args: list[str], *, cwd: str | None = None, timeout: float = 900) -> tu
     try:
         proc = subprocess.run(
             args, cwd=cwd, capture_output=True, text=True, timeout=timeout,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            # UTF-8 with replacement, not the console default. Windows decodes
+            # subprocess output as cp1252, and repomix prints box-drawing
+            # characters -- so reading its OUTPUT raised UnicodeDecodeError and
+            # reported the pack as failed when the pack had actually run.
+            encoding="utf-8", errors="replace",
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "PYTHONIOENCODING": "utf-8"},
         )
     except subprocess.TimeoutExpired:
         return 124, "timed out"
     except OSError as exc:
         return 1, f"{type(exc).__name__}: {exc}"
-    return proc.returncode, (proc.stdout + proc.stderr)[-2000:]
+    # `capture_output=True` still yields None for a stream a process never
+    # opened -- npx on Windows does exactly that -- and concatenating None
+    # raised a TypeError that masked the real failure underneath it.
+    combined = (proc.stdout or "") + (proc.stderr or "")
+    return proc.returncode, combined[-2000:]
 
 
 def is_hydrated(repo: Path) -> bool:
@@ -69,6 +79,12 @@ def hydrate(repo: Path, *, timeout: float) -> tuple[bool, str]:
     `git checkout` on a blob:none clone triggers a lazy fetch of exactly the
     blobs it needs -- no re-clone, no full history refetch.
     """
+    # Windows MAX_PATH is 260 characters and several of these repos carry
+    # snapshot-test filenames well past it -- gemini-cli and open-interpreter
+    # both failed checkout on exactly that. `core.longpaths` is per-repo config,
+    # so it has to be set on each clone before the first checkout rather than
+    # once globally.
+    _run(["git", "-C", str(repo), "config", "core.longpaths", "true"], timeout=60)
     code, out = _run(["git", "-C", str(repo), "checkout", "--force", "HEAD"],
                      timeout=timeout)
     if code != 0:
@@ -81,14 +97,23 @@ def hydrate(repo: Path, *, timeout: float) -> tuple[bool, str]:
 
 def pack(repo: Path, out_file: Path, *, timeout: float) -> tuple[bool, str]:
     out_file.parent.mkdir(parents=True, exist_ok=True)
-    code, out = _run(
-        ["repomix", "--output", str(out_file), "--style", "markdown",
-         "--compress", "--remove-empty-lines", "--no-file-summary"],
-        cwd=str(repo), timeout=timeout,
-    )
-    if code != 0:
-        code, out = _run(["npx", "--yes", "repomix", "--output", str(out_file)],
-                         cwd=str(repo), timeout=timeout)
+    # Resolve through `which`: on Windows `repomix` is a `.cmd` shim, and
+    # subprocess without shell=True will not find a bare name that has an
+    # extension. Passing shell=True instead would mean quoting paths by hand.
+    exe = shutil.which("repomix")
+    if exe:
+        code, out = _run(
+            [exe, "--output", str(out_file), "--style", "markdown",
+             "--compress", "--remove-empty-lines", "--no-file-summary"],
+            cwd=str(repo), timeout=timeout,
+        )
+        if code == 0 and out_file.exists():
+            return True, out.strip()[:300]
+    npx = shutil.which("npx")
+    if not npx:
+        return False, "neither repomix nor npx is on PATH"
+    code, out = _run([npx, "--yes", "repomix", "--output", str(out_file)],
+                     cwd=str(repo), timeout=timeout)
     return code == 0 and out_file.exists(), out.strip()[:300]
 
 
@@ -120,7 +145,7 @@ def main() -> int:
         if len(todo) >= args.top:
             break
 
-    print(f"SEQUENTIAL hydration -- one repo at a time, never parallel.")
+    print("SEQUENTIAL hydration -- one repo at a time, never parallel.")
     print(f"{len(todo)} repo(s) selected this run:\n")
     for i, row in enumerate(todo, 1):
         sig = ", ".join(sorted(row["signals"])[:4])

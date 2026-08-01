@@ -352,6 +352,7 @@
   .badge-running { background: var(--accent-soft); color: var(--accent); }
   .badge-verifying { background: var(--accent-soft); color: var(--accent); }
   .badge-blocked, .badge-paused { background: var(--warn-soft); color: var(--warn); }
+  .badge-attention { background: var(--warn-soft); color: var(--warn); }
   .badge-done { background: var(--good-soft); color: var(--good); }
   .badge-failed { background: var(--bad-soft); color: var(--bad); }
 
@@ -918,6 +919,14 @@
       <div id="queue-status-body" class="muted">Loading queue status…</div>
     </section>
 
+    <section class="panel" id="recovery-panel">
+      <div class="panel-head">
+        <h2>Recovery desk</h2>
+        <span class="hint">recommendations only · no automatic resume</span>
+      </div>
+      <div id="recovery-body" class="muted">Loading recovery guidance…</div>
+    </section>
+
     <section class="panel" id="jobs-panel">
       <div class="panel-head">
         <h2>Jobs</h2>
@@ -1029,7 +1038,7 @@
 
 <script>
   const state = {
-    summary: null, queue: null, jobs: [], workers: [], activity: [], leaderboard: null,
+    summary: null, queue: null, recovery: null, jobs: [], workers: [], activity: [], leaderboard: null,
     selectedJobId: null, jobDetail: null, selectedRow: null,
   };
   let ws = null;
@@ -1223,6 +1232,30 @@
     body.innerHTML = `<span class="badge badge-${tone}">${esc(label)}</span>
       <span class="num"> owner ${q.owner_active ? "active" : "idle"} · heartbeat ${q.heartbeat_valid ? "valid" : "invalid"} · age ${esc(age)}</span>
       <span class="muted"> · state ${esc(q.state || "—")} · job ${esc(q.current_job || "—")} · done ${esc(fmtNum(q.jobs_done))} · failed ${esc(fmtNum(q.jobs_failed))}${error}</span>`;
+  }
+
+  function renderRecovery() {
+    const report = state.recovery;
+    const body = document.getElementById("recovery-body");
+    if (!report) return;
+    const actions = report.actions || [];
+    const tone = report.status === "clear" ? "done" : "attention";
+    if (!actions.length) {
+      body.innerHTML = `<span class="badge badge-${tone}">clear</span>
+        <span class="muted"> ${esc(report.note || "No recovery action indicated.")}</span>`;
+      return;
+    }
+    body.innerHTML = `<div style="display:flex;flex-direction:column;gap:10px">${actions.map((action, index) => `
+      <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;background:var(--panel-2)">
+        <div><span class="badge badge-${esc(action.severity || "attention")}">${esc(action.kind)}</span>
+          <span style="margin-left:8px">${esc(action.reason || "Operator review recommended.")}</span></div>
+        ${action.objective ? `<div class="sub" style="margin-top:6px">${esc(action.objective)} · ${esc(fmtNum(action.unfinished_tasks))} unfinished task${action.unfinished_tasks === 1 ? "" : "s"}</div>` : ""}
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+          <code style="flex:1;overflow:auto;font-size:11px;color:var(--text-muted)">${esc(action.command || "")}</code>
+          <button class="btn" data-copy-recovery="${index}">copy</button>
+        </div>
+      </div>`).join("")}</div>
+      <p class="sub" style="margin-bottom:0">${esc(report.note || "Recommendations require operator review.")}</p>`;
   }
 
   // ---------------------------------------------------------- top-rail
@@ -1701,6 +1734,11 @@
     renderQueueStatus();
   }
 
+  async function loadRecovery() {
+    state.recovery = await api("/api/recovery");
+    renderRecovery();
+  }
+
   async function loadJobs() {
     const d = await api("/api/jobs");
     state.jobs = d.jobs;
@@ -1772,6 +1810,22 @@
     }
   });
 
+  document.getElementById("recovery-body").addEventListener("click", async (e) => {
+    const button = e.target.closest("[data-copy-recovery]");
+    if (!button || !state.recovery) return;
+    const index = Number(button.dataset.copyRecovery);
+    const action = state.recovery.actions && state.recovery.actions[index];
+    if (!action || !action.command) return;
+    try {
+      await navigator.clipboard.writeText(action.command);
+      const old = button.textContent;
+      button.textContent = "copied";
+      setTimeout(() => { button.textContent = old; }, 1200);
+    } catch {
+      showError(new Error("Clipboard unavailable; copy the command manually."));
+    }
+  });
+
   // ---------------------------------------------------------------- ws
 
   function connectWS() {
@@ -1826,7 +1880,7 @@
   async function init() {
     try {
       await Promise.all([
-        loadSummary(), loadQueueStatus(), loadJobs(), loadEconomy(), loadWorkers(), loadProviders(), loadActivity(), loadLeaderboard(),
+        loadSummary(), loadQueueStatus(), loadRecovery(), loadJobs(), loadEconomy(), loadWorkers(), loadProviders(), loadActivity(), loadLeaderboard(),
       ]);
     } catch (e) {
       showError(e);
@@ -1843,6 +1897,7 @@
       loadEconomy();
       loadWorkers();
       loadQueueStatus();
+      loadRecovery();
       loadLeaderboard();
     }, 10000);
   }
@@ -1873,6 +1928,7 @@
     const entries = [
       { kind: "panel", label: "Jump to the ledger", hint: "ledger", run: () => scrollToPanel("ledger-strip") },
       { kind: "panel", label: "Jump to Jobs", hint: "jobs", run: () => scrollToPanel("jobs-panel") },
+      { kind: "panel", label: "Jump to Recovery desk", hint: "recovery", run: () => scrollToPanel("recovery-panel") },
       { kind: "panel", label: "Jump to Economy", hint: "economy", run: () => scrollToPanel("economy-panel") },
       { kind: "panel", label: "Jump to Workers", hint: "workers", run: () => scrollToPanel("workers-panel") },
       { kind: "panel", label: "Jump to Leaderboard", hint: "leaderboard", run: () => scrollToPanel("leaderboard-panel") },

@@ -1,0 +1,11 @@
+{
+  "fleet_rollup": {
+    "accepted_count": 2,
+    "cost_per_accepted_usd": 0.2,
+    "eligible_runs": 2,
+    "scope": "Descriptive cumulative total across eligible measured live Class-A receipts; not used as a cross-suite ranking.",
+    "usd_micros": 400000
+  },
+  "mode": "fixture",
+  "schema": "forgeos.leaderboard.v1"
+}

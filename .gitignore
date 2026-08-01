@@ -30,3 +30,6 @@ FORGEOS_UPGRADE_AUDIT.md
 build/
 dist/
 *.egg-info/
+_audit_scan.py
+_pytest_audit.txt
+_run_tests.py

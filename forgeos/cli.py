@@ -76,6 +76,14 @@ def cmd_snapshot(args) -> int:
     )
 
 
+def cmd_recovery(args) -> int:
+    """Expose provider-free next-action guidance on the console script."""
+    return _forward_to_main(
+        "recovery", args,
+        ("--state-dir", "--queue", "--leaderboard-dir", "--stale-after", "--output", "--json"),
+    )
+
+
 def cmd_preflight(args) -> int:
     """Expose the canonical read-only prior-work refusal check."""
     return _forward_to_main(
@@ -761,6 +769,15 @@ def main(argv: list[str] | None = None) -> int:
     p_snapshot.add_argument("--stale-after", type=float, default=30.0)
     p_snapshot.add_argument("--output", default=None)
     p_snapshot.add_argument("--json", action="store_true")
+    p_recovery = sub.add_parser(
+        "recovery", help="Export provider-free next actions for unfinished local work"
+    )
+    p_recovery.add_argument("--state-dir", default=None)
+    p_recovery.add_argument("--queue", default=None)
+    p_recovery.add_argument("--leaderboard-dir", default=None)
+    p_recovery.add_argument("--stale-after", type=float, default=30.0)
+    p_recovery.add_argument("--output", default=None)
+    p_recovery.add_argument("--json", action="store_true")
     p_preflight = sub.add_parser(
         "preflight", help="Read-only prior-work refusal check; never calls a provider"
     )
@@ -931,6 +948,7 @@ def main(argv: list[str] | None = None) -> int:
         "call-preflight": cmd_call_preflight,
         "receipts": cmd_receipts,
         "snapshot": cmd_snapshot,
+        "recovery": cmd_recovery,
         "adapt": cmd_adapt,
         "compress": cmd_compress,
         "models": cmd_models,
