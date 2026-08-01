@@ -719,7 +719,6 @@ def create_app(
         try:
             from ..core.probe import load_report
 
-            home = Path.home() / ".forgeos"
             report = load_report(state_dir / "provider_probe.json")
             if report is not None:
                 probed = {
