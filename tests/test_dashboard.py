@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -41,9 +42,14 @@ def state_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def client(state_dir: Path) -> TestClient:
+def client(state_dir: Path) -> Iterator[TestClient]:
     app = create_app(state_dir)
-    return TestClient(app)
+    # Keep the TestClient lifespan open for the whole test and close it
+    # deterministically.  In particular, WebSocket tests otherwise receive
+    # their first frame but leave the portal thread/SQLite stores alive during
+    # pytest teardown on current Starlette/httpx versions.
+    with TestClient(app) as client:
+        yield client
 
 
 # --------------------------------------------------------------- empty db
